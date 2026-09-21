@@ -35,7 +35,9 @@ class StubDetector:
         jitter: random shift per call, as a fraction of frame width.
     """
 
-    def __init__(self, name="stub", box=(0.3, 0.3, 0.6, 0.7), score=0.8, miss_every=0, jitter=0.0):
+    def __init__(
+        self, name="stub", box=(0.3, 0.3, 0.6, 0.7), score=0.8, miss_every=0, jitter=0.0
+    ):
         self.name = name
         self.box = box
         self.score = score
@@ -160,7 +162,9 @@ def test_spike_writes_all_artifacts(clip: Path, tmp_path: Path):
 def test_spike_samples_across_the_whole_video(clip: Path, tmp_path: Path):
     """Frames must be spread out, or the sample only sees one phase of the cycle."""
     detector = StubDetector()
-    run_spike(clip, {"stub": detector}, Config.load(), tmp_path, prompts=["excavator."], n_frames=5)
+    run_spike(
+        clip, {"stub": detector}, Config.load(), tmp_path, prompts=["excavator."], n_frames=5
+    )
     assert detector.calls == 5
 
 
@@ -244,7 +248,12 @@ def test_no_agreement_with_single_detector(clip: Path, tmp_path: Path):
 
 def test_report_formats_without_error(clip: Path, tmp_path: Path):
     report = run_spike(
-        clip, {"stub": StubDetector()}, Config.load(), tmp_path, prompts=["excavator."], n_frames=3
+        clip,
+        {"stub": StubDetector()},
+        Config.load(),
+        tmp_path,
+        prompts=["excavator."],
+        n_frames=3,
     )
     text = format_report(report)
     assert "GATE: PASS" in text
