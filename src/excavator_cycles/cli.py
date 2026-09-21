@@ -53,6 +53,38 @@ def main(argv: list[str] | None = None) -> int:
     probe_parser.add_argument("--json", action="store_true", help="machine-readable output")
     probe_parser.set_defaults(func=_cmd_probe)
 
+    spike_parser = subparsers.add_parser(
+        "spike",
+        help="Stage 1: check whether the detector finds the excavator in this "
+        "footage, before anything is built on top of it.",
+    )
+    spike_parser.add_argument("video", type=Path)
+    spike_parser.add_argument(
+        "--config", type=Path, default=None, help="YAML config overriding defaults"
+    )
+    spike_parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="output directory (default: outputs/spike/<video stem>)",
+    )
+    spike_parser.add_argument(
+        "--detector",
+        action="append",
+        choices=["grounding_dino", "owlv2"],
+        help="repeatable; two detectors enables the cross-model agreement check",
+    )
+    spike_parser.add_argument(
+        "--prompt",
+        action="append",
+        help="repeatable; defaults to the configured excavator prompts",
+    )
+    spike_parser.add_argument("--frames", type=int, default=None, help="how many to sample")
+    spike_parser.add_argument(
+        "--device", default=None, help="cuda / mps / cpu (default: best available)"
+    )
+    spike_parser.set_defaults(func=_cmd_spike)
+
     args = parser.parse_args(argv)
     configure_logging(args.verbose, args.log_file)
     return args.func(args)
@@ -108,6 +140,46 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         f"(tolerance is 0.6 s, so quantisation is not the limit)"
     )
     return 0
+
+
+def _cmd_spike(args: argparse.Namespace) -> int:
+    """Run the detector spike and print its verdict.
+
+    Imported lazily: the spike is the only command that needs the model extras,
+    and `probe` must keep working on a machine without them.
+    """
+    from .detect import build_detector
+    from .provenance import set_seeds
+    from .spike import format_report, run_spike
+
+    set_seeds()
+    config = Config.load(args.config)
+    names = args.detector or ["grounding_dino"]
+    out_dir = args.out or Path("outputs/spike") / Path(args.video).stem
+
+    log.info("building detector(s): %s", ", ".join(names))
+    detectors = {
+        name: build_detector(name, config.detection, device=args.device) for name in names
+    }
+
+    report = run_spike(
+        video_path=args.video,
+        detectors=detectors,
+        config=config,
+        output_dir=out_dir,
+        prompts=args.prompt,
+        n_frames=args.frames,
+    )
+
+    print()
+    print(format_report(report))
+    print()
+    print(f"  artifacts: {out_dir}")
+
+    # Non-zero exit on a failed gate, so this is usable in a script -- but the
+    # artifacts are written either way, because a failure is what you most need
+    # to look at.
+    return 0 if report.gate["status"] == "pass" else 1
 
 
 if __name__ == "__main__":

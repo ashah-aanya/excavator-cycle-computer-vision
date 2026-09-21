@@ -89,6 +89,39 @@ class DetectionConfig:
 
 
 @dataclass(frozen=True)
+class SpikeConfig:
+    """Stage 1: the gate that decides whether perception is good enough to build on.
+
+    These are *diagnostic* thresholds, not pipeline behaviour -- they change what
+    the spike reports, never what the pipeline answers. They exist so "does
+    detection work?" has a number attached instead of an impression.
+    """
+
+    # How many frames to sample, spread across the whole video so every phase of
+    # the cycle is represented.
+    n_frames: int = 20
+
+    # The machine must be found in essentially every frame. Downstream tracking
+    # can bridge a brief gap, but not a detector that fails one frame in five.
+    min_detection_rate: float = 0.95
+
+    # A detector scraping its own threshold is fragile on unseen footage, even
+    # when the box happens to be right.
+    min_median_score: float = 0.40
+
+    # Plausibility of the box itself. A "detection" covering most of the frame
+    # is the model grabbing the whole scene; a tiny one is background. Both pass
+    # a confidence check happily, which is why size is checked separately.
+    max_box_area_fraction: float = 0.60
+    min_box_area_fraction: float = 0.005
+
+    # How far the box centre may move between sampled frames, as a fraction of
+    # the box's own diagonal. Large values mean the detector is latching onto
+    # different objects, which no downstream smoothing can repair.
+    max_centre_jump: float = 0.75
+
+
+@dataclass(frozen=True)
 class GeometryConfig:
     """Constants for deriving scene structure from the excavator mask.
 
@@ -213,6 +246,7 @@ class Config:
 
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
+    spike: SpikeConfig = field(default_factory=SpikeConfig)
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
     fsm: FSMConfig = field(default_factory=FSMConfig)

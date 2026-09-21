@@ -27,6 +27,14 @@ detection:
   text_threshold: 0.25
   alt_model_id: "google/owlv2-base-patch16-ensemble"
 
+spike:
+  n_frames: 20                 # frames sampled across the video
+  min_detection_rate: 0.95     # the machine must be found in ~every frame
+  min_median_score: 0.40       # scraping the threshold is fragile on unseen footage
+  max_box_area_fraction: 0.60  # bigger than this = the model grabbed the whole scene
+  min_box_area_fraction: 0.005 # smaller than this = background
+  max_centre_jump: 0.75        # box movement between frames, as a fraction of its diagonal
+
 geometry:
   occupancy_quantile: 0.90   # what counts as the machine's persistent core
   reach_percentile: 95.0     # defines L, the scale unit

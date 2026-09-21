@@ -195,6 +195,34 @@ def _downscale(image: np.ndarray, max_edge: int) -> np.ndarray:
     return cv2.resize(image, new_size, interpolation=cv2.INTER_AREA)
 
 
+def read_frames_at(path: str | Path, times_seconds: list[float]) -> list[Sample]:
+    """Decode the frames nearest to the given timestamps.
+
+    Seeking is used rather than a sequential scan because the spike wants ~20
+    frames spread across the whole video, and decoding everything in between
+    would be wasteful. Seek accuracy varies by codec, so the timestamp reported
+    back is the frame's *actual* position, not the one that was requested.
+    """
+    info = probe(path)
+    capture = cv2.VideoCapture(str(info.path))
+    if not capture.isOpened():
+        raise RuntimeError(f"could not open video: {info.path}")
+
+    samples: list[Sample] = []
+    try:
+        for requested in times_seconds:
+            capture.set(cv2.CAP_PROP_POS_MSEC, requested * 1000.0)
+            ok, image = capture.read()
+            if not ok:
+                continue
+            index = int(capture.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+            actual = _timestamp_seconds(capture, max(index, 0), info.fps)
+            samples.append(Sample(frame_index=index, time_seconds=actual, image=image))
+    finally:
+        capture.release()
+    return samples
+
+
 def sample_times(info: VideoInfo, count: int) -> list[float]:
     """``count`` timestamps spread evenly across the video.
 
