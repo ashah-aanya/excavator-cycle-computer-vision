@@ -155,3 +155,76 @@ explicitly rather than assume them:
 excavator and not the truck. If SAM 2 cannot separate them from a loose box, the
 fallback is to shrink the prompt box toward the machine's core before prompting,
 or to prompt with a point rather than a box.
+
+---
+
+## Diagnosis of the loose box: the detector *merges* the two machines
+
+Evidence: [`../evidence/merged-box-failure.jpg`](../evidence/merged-box-failure.jpg)
+
+| frame | excavator box | truck box | |
+|---|---|---|---|
+| 12.42.20 | (549,375,1807,1014) 27% | (554,382,1803,1007) 27% | **merged — same box** |
+| 12.42.41 | (494,438,1178,1035) 14% | (1130,642,1815,1009) 9% | separated |
+| 12.42.52 | (539,177,1818,1010) 36% | (541,185,1810,1006) 35% | **merged — same box** |
+| 12.43.02 | (632,265,1178,1009) 14% | (1113,635,1834,1006) 9% | separated |
+| 12.43.13 | (395,379,1195,1012) 17% | none | separated |
+
+In the two failing frames the detector returns **one box containing both machines**,
+and returns the *same* box for "excavator." and for "dump truck.". It is not
+confusing the two classes; it is failing to separate two adjacent, similarly
+coloured objects while the arm physically overlaps the truck.
+
+### No prompt wording fixes it
+
+Seven phrasings, five frames each. Median values:
+
+| prompt | score | area | boxes |
+|---|---|---|---|
+| `excavator.` | 0.71 | 17.3% | 1 |
+| `yellow excavator.` | **0.80** | 17.3% | 1 |
+| `tracked excavator.` | 0.72 | 17.3% | 1 |
+| `hydraulic excavator.` | 0.73 | 17.3% | 1 |
+| `excavator. dump truck.` | 0.62 | 17.1% | 1 |
+| `excavator boom and cab.` | 0.60 | 17.3% | 2 |
+| `digger.` | 0.48 | 17.0% | 2 |
+
+Identical geometry across all of them. `yellow excavator.` raises confidence
+appreciably but not tightness, and specialising on colour is a poor bet for hidden
+videos, so `excavator.` stands.
+
+## Motion separates what appearance cannot
+
+Evidence: [`../evidence/motion-separation.jpg`](../evidence/motion-separation.jpg)
+
+A per-pixel median across the five frames approximates the static background;
+differencing against it leaves only what moved. In every frame the moving blobs are
+the **boom and bucket**, and the truck contributes **no** moving pixels — it is
+parked, so it is background.
+
+So in exactly the frames where the detector merges the machines, motion still
+isolates the excavator's moving parts. Two uses:
+
+1. **Veto** — intersect a merged box with the motion mask and the truck falls away.
+2. **Locate the arm directly** — the moving blob is the boom and bucket, which is
+   what the bucket-tip derivation needs.
+
+Caveats: these stills are seconds apart, so this is motion across distant moments,
+not frame-to-frame motion; the machine's *body* does not move while only the arm
+swings, so motion yields moving parts rather than the whole machine; and a truck
+that arrives or departs does move. Motion is a filter, not a detector.
+
+This corroborates the motion gating already specified in the design (§4.3).
+
+## Open question, to be settled in stage 2
+
+The box is only a prompt. Every measurement comes from the **mask**. A loose box
+matters only if SAM 2's mask inherits the looseness — and SAM 2 is designed to
+segment one object inside a prompt. The decisive test is therefore to run SAM 2 on
+the two merged frames and see whether the mask covers the excavator alone.
+
+Fallbacks, in the order they would be tried:
+1. detect the merge (excavator and truck boxes nearly identical) and skip re-anchoring on that frame
+2. prompt SAM 2 with a **point** on the machine body instead of a box
+3. intersect the box with the motion mask before prompting
+4. prefer the candidate box most consistent with the previous accepted box, rather than the highest-scoring one
