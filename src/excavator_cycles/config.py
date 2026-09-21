@@ -128,6 +128,42 @@ class SpikeConfig:
 
 
 @dataclass(frozen=True)
+class TrackConfig:
+    """Stage 2: turning boxes into masks that follow the machine.
+
+    The constants here encode findings measured on real footage
+    (docs/stages/02-tracking-findings.md), not guesses.
+    """
+
+    # SAM 2 checkpoint. Ungated and Apache-2.0, so a reviewer can reproduce the
+    # run without requesting access to anything.
+    model_id: str = "facebook/sam2.1-hiera-tiny"
+
+    # Above this overlap between the excavator box and the truck box, the
+    # detector has merged the two machines into one region rather than finding
+    # the excavator. Such frames are unusable as a seed and their "truck" box
+    # carries no information.
+    max_clean_truck_iou: float = 0.30
+
+    # Negative points ("not this") are spread inside the truck's box. The y band
+    # is deliberately low: the bucket empties INTO the bed, so it occupies the
+    # upper region, and a negative landing on the bucket cancels the exclusion
+    # entirely -- measured, mask area went from 7.1% back to 13.8%.
+    negative_rows: int = 2
+    negative_columns: int = 3
+    negative_y_low: float = 0.55  # fraction of the truck box height
+    negative_y_high: float = 0.90
+    negative_x_margin: float = 0.15
+
+    # Mask-area sanity, relative to this video's own median. A mask that doubles
+    # has probably absorbed another object; one that collapses has lost the
+    # machine. Neither needs an absolute size.
+    max_area_ratio: float = 1.8
+    min_area_ratio: float = 0.4
+    max_bad_area_fraction: float = 0.10  # share of samples allowed to be off
+
+
+@dataclass(frozen=True)
 class GeometryConfig:
     """Constants for deriving scene structure from the excavator mask.
 
@@ -253,6 +289,7 @@ class Config:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     spike: SpikeConfig = field(default_factory=SpikeConfig)
+    track: TrackConfig = field(default_factory=TrackConfig)
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
     fsm: FSMConfig = field(default_factory=FSMConfig)

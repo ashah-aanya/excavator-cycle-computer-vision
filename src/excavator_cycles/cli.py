@@ -90,6 +90,44 @@ def main(argv: list[str] | None = None) -> int:
     )
     spike_parser.set_defaults(func=_cmd_spike)
 
+    track_parser = subparsers.add_parser(
+        "track",
+        help="Stage 2: run detection + SAM 2 over a video and cache masks. "
+        "This is the only stage that needs a GPU.",
+    )
+    track_parser.add_argument("video", type=Path)
+    track_parser.add_argument("--config", type=Path, default=None)
+    track_parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="cache directory (default: outputs/track/<video stem>)",
+    )
+    track_parser.add_argument("--device", default=None, help="cuda / mps / cpu")
+    track_parser.add_argument(
+        "--detector", default="grounding_dino", choices=["grounding_dino", "owlv2"]
+    )
+    track_parser.add_argument(
+        "--rate", type=float, default=None, help="samples per second (overrides config)"
+    )
+    track_parser.set_defaults(func=_cmd_track)
+
+    render_parser = subparsers.add_parser(
+        "render",
+        help="Rebuild the video with the cached masks and detections drawn on it. "
+        "Reads the cache only -- no model, no GPU.",
+    )
+    render_parser.add_argument("track_dir", type=Path, help="a directory produced by `track`")
+    render_parser.add_argument("--out", type=Path, default=None, help="output .mp4")
+    render_parser.add_argument(
+        "--scale",
+        type=float,
+        default=1.0,
+        help="resize factor; >1 makes overlays legible on small sources",
+    )
+    render_parser.add_argument("--no-boxes", action="store_true", help="mask only")
+    render_parser.set_defaults(func=_cmd_render)
+
     args = parser.parse_args(argv)
     configure_logging(args.verbose, args.log_file)
     return args.func(args)
@@ -98,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
 def _cmd_probe(args: argparse.Namespace) -> int:
     config = Config.load(args.config)
     log.debug("config digest inputs: %s", sorted(config.to_dict()))
-    info = probe(args.video)
+    info = probe(args.video, verify=True)
     log.info("probed %s (%.2f s, %.3f fps)", info.path.name, info.duration_seconds, info.fps)
 
     stride = info.stride_for(config.sampling.rate_hz)
@@ -189,3 +227,62 @@ def _cmd_spike(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _cmd_track(args: argparse.Namespace) -> int:
+    """Run perception over a whole video and cache the result."""
+    from .track import track
+
+    overrides = {"sampling": {"rate_hz": args.rate}} if args.rate else None
+    config = Config.load(args.config, overrides)
+    out_dir = args.out or Path("outputs/track") / Path(args.video).stem
+
+    result = track(
+        video_path=args.video,
+        config=config,
+        output_dir=out_dir,
+        device=args.device,
+        detector_name=args.detector,
+    )
+
+    qa = result.qa
+    print()
+    print(
+        f"  video      : {Path(result.video).name}  "
+        f"{result.width}x{result.height}  {result.duration_seconds:.1f}s"
+    )
+    print(f"  samples    : {len(result.frames)} at {result.rate_hz:g} Hz")
+    print(
+        f"  seed       : t={result.seed['time_seconds']:.2f}s  "
+        f"({len(result.seed['negative_points'])} negative point(s))"
+    )
+    print(f"  coverage   : {qa['coverage']:.1%}")
+    print(
+        f"  mask area  : median {qa['mask_area']['median'] * 100:.2f}%  "
+        f"(min {qa['mask_area']['min'] * 100:.2f}%, max {qa['mask_area']['max'] * 100:.2f}%)"
+    )
+    print(
+        f"  agreement  : {qa['detection_agreement_median_iou']}  "
+        f"(mask vs independent detections, unmerged frames)"
+    )
+    print(f"  QA         : {qa['status'].upper()}")
+    for failure in qa["failures"]:
+        print(f"     - {failure}")
+    print(f"\n  cache: {out_dir}")
+    print(f"  next : uv run run.py render {out_dir} --scale 2")
+    return 0 if qa["status"] == "pass" else 1
+
+
+def _cmd_render(args: argparse.Namespace) -> int:
+    """Draw the cached masks back onto the video."""
+    from .render import render
+
+    stats = render(
+        output_dir=args.track_dir,
+        out_path=args.out,
+        scale=args.scale,
+        draw_boxes=not args.no_boxes,
+    )
+    print(f"\n  wrote {stats.output_path}")
+    print(f"  {stats.frames_written} frames, {stats.frames_with_mask} carrying a mask")
+    return 0

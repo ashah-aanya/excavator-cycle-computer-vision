@@ -35,6 +35,18 @@ spike:
   min_box_area_fraction: 0.005 # smaller than this = background
   max_centre_jump: 0.75        # box movement between frames, as a fraction of its diagonal
 
+track:
+  model_id: "facebook/sam2.1-hiera-tiny"   # ungated, Apache-2.0
+  max_clean_truck_iou: 0.30   # above this, the detector merged the two machines
+  negative_rows: 2            # "not this" points placed inside the truck box
+  negative_columns: 3
+  negative_y_low: 0.55        # low in the box: the bucket empties into the bed,
+  negative_y_high: 0.90       #   so the upper region is where the bucket goes
+  negative_x_margin: 0.15
+  max_area_ratio: 1.8         # mask this far above the video's median = absorbed something
+  min_area_ratio: 0.4         # this far below = lost the machine
+  max_bad_area_fraction: 0.10
+
 geometry:
   occupancy_quantile: 0.90   # what counts as the machine's persistent core
   reach_percentile: 95.0     # defines L, the scale unit

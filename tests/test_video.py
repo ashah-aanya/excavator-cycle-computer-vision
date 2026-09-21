@@ -93,3 +93,28 @@ def test_sample_times_spread_across_video(clip_30fps: Path):
     # Spread across the clip, but clear of the very first and last frames.
     assert 0 < times[0] < 0.2
     assert info.duration_seconds - 0.2 < times[-1] < info.duration_seconds
+
+
+def test_probe_verify_counts_decodable_frames(clip_30fps: Path):
+    """With verify, the frame count comes from demuxing rather than the header.
+
+    The task video's header claims 1102 frames when 886 decode -- a 20% overstated
+    duration. Phase durations are safe because they use real per-frame timestamps,
+    but anything derived from duration would inherit the error silently.
+    """
+    header = probe(clip_30fps)
+    verified = probe(clip_30fps, verify=True)
+
+    assert verified.frame_count == 90
+    assert verified.duration_seconds == pytest.approx(3.0, abs=0.05)
+    # For a well-formed file the two agree; the point is that verify does not
+    # depend on the header being honest.
+    assert verified.frame_count == header.frame_count
+
+
+def test_probe_verify_matches_what_iteration_yields(clip_30fps: Path):
+    """The verified count must equal the frames actually reachable."""
+    info = probe(clip_30fps, verify=True)
+    assert len(list(iter_samples(clip_30fps, rate_hz=30.0))) == pytest.approx(
+        info.frame_count, abs=1
+    )

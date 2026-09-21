@@ -26,6 +26,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .logging_setup import get_logger
+
+log = get_logger(__name__)
+
 
 @dataclass(frozen=True)
 class VideoInfo:
@@ -76,8 +80,17 @@ class Sample:
     image: np.ndarray  # BGR, as OpenCV decodes it
 
 
-def probe(path: str | Path) -> VideoInfo:
-    """Read a video's metadata without decoding its contents."""
+def probe(path: str | Path, verify: bool = False) -> VideoInfo:
+    """Read a video's metadata.
+
+    Args:
+        path: the video file.
+        verify: count the frames that actually decode instead of trusting the
+            container's header. Costs one demux pass (no pixel decoding), and it
+            is worth it: the task video's header claims 1102 frames when only 886
+            exist, which would overstate its duration by 20%. Any quantity
+            derived from duration would inherit that error silently.
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(path)
@@ -98,6 +111,20 @@ def probe(path: str | Path) -> VideoInfo:
         raise RuntimeError(
             f"video reports an unusable frame rate ({fps}); cannot convert to seconds"
         )
+
+    if verify:
+        counted = _count_frames(path)
+        if counted != frame_count:
+            log.warning(
+                "%s: header claims %d frames, only %d decode (%.2fs vs %.2fs); "
+                "using the decoded count",
+                path.name,
+                frame_count,
+                counted,
+                frame_count / fps,
+                counted / fps,
+            )
+            frame_count = counted
 
     duration = frame_count / fps if frame_count > 0 else 0.0
     return VideoInfo(
@@ -169,6 +196,22 @@ def iter_samples(
             index += 1
     finally:
         capture.release()
+
+
+def _count_frames(path: Path) -> int:
+    """Count decodable frames by demuxing, without decoding pixels.
+
+    ``grab`` advances the stream without producing an image, so this is far
+    cheaper than reading the video, though not free on long files.
+    """
+    capture = cv2.VideoCapture(str(path))
+    count = 0
+    try:
+        while capture.grab():
+            count += 1
+    finally:
+        capture.release()
+    return count
 
 
 def _timestamp_seconds(capture: cv2.VideoCapture, index: int, fps: float) -> float:
