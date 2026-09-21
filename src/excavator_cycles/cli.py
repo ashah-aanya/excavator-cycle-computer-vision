@@ -58,7 +58,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Stage 1: check whether the detector finds the excavator in this "
         "footage, before anything is built on top of it.",
     )
-    spike_parser.add_argument("video", type=Path)
+    spike_parser.add_argument(
+        "video",
+        type=Path,
+        help="video file, a single image, or a folder of images. Images let you "
+        "check the real detector before the target video is available.",
+    )
     spike_parser.add_argument(
         "--config", type=Path, default=None, help="YAML config overriding defaults"
     )

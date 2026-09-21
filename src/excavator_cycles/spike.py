@@ -43,9 +43,56 @@ from .detect import (
 from .detect.base import Detection
 from .logging_setup import get_logger
 from .provenance import run_record
-from .video import probe, read_frames_at, sample_times
+from .video import Sample, probe, read_frames_at, sample_times
 
 log = get_logger(__name__)
+
+
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+
+
+def load_samples(path: Path, n_frames: int) -> list[Sample]:
+    """Get frames to test on, from a video, a single image, or a folder of images.
+
+    Images are supported for a practical reason: the real detector can be
+    checked on any excavator photo before the target video is in hand, which
+    separates "our model call is wrong" from "the model does not work on this
+    footage". Those are very different problems and you want to rule out the
+    first one early.
+
+    Video frames are spread across the whole clip, so every phase of the cycle
+    is represented -- twenty consecutive frames would only show one phase, and
+    would say nothing about moments where the arm is folded or occluded.
+    """
+    if path.is_dir():
+        files = sorted(p for p in path.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+        if not files:
+            raise ValueError(f"no images found in {path}")
+        return _load_image_files(files[:n_frames])
+
+    if path.suffix.lower() in IMAGE_SUFFIXES:
+        return _load_image_files([path])
+
+    info = probe(path)
+    return read_frames_at(path, sample_times(info, n_frames))
+
+
+def _load_image_files(paths: list[Path]) -> list[Sample]:
+    """Read still images into the same Sample type video frames use.
+
+    Time is the file's position in the list. It is meaningless for stills, and
+    the spike only uses it for captions -- no metric depends on it.
+    """
+    samples = []
+    for index, file in enumerate(paths):
+        image = cv2.imread(str(file))
+        if image is None:
+            log.warning("could not read image, skipping: %s", file)
+            continue
+        samples.append(Sample(frame_index=index, time_seconds=float(index), image=image))
+    if not samples:
+        raise ValueError("no readable images")
+    return samples
 
 
 @dataclass
@@ -131,17 +178,11 @@ def run_spike(
     prompts = list(prompts or config.detection.excavator_prompts)
     n_frames = n_frames or config.spike.n_frames
 
-    info = probe(video_path)
-    # Spread the sample across the whole clip so every phase of the cycle is
-    # represented. Twenty consecutive frames would only show one phase, and
-    # would say nothing about the moments where the arm is folded or occluded.
-    times = sample_times(info, n_frames)
-    samples = read_frames_at(video_path, times)
+    samples = load_samples(video_path, n_frames)
     log.info(
-        "sampled %d frames from %s (%.1f s), testing %d prompt(s) x %d detector(s)",
+        "loaded %d frame(s) from %s, testing %d prompt(s) x %d detector(s)",
         len(samples),
         video_path.name,
-        info.duration_seconds,
         len(prompts),
         len(detectors),
     )
@@ -191,6 +232,7 @@ def run_spike(
                 best_boxes[name].append(frame_best)
 
             caption = f"t={sample.time_seconds:6.2f}s  frame {sample.frame_index}"
+            # (for stills, time is just the index; no metric depends on it)
             canvas = draw_detections(sample.image, per_frame, caption=caption)
             annotated.append(canvas)
             cv2.imwrite(str(frames_dir / f"{position:03d}.jpg"), canvas)

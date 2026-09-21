@@ -42,6 +42,12 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+# Model-dependent tests are opt-in: they need ~700 MB of weights, so CI and the
+# normal `pytest` run stay fast and offline. Run them with `pytest -m integration`.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: runs a real model; needs `uv sync --extra models` and a download",
+]
 
 [tool.ruff]
 line-length = 95
