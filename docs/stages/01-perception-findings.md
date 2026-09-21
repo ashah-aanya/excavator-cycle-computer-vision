@@ -13,7 +13,37 @@ conditions — the only thing missing is motion.
 
 - Model: `IDEA-Research/grounding-dino-base`, transformers 5.17, torch 2.14, CPU/MPS
 - Prompts: `"excavator."` and `"digger."`
-- Evidence: [`../evidence/spike-real-frames.jpg`](../evidence/spike-real-frames.jpg)
+- Evidence, all committed under [`../evidence/`](../evidence/):
+
+| File | What it shows |
+|---|---|
+| `spike-real-frames.jpg` | contact sheet: all 8 frames with boxes |
+| `frame-digging.jpg` | bucket in the pile; box tight on the machine |
+| `frame-arm-extended.jpg` | arm reaching over the truck; **box stretches to include the bucket** |
+| `frame-dumping.jpg` | material released over the bed |
+| `spike-metrics.json` | the numbers behind the table below |
+
+Every box in those images was drawn from the pipeline's own `Detection` output by
+`draw_detections()`; none is hand-placed. The same is required of the final
+annotated video, so the drawing code is shared rather than written twice.
+
+### Per-frame detail
+
+| frame | score | box (x1,y1,x2,y2) | area |
+|---|---|---|---|
+| paper_p17_0_00 | 0.801 | (109, 0, 304, 265) | 20.3% |
+| paper_p17_0_01 | 0.657 | (137, 1, 447, 184) | 22.1% |
+| paper_p17_0_10 | 0.725 | (126, 1, 513, 189) | 28.2% |
+| paper_p17_0_11 | 0.821 | (135, 0, 597, 191) | 34.1% |
+| task_p1_0_00 | 0.786 | (85, 6, 212, 192) | 19.1% |
+| task_p1_0_01 | 0.659 | (86, 6, 295, 134) | 21.7% |
+| task_p1_0_10 | 0.693 | (98, 0, 356, 124) | 26.2% |
+| task_p1_0_11 | 0.769 | (84, 0, 397, 125) | 32.0% |
+
+Exactly one box per frame, every frame. Note the right edge (`x2`) growing from
+304 to 597 while the left edge stays near 85-137: the box follows the arm as it
+extends, anchored by the machine's body. That is the numeric version of the
+claim the pictures make.
 
 ## Results
 

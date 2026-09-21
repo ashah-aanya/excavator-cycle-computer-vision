@@ -1,0 +1,120 @@
+{
+  "video": "data/real_frames/tiles",
+  "n_frames": 8,
+  "results": [
+    {
+      "detector": "grounding_dino",
+      "prompt": "excavator.",
+      "frames": 8,
+      "frames_with_detection": 8,
+      "detection_rate": 1.0,
+      "score": {
+        "min": 0.6569774746894836,
+        "median": 0.7468089759349823,
+        "mean": 0.7388346418738365,
+        "max": 0.8214097023010254
+      },
+      "area_fraction": {
+        "min": 0.19143275916576385,
+        "median": 0.24155954271554947,
+        "mean": 0.2547033354640007,
+        "max": 0.34123632311820984
+      },
+      "centre_jump": {
+        "min": 0.041032090313195074,
+        "median": 0.12967510673626745,
+        "mean": 0.25181257915251704,
+        "max": 0.9645541816033669
+      }
+    },
+    {
+      "detector": "grounding_dino",
+      "prompt": "digger.",
+      "frames": 8,
+      "frames_with_detection": 8,
+      "detection_rate": 1.0,
+      "score": {
+        "min": 0.47818270325660706,
+        "median": 0.6382763087749481,
+        "mean": 0.6219780407845974,
+        "max": 0.7125982642173767
+      },
+      "area_fraction": {
+        "min": 0.18657958507537842,
+        "median": 0.2415238693356514,
+        "mean": 0.25326985865831375,
+        "max": 0.3395077884197235
+      },
+      "centre_jump": {
+        "min": 0.04116449041321834,
+        "median": 0.128354941612247,
+        "mean": 0.2538832424909859,
+        "max": 0.9784056163744024
+      }
+    }
+  ],
+  "cross_model_agreement": null,
+  "gate": {
+    "status": "pass",
+    "best": {
+      "detector": "grounding_dino",
+      "prompt": "excavator."
+    },
+    "checked": [
+      {
+        "detector": "grounding_dino",
+        "prompt": "excavator.",
+        "frames": 8,
+        "frames_with_detection": 8,
+        "detection_rate": 1.0,
+        "score": {
+          "min": 0.6569774746894836,
+          "median": 0.7468089759349823,
+          "mean": 0.7388346418738365,
+          "max": 0.8214097023010254
+        },
+        "area_fraction": {
+          "min": 0.19143275916576385,
+          "median": 0.24155954271554947,
+          "mean": 0.2547033354640007,
+          "max": 0.34123632311820984
+        },
+        "centre_jump": {
+          "min": 0.041032090313195074,
+          "median": 0.12967510673626745,
+          "mean": 0.25181257915251704,
+          "max": 0.9645541816033669
+        },
+        "passes": true,
+        "reasons": []
+      },
+      {
+        "detector": "grounding_dino",
+        "prompt": "digger.",
+        "frames": 8,
+        "frames_with_detection": 8,
+        "detection_rate": 1.0,
+        "score": {
+          "min": 0.47818270325660706,
+          "median": 0.6382763087749481,
+          "mean": 0.6219780407845974,
+          "max": 0.7125982642173767
+        },
+        "area_fraction": {
+          "min": 0.18657958507537842,
+          "median": 0.2415238693356514,
+          "mean": 0.25326985865831375,
+          "max": 0.3395077884197235
+        },
+        "centre_jump": {
+          "min": 0.04116449041321834,
+          "median": 0.128354941612247,
+          "mean": 0.2538832424909859,
+          "max": 0.9784056163744024
+        },
+        "passes": true,
+        "reasons": []
+      }
+    ]
+  }
+}
