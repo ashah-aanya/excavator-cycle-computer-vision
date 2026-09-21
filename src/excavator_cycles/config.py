@@ -70,7 +70,13 @@ class DetectionConfig:
 
     # Text prompts, one detection pass per group (scores are not comparable
     # across phrases, so they must not be mixed in a single prompt string).
-    excavator_prompts: tuple[str, ...] = ("excavator.", "digger.")
+    #
+    # "digger." was measured against "excavator." on real frames from this
+    # footage (docs/stages/01-perception-findings.md): it scored lower (0.64 vs
+    # 0.75 median) and also fired on the dump truck at 0.35-0.45. Always below
+    # its score on the excavator, so the best box was still correct -- but it is
+    # avoidable risk on unseen footage. Kept here as a documented fallback.
+    excavator_prompts: tuple[str, ...] = ("excavator.",)
     truck_prompts: tuple[str, ...] = ("dump truck.", "truck.")
 
     # Hugging Face model id. Pinning `revision` makes a run reproducible even if

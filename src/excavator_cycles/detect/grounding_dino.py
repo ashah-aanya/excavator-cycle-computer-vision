@@ -24,6 +24,7 @@ Weights come from Hugging Face and are cached locally after the first run
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from ..logging_setup import get_logger
@@ -82,7 +83,10 @@ class GroundingDinoDetector:
         """
         import torch
 
-        rgb = image[:, :, ::-1]  # OpenCV gives BGR; the processor expects RGB
+        # OpenCV gives BGR; the processor expects RGB. cvtColor (not a
+        # reversed slice) because a negative-stride view cannot be turned
+        # into a torch tensor -- it raises deep inside the processor.
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         text = _normalise_prompt(prompt)
 
         inputs = self.processor(images=rgb, text=text, return_tensors="pt").to(self.device)
@@ -153,7 +157,7 @@ class Owlv2Detector:
     def detect(self, image: np.ndarray, prompt: str) -> Detection:
         import torch
 
-        rgb = image[:, :, ::-1]
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         # OWLv2 takes a list of queries; ours are plain nouns, no trailing period.
         query = _normalise_prompt(prompt).rstrip(".").strip()
 

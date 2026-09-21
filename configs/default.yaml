@@ -19,7 +19,7 @@ sampling:
   inference_max_edge: 1024 # longest side fed to the models; null = native
 
 detection:
-  excavator_prompts: ["excavator.", "digger."]
+  excavator_prompts: ["excavator."]   # "digger." also works but also fires on trucks; see docs/stages/01-perception-findings.md
   truck_prompts: ["dump truck.", "truck."]
   model_id: "IDEA-Research/grounding-dino-base"
   revision: null           # pin to a commit SHA once the spike confirms the model
