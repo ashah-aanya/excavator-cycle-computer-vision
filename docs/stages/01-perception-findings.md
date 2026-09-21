@@ -103,3 +103,55 @@ uv sync --extra models
 uv run run.py spike data/real_frames/tiles --detector grounding_dino --frames 8
 uv run pytest -m integration          # 5 tests against the real model
 ```
+
+---
+
+## Second run: harder footage, different site
+
+Five frames from a **different site with a different machine** — a CAT excavator
+and an articulated dump truck, camera further back, noticeable motion blur, tracks
+partly buried. The closest proxy available for the two hidden videos, and a much
+harder test than the Volvo frames above.
+
+Each prompt was run separately, and the boxes below were drawn from the
+coordinates the detector returned.
+
+| | `excavator.` | `digger.` |
+|---|---|---|
+| Boxes per frame | **exactly 1** | 1–2 |
+| Score range | **0.48 – 0.76** | 0.36 – 0.53 |
+| Spurious box on the truck | never | 4 of 5 frames |
+
+Evidence: [`../evidence/hard-frames-excavator.jpg`](../evidence/hard-frames-excavator.jpg)
+and [`../evidence/hard-frames-digger.jpg`](../evidence/hard-frames-digger.jpg).
+
+The `digger.` extra boxes — `(1138,640,1818,1012)`, `(1117,628,1838,1008)` — are the
+dump truck every time. This confirms the prompt decision on footage that was never
+used to make it.
+
+### New risk found: the box is loose when the arm extends
+
+See [`../evidence/hard-frame-loose-box.jpg`](../evidence/hard-frame-loose-box.jpg).
+The detection is correct — `(539,177,1818,1010)`, score 0.74 — but its right edge
+sits well past the bucket, over the truck's cab. 36% of the frame.
+
+This matters because the box becomes SAM 2's prompt in stage 2. If the resulting
+mask absorbs part of the truck, the bucket tip — defined as the farthest point of
+the machine's region from its rotation centre — could land on the truck. Every
+downstream measurement would then be wrong while still looking plausible.
+
+Note *when* it happens: while the arm is extended over the truck, which is the
+dumping phase. The most fragile boundary, again.
+
+Three existing safeguards should catch it, and stage 2 must verify them
+explicitly rather than assume them:
+
+1. mask area stability — a mask that swallows a truck jumps in area
+2. anchor-versus-mask agreement — the independent 1 Hz detection disagreeing with
+   the propagated mask
+3. the tip-jump filter — a tip teleporting onto a truck is not physically possible
+
+**Stage 2 acceptance now includes:** on these frames, the mask must cover the
+excavator and not the truck. If SAM 2 cannot separate them from a loose box, the
+fallback is to shrink the prompt box toward the machine's core before prompting,
+or to prompt with a point rather than a box.
