@@ -98,3 +98,72 @@ per video because the masks are cached.
 * No re-anchoring was exercised -- this was a single prompt propagated. The
   interaction between re-anchoring and merged frames is exactly what implication 1
   above is about.
+
+---
+
+## A per-frame fix: negative points from the truck's own box
+
+Evidence: [`../evidence/truck-negative-points-fix.jpg`](../evidence/truck-negative-points-fix.jpg)
+
+SAM 2 accepts *negative* points -- "not this" -- alongside a box. Since Grounding
+DINO already locates the truck, those negatives can be placed automatically.
+
+The wrinkle: on a merged frame the truck box **is** the merged box, so points drawn
+from it would land on the excavator. The resolution is that **the truck is parked**.
+Its box measured on frames where the two are cleanly separated stays valid on the
+frames where they are not.
+
+```
+DINO "excavator."  -> box                  -> SAM: the object is HERE
+DINO "dump truck." -> box (clean frames,   -> SAM: and NOT here  (6 negative points)
+                          median)
+```
+
+| frame | box only | box + 6 negatives |
+|---|---|---|
+| 10.3 s | 13.8% (both machines) | **7.3% — excavator only** |
+| 14.5 s | 13.0% (both machines) | **5.8% — excavator only** |
+| 35.9 s | 13.8% (both machines) | **7.1% — excavator only** |
+| 63.7 s | 13.6% (both machines) | **7.5% — excavator only** |
+
+Those match the ~7% that clean frames produce, and visual inspection confirms the
+mask covers the excavator including the bucket over the truck bed, with the truck
+excluded.
+
+The truck box was derived from 6 of 16 sampled frames where excavator/truck IoU
+was below 0.2, then taken as the median: `(235,134,377,211)`.
+
+### What was tried first and did not work
+
+Evidence: [`../evidence/prompt-combos-tested.jpg`](../evidence/prompt-combos-tested.jpg)
+
+| prompt | mask area on merged frames |
+|---|---|
+| box only | 13.8% (both machines) |
+| box + one negative point placed by motion | 14.3% (no improvement) |
+| a single positive point, no box | 20-43% (worse -- grabs everything) |
+
+A single negative point is too weak, and a bare point leaves the extent ambiguous.
+Several negatives spread through the excluded object is what does the work.
+
+### Why this matters more than the propagation result
+
+Propagation fixes merged frames only because **memory** carries the identity forward,
+which makes correctness depend on the seed being clean and on never re-anchoring.
+Negative points fix a merged frame **on its own terms**, with no history. So:
+
+1. A video that *opens* on a merged frame can still be seeded correctly.
+2. Re-anchoring stops being dangerous -- a re-prompt that always carries truck
+   negatives cannot poison the tracker's memory with the truck.
+3. The elaborate anchor-scheduling scheme is unnecessary. The rule becomes: include
+   truck negatives whenever prompting, and re-anchor on a fixed cadence if at all.
+
+### Limits
+
+* Assumes the truck is stationary for the stretch where its box is reused. If it
+  departs and another arrives elsewhere, the box must be refreshed from the nearest
+  clean frames rather than taken once globally.
+* If no truck is detected anywhere, no negatives are needed, and no merge can occur.
+* Six points, biased toward the lower part of the truck box where the arm rarely
+  reaches, was the first configuration tried and it worked; the count and placement
+  have not been swept.
