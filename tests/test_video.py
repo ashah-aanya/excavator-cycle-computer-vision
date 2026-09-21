@@ -73,9 +73,7 @@ def test_samples_are_spaced_in_time(clip_30fps: Path):
 
 
 def test_trimming(clip_30fps: Path):
-    samples = list(
-        iter_samples(clip_30fps, rate_hz=10.0, start_seconds=1.0, end_seconds=2.0)
-    )
+    samples = list(iter_samples(clip_30fps, rate_hz=10.0, start_seconds=1.0, end_seconds=2.0))
     assert samples, "expected samples inside the trim window"
     assert all(1.0 <= s.time_seconds <= 2.0 for s in samples)
 

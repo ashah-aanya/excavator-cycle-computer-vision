@@ -167,10 +167,10 @@ class FSMConfig:
     max_lookback_seconds: float = 2.0
 
     # Evidence strength multipliers, per transition. Named for what they gate.
-    alpha_contact_speed: float = 0.35   # T1: bucket decelerating into material
+    alpha_contact_speed: float = 0.35  # T1: bucket decelerating into material
     alpha_clearance_margin: float = 0.05  # T2: margin above surface, in units of L
-    alpha_uncurl_rate: float = 0.50     # T3: how fast the bucket must open
-    alpha_swing_rate: float = 0.40      # T4: how fast the machine must rotate back
+    alpha_uncurl_rate: float = 0.50  # T3: how fast the bucket must open
+    alpha_swing_rate: float = 0.40  # T4: how fast the machine must rotate back
 
     # Minimum phase duration. None means: derive it from this video's own measured
     # phase durations and use it to FLAG a suspicious phase, never to block a
@@ -199,12 +199,12 @@ class QAConfig:
     answer -- it records status and reasons.
     """
 
-    min_excavator_coverage: float = 0.97      # fraction of samples with a valid mask
-    max_detection_gap_seconds: float = 0.50   # longest run of missing masks
-    min_anchor_agreement: float = 0.70        # median IoU, fresh detection vs track
-    max_tip_jump_frac: float = 0.35           # tip jump per sample, in units of L
-    min_frame_iou: float = 0.80               # frame-to-frame mask overlap
-    min_cyclicity: float = 0.30               # strength of the dominant bearing period
+    min_excavator_coverage: float = 0.97  # fraction of samples with a valid mask
+    max_detection_gap_seconds: float = 0.50  # longest run of missing masks
+    min_anchor_agreement: float = 0.70  # median IoU, fresh detection vs track
+    max_tip_jump_frac: float = 0.35  # tip jump per sample, in units of L
+    min_frame_iou: float = 0.80  # frame-to-frame mask overlap
+    min_cyclicity: float = 0.30  # strength of the dominant bearing period
 
 
 @dataclass(frozen=True)
@@ -224,7 +224,7 @@ class Config:
         cls,
         path: str | Path | None = None,
         overrides: dict[str, Any] | None = None,
-    ) -> "Config":
+    ) -> Config:
         """Build a config from defaults, optionally layered with YAML and overrides.
 
         Later sources win: defaults < YAML file < explicit overrides.

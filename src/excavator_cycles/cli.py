@@ -13,7 +13,10 @@ from pathlib import Path
 
 from . import __version__
 from .config import Config
+from .logging_setup import configure_logging, get_logger
 from .video import probe
+
+log = get_logger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,6 +25,20 @@ def main(argv: list[str] | None = None) -> int:
         description="Measure excavator work-cycle phase durations from video.",
     )
     parser.add_argument("--version", action="version", version=__version__)
+    # Global flags live on the top-level parser so every stage inherits them.
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="increase log detail (repeatable)",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="also write a full DEBUG trail here; useful for cluster runs",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     probe_parser = subparsers.add_parser(
@@ -33,18 +50,19 @@ def main(argv: list[str] | None = None) -> int:
     probe_parser.add_argument(
         "--config", type=Path, default=None, help="YAML config overriding defaults"
     )
-    probe_parser.add_argument(
-        "--json", action="store_true", help="machine-readable output"
-    )
+    probe_parser.add_argument("--json", action="store_true", help="machine-readable output")
     probe_parser.set_defaults(func=_cmd_probe)
 
     args = parser.parse_args(argv)
+    configure_logging(args.verbose, args.log_file)
     return args.func(args)
 
 
 def _cmd_probe(args: argparse.Namespace) -> int:
     config = Config.load(args.config)
+    log.debug("config digest inputs: %s", sorted(config.to_dict()))
     info = probe(args.video)
+    log.info("probed %s (%.2f s, %.3f fps)", info.path.name, info.duration_seconds, info.fps)
 
     stride = info.stride_for(config.sampling.rate_hz)
     anchor_stride = info.stride_for(config.sampling.anchor_rate_hz)
