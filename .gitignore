@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Pipeline outputs and caches: regenerable, and large
+outputs/
+.cache/
+data/
+*.mp4
+!docs/**/*.mp4
+
+# Model weights
+*.pt
+*.pth
+
+# OS
+.DS_Store

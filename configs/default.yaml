@@ -1,0 +1,64 @@
+# Every tunable value in the pipeline.
+#
+# This file mirrors src/excavator_cycles/config.py. Anything omitted here keeps
+# the default from that file; anything set here overrides it. Pass with
+# `--config configs/default.yaml`.
+#
+# Three rules govern what may appear in this file:
+#   1. Times in SECONDS, never frames.
+#   2. Distances as fractions of the machine's reach, never pixels.
+#   3. Signal thresholds as multipliers of a per-video percentile, never levels.
+# A value that violates these would be tuned to one video, which the task bans.
+#
+# `null` means "derive this from the data" -- a deliberate absence, not an
+# unfilled blank.
+
+sampling:
+  rate_hz: 10.0            # features + state machine
+  anchor_rate_hz: 1.0      # detector re-anchoring
+  inference_max_edge: 1024 # longest side fed to the models; null = native
+
+detection:
+  excavator_prompts: ["excavator.", "digger."]
+  truck_prompts: ["dump truck.", "truck."]
+  model_id: "IDEA-Research/grounding-dino-base"
+  revision: null           # pin to a commit SHA once the spike confirms the model
+  box_threshold: 0.35
+  text_threshold: 0.25
+  alt_model_id: "google/owlv2-base-patch16-ensemble"
+
+geometry:
+  occupancy_quantile: 0.90   # what counts as the machine's persistent core
+  reach_percentile: 95.0     # defines L, the scale unit
+  bucket_radius_frac: 0.22   # bucket region size, in units of L
+  elbow_frac: 0.60           # where along the arm the forearm direction is taken
+  dwell_speed_quantile: 0.25 # "slow enough to count as lingering"
+  min_zone_separation: 0.40  # dig and dump must be this far apart, in units of L
+
+features:
+  smoothing_window_seconds: 0.5  # symmetric window; one-sided would bias boundaries
+  smoothing_polyorder: 2
+  threshold_percentile: 95.0     # the "typical magnitude" each alpha scales
+  min_sample_confidence: 0.35    # below this, a sample is MISSING, not negative
+
+fsm:
+  hold_seconds: 0.40             # same for all four transitions, so lag is common-mode
+  max_evidence_gap_seconds: 0.30
+  max_lookback_seconds: 2.0      # how far pass 2 searches back for the true onset
+  alpha_contact_speed: 0.35      # T1  swinging -> digging
+  alpha_clearance_margin: 0.05   # T2  digging  -> hauling
+  alpha_uncurl_rate: 0.50        # T3  hauling  -> dumping
+  alpha_swing_rate: 0.40         # T4  dumping  -> swinging
+  min_phase_seconds: null        # derived from this video; flags, never blocks
+
+cycles:
+  duration_band: [0.4, 2.5]      # relative to the median cycle in the same video
+  min_mean_confidence: 0.50
+
+qa:
+  min_excavator_coverage: 0.97
+  max_detection_gap_seconds: 0.50
+  min_anchor_agreement: 0.70
+  max_tip_jump_frac: 0.35
+  min_frame_iou: 0.80
+  min_cyclicity: 0.30
