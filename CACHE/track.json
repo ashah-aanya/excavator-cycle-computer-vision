@@ -1,0 +1,1085 @@
+{
+  "video": "../../shorttest.mp4",
+  "video_sha256": "6e0f526d10cca9b831d6384c286b9a1856f750684b6728138b45de9b09643dd8",
+  "config_digest": "267b27016d57d228",
+  "width": 480,
+  "height": 272,
+  "fps": 29.987873158397193,
+  "duration_seconds": 5.802345470814978,
+  "rate_hz": 10.0,
+  "seed": {
+    "sample_position": 20,
+    "frame_index": 60,
+    "time_seconds": 2.0,
+    "box": [
+      112.82037353515625,
+      53.9183235168457,
+      245.14605712890625,
+      210.96958923339844
+    ],
+    "negative_points": [
+      [
+        256.2608642578125,
+        176.14393615722656
+      ],
+      [
+        306.28955078125,
+        176.14393615722656
+      ],
+      [
+        356.3182067871094,
+        176.14393615722656
+      ],
+      [
+        256.2608642578125,
+        203.15811157226562
+      ],
+      [
+        306.28955078125,
+        203.15811157226562
+      ],
+      [
+        356.3182067871094,
+        203.15811157226562
+      ]
+    ],
+    "truck_box": [
+      234.82000732421875,
+      133.693115234375,
+      377.7590637207031,
+      210.87643432617188
+    ]
+  },
+  "frames": [
+    {
+      "frame_index": 0,
+      "time_seconds": 0.0,
+      "mask_area_fraction": 0.06646752450980392,
+      "sam_confidence": 0.9998255372047424,
+      "has_mask": true,
+      "detection_box": [
+        72.70928955078125,
+        84.6004409790039,
+        248.86273193359375,
+        211.7351837158203
+      ],
+      "detection_score": 0.5555304288864136,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": 0.02231324464082718,
+      "detection_mask_iou": 0.928189030270651
+    },
+    {
+      "frame_index": 3,
+      "time_seconds": 0.1,
+      "mask_area_fraction": 0.06695772058823529,
+      "sam_confidence": 0.9998227953910828,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 6,
+      "time_seconds": 0.2,
+      "mask_area_fraction": 0.07280177696078431,
+      "sam_confidence": 0.9998164772987366,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 9,
+      "time_seconds": 0.3,
+      "mask_area_fraction": 0.0731234681372549,
+      "sam_confidence": 0.999769389629364,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 12,
+      "time_seconds": 0.4,
+      "mask_area_fraction": 0.07342218137254902,
+      "sam_confidence": 0.999755322933197,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 15,
+      "time_seconds": 0.5,
+      "mask_area_fraction": 0.07392003676470588,
+      "sam_confidence": 0.999747097492218,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 18,
+      "time_seconds": 0.6,
+      "mask_area_fraction": 0.07431066176470588,
+      "sam_confidence": 0.9997149109840393,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 21,
+      "time_seconds": 0.7,
+      "mask_area_fraction": 0.0742953431372549,
+      "sam_confidence": 0.9996179342269897,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 24,
+      "time_seconds": 0.8,
+      "mask_area_fraction": 0.07477787990196079,
+      "sam_confidence": 0.9996217489242554,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 27,
+      "time_seconds": 0.9,
+      "mask_area_fraction": 0.0753140318627451,
+      "sam_confidence": 0.9996552467346191,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 30,
+      "time_seconds": 1.0,
+      "mask_area_fraction": 0.075390625,
+      "sam_confidence": 0.9996148347854614,
+      "has_mask": true,
+      "detection_box": [
+        93.63860321044922,
+        74.73446655273438,
+        247.2333526611328,
+        211.615966796875
+      ],
+      "detection_score": 0.6348093152046204,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": 0.027294106781482697,
+      "detection_mask_iou": 0.929924774479508
+    },
+    {
+      "frame_index": 33,
+      "time_seconds": 1.1,
+      "mask_area_fraction": 0.07723651960784314,
+      "sam_confidence": 0.9996210336685181,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 36,
+      "time_seconds": 1.2,
+      "mask_area_fraction": 0.07738970588235294,
+      "sam_confidence": 0.9995183944702148,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 39,
+      "time_seconds": 1.3,
+      "mask_area_fraction": 0.07644761029411765,
+      "sam_confidence": 0.9995793700218201,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 42,
+      "time_seconds": 1.4,
+      "mask_area_fraction": 0.07562806372549019,
+      "sam_confidence": 0.9995656609535217,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 45,
+      "time_seconds": 1.5,
+      "mask_area_fraction": 0.07420343137254902,
+      "sam_confidence": 0.9996258020401001,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 48,
+      "time_seconds": 1.6,
+      "mask_area_fraction": 0.06619178921568628,
+      "sam_confidence": 0.9995666146278381,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 51,
+      "time_seconds": 1.7,
+      "mask_area_fraction": 0.06845894607843138,
+      "sam_confidence": 0.999688982963562,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 54,
+      "time_seconds": 1.8,
+      "mask_area_fraction": 0.06537224264705882,
+      "sam_confidence": 0.9997332692146301,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 57,
+      "time_seconds": 1.9,
+      "mask_area_fraction": 0.06270680147058824,
+      "sam_confidence": 0.9997794032096863,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 60,
+      "time_seconds": 2.0,
+      "mask_area_fraction": 0.05864736519607843,
+      "sam_confidence": 1.0,
+      "has_mask": true,
+      "detection_box": [
+        112.82037353515625,
+        53.9183235168457,
+        245.14605712890625,
+        210.96958923339844
+      ],
+      "detection_score": 0.7284426093101501,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": 0.029063383117318153,
+      "detection_mask_iou": 0.9055469180921927
+    },
+    {
+      "frame_index": 63,
+      "time_seconds": 2.1,
+      "mask_area_fraction": 0.05764399509803922,
+      "sam_confidence": 0.9997935891151428,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 66,
+      "time_seconds": 2.2,
+      "mask_area_fraction": 0.05613511029411765,
+      "sam_confidence": 0.9998373985290527,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 69,
+      "time_seconds": 2.3,
+      "mask_area_fraction": 0.05019148284313726,
+      "sam_confidence": 0.9998078942298889,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 72,
+      "time_seconds": 2.4,
+      "mask_area_fraction": 0.04721200980392157,
+      "sam_confidence": 0.9997695088386536,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 75,
+      "time_seconds": 2.5,
+      "mask_area_fraction": 0.04529718137254902,
+      "sam_confidence": 0.9997299313545227,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 78,
+      "time_seconds": 2.6,
+      "mask_area_fraction": 0.04498314950980392,
+      "sam_confidence": 0.9997236132621765,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 81,
+      "time_seconds": 2.7,
+      "mask_area_fraction": 0.04803155637254902,
+      "sam_confidence": 0.9997707009315491,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 84,
+      "time_seconds": 2.8,
+      "mask_area_fraction": 0.04891237745098039,
+      "sam_confidence": 0.9997177720069885,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 87,
+      "time_seconds": 2.9,
+      "mask_area_fraction": 0.05081188725490196,
+      "sam_confidence": 0.9996910095214844,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 90,
+      "time_seconds": 3.0,
+      "mask_area_fraction": 0.0518765318627451,
+      "sam_confidence": 0.9997009038925171,
+      "has_mask": true,
+      "detection_box": [
+        133.36105346679688,
+        37.41058349609375,
+        241.2673797607422,
+        209.6259765625
+      ],
+      "detection_score": 0.4498257637023926,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": 0.02100392058491707,
+      "detection_mask_iou": 0.7148031350793232
+    },
+    {
+      "frame_index": 93,
+      "time_seconds": 3.1,
+      "mask_area_fraction": 0.05384497549019608,
+      "sam_confidence": 0.9995929598808289,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 96,
+      "time_seconds": 3.2,
+      "mask_area_fraction": 0.056931678921568626,
+      "sam_confidence": 0.9995543360710144,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 99,
+      "time_seconds": 3.3,
+      "mask_area_fraction": 0.06040134803921569,
+      "sam_confidence": 0.9996172189712524,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 102,
+      "time_seconds": 3.4,
+      "mask_area_fraction": 0.0625765931372549,
+      "sam_confidence": 0.9996734857559204,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 105,
+      "time_seconds": 3.5,
+      "mask_area_fraction": 0.07297794117647059,
+      "sam_confidence": 0.999728262424469,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 108,
+      "time_seconds": 3.6,
+      "mask_area_fraction": 0.07509957107843138,
+      "sam_confidence": 0.9998186230659485,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 111,
+      "time_seconds": 3.6999999999999997,
+      "mask_area_fraction": 0.07627144607843138,
+      "sam_confidence": 0.9998481273651123,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 114,
+      "time_seconds": 3.8,
+      "mask_area_fraction": 0.07800245098039216,
+      "sam_confidence": 0.9998806715011597,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 117,
+      "time_seconds": 3.9,
+      "mask_area_fraction": 0.0801547181372549,
+      "sam_confidence": 0.9998923540115356,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 120,
+      "time_seconds": 4.0,
+      "mask_area_fraction": 0.08079044117647059,
+      "sam_confidence": 0.9999101161956787,
+      "has_mask": true,
+      "detection_box": [
+        115.7966537475586,
+        32.6834831237793,
+        378.5937194824219,
+        211.87327575683594
+      ],
+      "detection_score": 0.4850143790245056,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": 0.9845839738845825,
+      "detection_mask_iou": 0.5611529184008104
+    },
+    {
+      "frame_index": 123,
+      "time_seconds": 4.1,
+      "mask_area_fraction": 0.08144914215686275,
+      "sam_confidence": 0.9999121427536011,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 126,
+      "time_seconds": 4.2,
+      "mask_area_fraction": 0.08108149509803922,
+      "sam_confidence": 0.9999176263809204,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 129,
+      "time_seconds": 4.3,
+      "mask_area_fraction": 0.08144148284313725,
+      "sam_confidence": 0.9999189376831055,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 132,
+      "time_seconds": 4.4,
+      "mask_area_fraction": 0.0810891544117647,
+      "sam_confidence": 0.9999325275421143,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 135,
+      "time_seconds": 4.5,
+      "mask_area_fraction": 0.08105851715686274,
+      "sam_confidence": 0.9999361038208008,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 138,
+      "time_seconds": 4.6,
+      "mask_area_fraction": 0.08019301470588236,
+      "sam_confidence": 0.9999383687973022,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 141,
+      "time_seconds": 4.7,
+      "mask_area_fraction": 0.07993259803921568,
+      "sam_confidence": 0.9999381303787231,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 144,
+      "time_seconds": 4.8,
+      "mask_area_fraction": 0.07956495098039215,
+      "sam_confidence": 0.9999350309371948,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 147,
+      "time_seconds": 4.9,
+      "mask_area_fraction": 0.07862285539215687,
+      "sam_confidence": 0.9999183416366577,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 150,
+      "time_seconds": 5.0,
+      "mask_area_fraction": 0.07739736519607843,
+      "sam_confidence": 0.999894380569458,
+      "has_mask": true,
+      "detection_box": [
+        112.44292449951172,
+        36.636966705322266,
+        379.29339599609375,
+        212.0640106201172
+      ],
+      "detection_score": 0.7983521819114685,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": 0.9756832122802734,
+      "detection_mask_iou": 0.6318786082262176
+    },
+    {
+      "frame_index": 153,
+      "time_seconds": 5.1,
+      "mask_area_fraction": 0.07607996323529412,
+      "sam_confidence": 0.9998956918716431,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 156,
+      "time_seconds": 5.2,
+      "mask_area_fraction": 0.07510723039215686,
+      "sam_confidence": 0.999895453453064,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 159,
+      "time_seconds": 5.3,
+      "mask_area_fraction": 0.07366727941176471,
+      "sam_confidence": 0.9999029636383057,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 162,
+      "time_seconds": 5.4,
+      "mask_area_fraction": 0.07331495098039216,
+      "sam_confidence": 0.9999111890792847,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 165,
+      "time_seconds": 5.5,
+      "mask_area_fraction": 0.07275582107843137,
+      "sam_confidence": 0.999920129776001,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 168,
+      "time_seconds": 5.6,
+      "mask_area_fraction": 0.07276348039215687,
+      "sam_confidence": 0.9999206066131592,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    },
+    {
+      "frame_index": 171,
+      "time_seconds": 5.7,
+      "mask_area_fraction": 0.07276348039215687,
+      "sam_confidence": 0.9999200105667114,
+      "has_mask": true,
+      "detection_box": null,
+      "detection_score": null,
+      "truck_box": [
+        234.82000732421875,
+        133.693115234375,
+        377.7590637207031,
+        210.87643432617188
+      ],
+      "detection_truck_iou": null,
+      "detection_mask_iou": null
+    }
+  ],
+  "qa": {
+    "status": "pass",
+    "failures": [],
+    "coverage": 1.0,
+    "mask_area": {
+      "median": 0.07354,
+      "min": 0.04498,
+      "max": 0.08145,
+      "samples_far_above_median": 0,
+      "samples_far_below_median": 0
+    },
+    "detection_agreement_median_iou": 0.9169,
+    "sam_confidence_median": 0.9998
+  }
+}

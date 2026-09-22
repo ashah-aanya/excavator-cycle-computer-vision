@@ -1,0 +1,122 @@
+{
+  "stage": "track",
+  "started_at": "2026-09-21T22:17:52-0500",
+  "status": "ok",
+  "duration_seconds": 34.274,
+  "error": null,
+  "git": {
+    "revision": "80c0ea5769e4a2894b383ba4a6fe48b99b1c9742",
+    "branch": "main",
+    "dirty": true
+  },
+  "environment": {
+    "python": "3.12.4",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "packages": {
+      "numpy": "2.5.3",
+      "opencv-python-headless": "5.0.0.93",
+      "scipy": "1.18.1",
+      "torch": "2.14.0",
+      "torchvision": "0.29.0",
+      "transformers": "5.17.0"
+    },
+    "device": "mps (Apple Silicon)"
+  },
+  "config_digest": "267b27016d57d228",
+  "config": {
+    "sampling": {
+      "rate_hz": 10.0,
+      "anchor_rate_hz": 1.0,
+      "inference_max_edge": 1024
+    },
+    "detection": {
+      "excavator_prompts": [
+        "excavator."
+      ],
+      "truck_prompts": [
+        "dump truck.",
+        "truck."
+      ],
+      "model_id": "IDEA-Research/grounding-dino-base",
+      "revision": null,
+      "box_threshold": 0.35,
+      "text_threshold": 0.25,
+      "alt_model_id": "google/owlv2-base-patch16-ensemble"
+    },
+    "spike": {
+      "n_frames": 20,
+      "min_detection_rate": 0.95,
+      "min_median_score": 0.4,
+      "max_box_area_fraction": 0.6,
+      "min_box_area_fraction": 0.005,
+      "max_centre_jump": 0.75
+    },
+    "track": {
+      "model_id": "facebook/sam2.1-hiera-tiny",
+      "max_clean_truck_iou": 0.3,
+      "negative_rows": 2,
+      "negative_columns": 3,
+      "negative_y_low": 0.55,
+      "negative_y_high": 0.9,
+      "negative_x_margin": 0.15,
+      "min_component_fraction": 0.05,
+      "max_area_ratio": 1.8,
+      "min_area_ratio": 0.4,
+      "max_bad_area_fraction": 0.1
+    },
+    "geometry": {
+      "occupancy_quantile": 0.9,
+      "reach_percentile": 95.0,
+      "bucket_radius_frac": 0.22,
+      "elbow_frac": 0.6,
+      "dwell_speed_quantile": 0.25,
+      "min_zone_separation": 0.4
+    },
+    "features": {
+      "smoothing_window_seconds": 0.5,
+      "smoothing_polyorder": 2,
+      "threshold_percentile": 95.0,
+      "min_sample_confidence": 0.35
+    },
+    "fsm": {
+      "hold_seconds": 0.4,
+      "max_evidence_gap_seconds": 0.3,
+      "max_lookback_seconds": 2.0,
+      "alpha_contact_speed": 0.35,
+      "alpha_clearance_margin": 0.05,
+      "alpha_uncurl_rate": 0.5,
+      "alpha_swing_rate": 0.4,
+      "min_phase_seconds": null
+    },
+    "cycles": {
+      "duration_band": [
+        0.4,
+        2.5
+      ],
+      "min_mean_confidence": 0.5
+    },
+    "qa": {
+      "min_excavator_coverage": 0.97,
+      "max_detection_gap_seconds": 0.5,
+      "min_anchor_agreement": 0.7,
+      "max_tip_jump_frac": 0.35,
+      "min_frame_iou": 0.8,
+      "min_cyclicity": 0.3
+    }
+  },
+  "inputs": {
+    "video": {
+      "path": "../../shorttest.mp4",
+      "sha256": "6e0f526d10cca9b831d6384c286b9a1856f750684b6728138b45de9b09643dd8",
+      "bytes": 284050
+    }
+  },
+  "outputs": [
+    "masks.npz",
+    "track.json"
+  ],
+  "metrics": {
+    "qa_status": "pass",
+    "masked_samples": 58
+  }
+}

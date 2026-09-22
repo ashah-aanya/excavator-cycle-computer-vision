@@ -128,6 +128,18 @@ def main(argv: list[str] | None = None) -> int:
     render_parser.add_argument("--no-boxes", action="store_true", help="mask only")
     render_parser.set_defaults(func=_cmd_render)
 
+    features_parser = subparsers.add_parser(
+        "features",
+        help="Stage 3: derive the scene (pivot, scale, zones, surface) and the "
+        "per-sample signals from cached masks. No models, no GPU.",
+    )
+    features_parser.add_argument("track_dir", type=Path, help="a directory from `track`")
+    features_parser.add_argument("--config", type=Path, default=None)
+    features_parser.add_argument(
+        "--no-plots", action="store_true", help="skip the diagnostic figures"
+    )
+    features_parser.set_defaults(func=_cmd_features)
+
     args = parser.parse_args(argv)
     configure_logging(args.verbose, args.log_file)
     return args.func(args)
@@ -285,4 +297,54 @@ def _cmd_render(args: argparse.Namespace) -> int:
     )
     print(f"\n  wrote {stats.output_path}")
     print(f"  {stats.frames_written} frames, {stats.frames_with_mask} carrying a mask")
+    return 0
+
+
+def _cmd_features(args: argparse.Namespace) -> int:
+    """Derive the scene and the signals, and plot them for inspection."""
+    import cv2
+
+    from .features import build_features, save
+    from .track import load_result
+
+    config = Config.load(args.config)
+    result, masks = load_result(args.track_dir)
+    table, scene = build_features(result, masks, config)
+    save(table, scene, args.track_dir)
+
+    if not args.no_plots:
+        from .plots import plot_scene, plot_signals
+        from .video import read_frames_at
+
+        plot_signals(table, scene, args.track_dir / "signals.png")
+        mid = read_frames_at(result.video, [result.duration_seconds / 2])
+        if mid:
+            plot_scene(mid[0].image, table, scene, args.track_dir / "scene.png")
+        else:
+            log.warning("could not read a frame for the scene plot")
+        del cv2  # imported only to fail early if OpenCV is missing
+
+    print()
+    print(f"  samples        : {len(table)}  ({int(table.valid.sum())} valid)")
+    print(f"  rotation centre: ({scene.centre[0]:.0f}, {scene.centre[1]:.0f}) px")
+    print(f"  arm reach L    : {scene.scale:.0f} px")
+    if scene.dig_zone and scene.dump_zone:
+        print(f"  dig zone       : ({scene.dig_zone[0]:.0f}, {scene.dig_zone[1]:.0f})")
+        print(f"  dump zone      : ({scene.dump_zone[0]:.0f}, {scene.dump_zone[1]:.0f})")
+        print(f"  separation     : {scene.zone_separation:.2f} L")
+    else:
+        print("  zones          : NOT RESOLVED")
+    surface = scene.surface_height
+    print(
+        f"  surface height : {surface:.3f} L"
+        if surface is not None
+        else "  surface height : NOT RESOLVED"
+    )
+    print(f"  return swing   : {'left' if scene.return_sign > 0 else 'right'}")
+    print()
+    print(f"  wrote features.npz, features.csv, scene.json to {args.track_dir}")
+    if not args.no_plots:
+        print(f"  LOOK AT: {args.track_dir}/scene.png and {args.track_dir}/signals.png")
+        print("  The gate for this stage is visual: the landmarks must land where")
+        print("  you would put them, and the four boundaries must be visible.")
     return 0

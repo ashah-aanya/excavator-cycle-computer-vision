@@ -12,7 +12,8 @@ dependencies = [
     "numpy>=1.26",
     "opencv-python-headless>=4.10",  # headless: no GUI windows, we write files
     "pyyaml>=6.0",
-    "scipy>=1.11",                   # zero-phase filtering, signal processing
+    "scipy>=1.11",                   # zero-phase filtering, clustering
+    "matplotlib>=3.8",               # diagnostic plots; this stage's gate is visual
 ]
 
 [project.optional-dependencies]

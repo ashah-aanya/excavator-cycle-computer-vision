@@ -197,6 +197,11 @@ class GeometryConfig:
     # arm from the rotation centre, as a fraction of the distance to the tip.
     elbow_frac: float = 0.60
 
+    # Below this ratio of long side to short side, the bucket region is too
+    # round for its axis to mean anything -- a couple of pixels flipping swings
+    # it by 90 degrees -- so the curl measurement is rejected for that sample.
+    min_bucket_elongation: float = 1.35
+
     # Samples slower than this quantile of speed count as "dwelling", and are
     # what the dig/dump location clustering is run on.
     dwell_speed_quantile: float = 0.25
