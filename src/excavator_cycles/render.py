@@ -17,6 +17,7 @@ intermediate shapes would draw something the pipeline never computed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 import cv2
@@ -39,6 +40,15 @@ _TEXT = (255, 255, 255)
 _PANEL = (28, 28, 28)
 _WARN = (60, 80, 240)
 _MASK_ALPHA = 0.45
+# The physics overlay: what the geometry stage actually measures.
+_PIVOT = (80, 220, 250)
+_TIP = (60, 60, 250)
+_BUCKET_BAND = (90, 90, 250)
+_FOREARM_BAND = (250, 200, 90)
+_SURFACE = (60, 140, 255)
+_DIG = (90, 230, 120)
+_DUMP = (250, 180, 80)
+_TRACE = (220, 220, 220)
 
 
 @dataclass
@@ -53,6 +63,7 @@ def render(
     out_path: str | Path | None = None,
     scale: float = 1.0,
     draw_boxes: bool = True,
+    physics: bool = True,
 ) -> RenderStats:
     """Write an annotated copy of the source video.
 
@@ -67,21 +78,41 @@ def render(
     result, masks = load_result(output_dir)
     out_path = Path(out_path) if out_path else output_dir / "annotated.mp4"
 
+    # The physics overlay needs stage 3's output. Absent, the video still renders
+    # with masks and boxes -- the stages stay independent.
+    table = scene = strip = None
+    if physics:
+        try:
+            from .features import load as load_features
+
+            table, scene_dict = load_features(output_dir)
+            scene = scene_dict
+            strip = _signal_strip(table, scene)
+            log.info("physics overlay enabled")
+        except (FileNotFoundError, KeyError) as exc:
+            log.warning("no feature data (%s); rendering masks only", exc)
+
     info = probe(result.video, verify=True)
     width = round(result.width * scale)
     height = round(result.height * scale)
-    panel_height = max(46, round(height * 0.16))
+    panel_height = max(58, round(height * 0.22))
 
     # Sampled frames are sparse in source-frame terms; this maps every source
     # frame to the most recent sample, so overlays persist between samples.
     by_frame = {record.frame_index: index for index, record in enumerate(result.frames)}
     ordered = sorted(by_frame)
 
+    # The writer accepts exactly one frame size and silently DROPS anything
+    # else, so the total height has to account for every panel we stack --
+    # including the signal strip, whose presence depends on stage 3 having run.
+    strip_height = strip.shape[0] if strip is not None else 0
+    canvas_height = height + panel_height + strip_height
+
     writer = cv2.VideoWriter(
         str(out_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
         info.fps,
-        (width, height + panel_height),
+        (width, canvas_height),
     )
     if not writer.isOpened():
         raise RuntimeError(f"could not open video writer for {out_path}")
@@ -107,12 +138,31 @@ def render(
             mask = masks.get(sample_position) if sample_position is not None else None
 
             canvas = _draw_frame(frame, mask, record, result, scale, draw_boxes)
-            canvas = np.vstack(
-                [
-                    canvas,
-                    _draw_panel(record, result, width, panel_height, frame_index, info.fps),
-                ]
-            )
+            if table is not None and sample_position is not None:
+                canvas = _draw_physics(canvas, mask, table, scene, sample_position, scale)
+            panels = [
+                canvas,
+                _draw_panel(
+                    record,
+                    result,
+                    width,
+                    panel_height,
+                    frame_index,
+                    info.fps,
+                    table,
+                    sample_position,
+                ),
+            ]
+            if strip is not None:
+                panels.append(_blit_strip(strip, table, sample_position, width))
+            canvas = np.vstack(panels)
+            if canvas.shape[:2] != (canvas_height, width):
+                # Without this the writer drops the frame and returns nothing,
+                # and the run reports success while producing an empty file.
+                raise RuntimeError(
+                    f"frame is {canvas.shape[1]}x{canvas.shape[0]}, "
+                    f"writer expects {width}x{canvas_height}"
+                )
             writer.write(canvas)
             written += 1
             with_mask += mask is not None
@@ -121,6 +171,12 @@ def render(
         capture.release()
         writer.release()
 
+    size = out_path.stat().st_size if out_path.exists() else 0
+    if size < 10_000:
+        raise RuntimeError(
+            f"{out_path} is {size} bytes after writing {written} frames; "
+            "the encoder rejected them"
+        )
     log.info("wrote %s (%d frames, %d with a mask)", out_path, written, with_mask)
     return RenderStats(
         frames_written=written, frames_with_mask=with_mask, output_path=out_path
@@ -171,8 +227,161 @@ def _draw_frame(frame, mask, record, result: TrackResult, scale: float, draw_box
     return canvas
 
 
+def _draw_physics(canvas, mask, table, scene, position: int, scale: float):
+    """Draw what the geometry stage measures, on top of the frame.
+
+    The point is that the derived quantities are checkable: the pivot should sit
+    on the machine's body, the arm line should follow the boom, the outer band
+    should cover the bucket and the inner one the stick, and the surface line
+    should lie on the material.
+    """
+    import numpy as np
+
+    from .geometry import radial_band
+
+    centre = (scene["centre"][0] * scale, scene["centre"][1] * scale)
+    reach = scene["scale"] * scale
+
+    if mask is not None:
+        # Tint the two bands the curl is measured from, so the reader can see
+        # exactly which pixels produced the angle.
+        for band, colour in (
+            ((scene_band_low(scene), 1.0), _BUCKET_BAND),
+            ((scene_forearm_low(scene), scene_band_low(scene)), _FOREARM_BAND),
+        ):
+            region = radial_band(mask, tuple(scene["centre"]), *band)
+            if not region.any():
+                continue
+            big = cv2.resize(
+                region.astype(np.uint8),
+                (canvas.shape[1], canvas.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+            canvas[big] = (0.5 * np.array(colour) + 0.5 * canvas[big]).astype(np.uint8)
+
+    # Pivot, scale circle, and the arm line out to the measured bucket point.
+    cv2.circle(canvas, (int(centre[0]), int(centre[1])), int(reach), _PIVOT, 1, cv2.LINE_AA)
+    cv2.drawMarker(
+        canvas, (int(centre[0]), int(centre[1])), _PIVOT, cv2.MARKER_CROSS, int(14 * scale), 2
+    )
+
+    bearing = float(table.bearing[position])
+    extension = float(table.extension[position]) * reach
+    tip = (
+        int(centre[0] + np.cos(bearing) * extension),
+        int(centre[1] - np.sin(bearing) * extension),
+    )
+    cv2.line(canvas, (int(centre[0]), int(centre[1])), tip, _TRACE, 1, cv2.LINE_AA)
+    cv2.drawMarker(canvas, tip, _TIP, cv2.MARKER_TILTED_CROSS, int(12 * scale), 2)
+
+    # The material surface: the level that defines two of the four boundaries.
+    if scene.get("surface_height") is not None:
+        y = int(centre[1] - scene["surface_height"] * reach)
+        cv2.line(canvas, (0, y), (canvas.shape[1], y), _SURFACE, 1, cv2.LINE_AA)
+        cv2.putText(
+            canvas,
+            "material surface",
+            (6, y - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.32 * scale,
+            _SURFACE,
+            1,
+            cv2.LINE_AA,
+        )
+
+    for key, colour, label in (("dig_zone", _DIG, "dig"), ("dump_zone", _DUMP, "dump")):
+        zone = scene.get(key)
+        if zone:
+            point = (int(zone[0] * scale), int(zone[1] * scale))
+            cv2.circle(canvas, point, int(6 * scale), colour, 2, cv2.LINE_AA)
+            cv2.putText(
+                canvas,
+                label,
+                (point[0] + 8, point[1]),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.32 * scale,
+                colour,
+                1,
+                cv2.LINE_AA,
+            )
+    return canvas
+
+
+def scene_band_low(scene) -> float:
+    return float(scene.get("bucket_band_low", 0.85))
+
+
+def scene_forearm_low(scene) -> float:
+    return float(scene.get("forearm_band_low", 0.55))
+
+
+def _signal_strip(table, scene, height: int = 96):
+    """Pre-render the whole video's signals once; the renderer blits a window."""
+    import numpy as np
+
+    n = len(table.time_seconds)
+    strip = np.full((height, n, 3), 22, dtype=np.uint8)
+    rows = [
+        (
+            "elevation",
+            np.asarray(table.elevation, float),
+            _SURFACE,
+            None if scene.get("surface_height") is None else float(scene["surface_height"]),
+        ),
+        ("curl", np.asarray(table.curl, float), _BUCKET_BAND, None),
+        ("slew", np.asarray(table.slew_rate, float), _DIG, 0.0),
+    ]
+    band = height // len(rows)
+    for index, (name, values, colour, reference) in enumerate(rows):
+        top = index * band
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            continue
+        lo, hi = float(finite.min()), float(finite.max())
+        span = (hi - lo) or 1.0
+
+        def to_y(v, top=top, lo=lo, span=span, band=band):
+            return int(top + band - 4 - (v - lo) / span * (band - 8))
+
+        if reference is not None and lo <= reference <= hi:
+            y = to_y(reference)
+            cv2.line(strip, (0, y), (n, y), (70, 70, 70), 1)
+        points = [(x, to_y(v)) for x, v in enumerate(values) if np.isfinite(v)]
+        for (x0, y0), (x1, y1) in pairwise(points):
+            if x1 - x0 <= 2:
+                cv2.line(strip, (x0, y0), (x1, y1), colour, 1, cv2.LINE_AA)
+        cv2.putText(
+            strip,
+            name,
+            (3, top + 11),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.32,
+            (200, 200, 200),
+            1,
+            cv2.LINE_AA,
+        )
+    return strip
+
+
+def _blit_strip(strip, table, position: int | None, width: int):
+    """The signal strip scaled to the frame width, with a playhead."""
+
+    out = cv2.resize(strip, (width, strip.shape[0]), interpolation=cv2.INTER_AREA)
+    if position is not None and len(table.time_seconds) > 1:
+        x = int(position / (len(table.time_seconds) - 1) * (width - 1))
+        cv2.line(out, (x, 0), (x, out.shape[0]), (255, 255, 255), 1)
+    return out
+
+
 def _draw_panel(
-    record, result: TrackResult, width: int, height: int, frame_index: int, fps: float
+    record,
+    result: TrackResult,
+    width: int,
+    height: int,
+    frame_index: int,
+    fps: float,
+    table=None,
+    position: int | None = None,
 ):
     """A readout strip: time, and the numbers QA judges the masks by."""
     panel = np.full((height, width, 3), _PANEL, dtype=np.uint8)
@@ -212,6 +421,23 @@ def _draw_panel(
         1,
         cv2.LINE_AA,
     )
+
+    if table is not None and position is not None:
+        physics = (
+            f"elev {float(table.elevation[position]):+.3f} L   "
+            f"curl {float(table.curl[position]):+.2f} rad   "
+            f"slew {float(table.slew_rate[position]):+.2f} rad/s"
+        )
+        cv2.putText(
+            panel,
+            physics,
+            (8, line + int(height * 0.76)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale * 0.85,
+            (190, 210, 230),
+            1,
+            cv2.LINE_AA,
+        )
 
     seed_text = f"seed t={result.seed['time_seconds']:.1f}s"
     (seed_width, _), _ = cv2.getTextSize(seed_text, cv2.FONT_HERSHEY_SIMPLEX, scale * 0.9, 1)
