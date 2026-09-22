@@ -33,9 +33,9 @@ from .geometry import (
     Scene,
     arm_reach,
     bucket_axis,
-    bucket_region,
     dwell_clusters,
     farthest_point,
+    radial_band,
     relative_angle,
     return_direction,
     rotation_centre,
@@ -105,19 +105,20 @@ def build_features(
     area = np.full(len(positions), np.nan)
     elongation = np.full(len(positions), np.nan)
 
-    bucket_radius = config.geometry.bucket_radius_frac * scale
-    # A second, wider region centred further back gives the forearm's direction.
-    # The curl is measured against it: the absolute bucket axis swings through a
-    # whole revolution as the arm slews, burying the small rotation that signals
+    # Two bands along the arm, as fractions of its current reach. The outer one
+    # is the bucket; the inner one is the stick, which gives the reference the
+    # curl is measured against -- the absolute bucket axis swings through a whole
+    # revolution as the arm slews, burying the small rotation that signals
     # dumping.
-    forearm_radius = config.geometry.elbow_frac * scale
+    bucket_band = (config.geometry.bucket_band_low, 1.0)
+    forearm_band = (config.geometry.forearm_band_low, config.geometry.bucket_band_low)
 
     for index, (mask, tip) in enumerate(zip(mask_list, tips, strict=True)):
         area[index] = mask.sum() / (scale**2)
         if tip is None:
             continue
 
-        region = bucket_region(mask, tip, bucket_radius)
+        region = radial_band(mask, centre, *bucket_band)
         if not region.any():
             continue
         # The LOWEST pixel of the bucket, because the task defines hauling as
@@ -125,7 +126,7 @@ def build_features(
         elevation[index] = (centre[1] - np.nonzero(region)[0].max()) / scale
 
         bucket = bucket_axis(region)
-        forearm = bucket_axis(bucket_region(mask, tip, forearm_radius))
+        forearm = bucket_axis(radial_band(mask, centre, *forearm_band))
         if bucket is None or forearm is None:
             continue
         axis, ratio = bucket
@@ -235,7 +236,7 @@ def falling_material(
         )
         return np.full(len(tips), np.nan)
 
-    box = config.geometry.bucket_radius_frac * scale
+    box = config.geometry.bucket_radius_frac * scale  # flow patch size
     signal = np.full(len(tips), np.nan)
     for index in range(1, len(frames)):
         tip = tips[index]

@@ -51,7 +51,9 @@ track:
 geometry:
   occupancy_quantile: 0.90   # what counts as the machine's persistent core
   reach_percentile: 95.0     # defines L, the scale unit
-  bucket_radius_frac: 0.22   # bucket region size, in units of L
+  bucket_band_low: 0.85      # bucket = outer 15% of the arm's radial extent
+  forearm_band_low: 0.55     # stick = the band inside it, gives the reference axis
+  bucket_radius_frac: 0.22   # optical-flow patch size, in units of L
   elbow_frac: 0.60           # where along the arm the forearm direction is taken
   min_bucket_elongation: 1.35  # below this the bucket axis is meaningless
   dwell_speed_quantile: 0.25 # "slow enough to count as lingering"

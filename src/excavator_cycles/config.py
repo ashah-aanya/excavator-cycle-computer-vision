@@ -189,8 +189,14 @@ class GeometryConfig:
     # A percentile rather than the max, so one bad frame cannot set the scale.
     reach_percentile: float = 95.0
 
-    # The bucket region is the part of the mask within this fraction of `L` of
-    # the arm tip. Roughly the ratio of bucket length to total reach.
+    # The bucket region is the outermost part of the arm, as a fraction of the
+    # machine's CURRENT radial reach -- not a disk around the tip. A circular
+    # crop makes any region circular: measured that way the bucket's elongation
+    # is 1.25 (apparently shapeless), measured as a radial band it is 2.13.
+    bucket_band_low: float = 0.85
+    forearm_band_low: float = 0.55
+
+    # Size of the optical-flow patch below the bucket, in units of L.
     bucket_radius_frac: float = 0.22
 
     # The "elbow" used to define the forearm direction sits this far along the

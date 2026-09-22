@@ -106,11 +106,30 @@ def arm_reach(
     return float(np.percentile(distances, percentile))
 
 
-def bucket_region(mask: np.ndarray, tip: tuple[float, float], radius: float) -> np.ndarray:
-    """The part of the machine near the far end -- the bucket and a little stick."""
-    ys, xs = np.mgrid[0 : mask.shape[0], 0 : mask.shape[1]]
-    near = (xs - tip[0]) ** 2 + (ys - tip[1]) ** 2 <= radius**2
-    return mask & near
+def radial_band(
+    mask: np.ndarray, centre: tuple[float, float], low: float, high: float
+) -> np.ndarray:
+    """Mask pixels whose distance from the pivot lies in a band of its extent.
+
+    ``low`` and ``high`` are fractions of the machine's *current* radial reach,
+    so the band follows the arm as it extends and retracts.
+
+    Why not a disk around the tip, which is the obvious thing and what this
+    module did first: intersecting a mask with a circle makes the result
+    circular. The bucket region then measures elongation 1.25 -- indistinguishable
+    from a blob -- and its axis looks ill-posed when it is not. Measured against
+    a radial band the same bucket comes out at 2.13, which is a well-determined
+    axis. The crop was imposing its own shape on the measurement.
+    """
+    ys, xs = np.nonzero(mask)
+    if xs.size == 0:
+        return np.zeros_like(mask)
+    distance = np.hypot(xs - centre[0], ys - centre[1])
+    extent = distance.max()
+    keep = (distance >= low * extent) & (distance <= high * extent)
+    out = np.zeros_like(mask)
+    out[ys[keep], xs[keep]] = True
+    return out
 
 
 def bucket_axis(region: np.ndarray) -> tuple[float, float] | None:
