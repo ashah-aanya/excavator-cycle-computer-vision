@@ -290,8 +290,15 @@ def track(
         )
 
         frames_rgb = [cv2.cvtColor(s.image, cv2.COLOR_BGR2RGB) for s in samples]
+        # Frames stay on the CPU; only the model's working tensors go to the
+        # accelerator. Pushing the whole decoded video onto the device costs
+        # memory the machine may not have, and a swapping run is indistinguishable
+        # from a hung one until you check CPU time.
         session = processor.init_video_session(
-            video=frames_rgb, inference_device=resolved_device, dtype=torch.float32
+            video=frames_rgb,
+            inference_device=resolved_device,
+            video_storage_device="cpu",
+            dtype=torch.float32,
         )
 
         prompt: dict[str, Any] = {"input_boxes": [[seed_box.tolist()]]}
@@ -306,14 +313,28 @@ def track(
         masks: dict[int, np.ndarray] = {}
         confidences: dict[int, float] = {}
 
+        progress_every = max(1, len(samples) // 10)
+
         def store(output) -> None:
             processed = processor.post_process_masks(
                 [output.pred_masks], [[height, width]], binarize=True
             )[0]
-            masks[output.frame_idx] = processed[0, 0].cpu().numpy() > 0
-            scores = getattr(output, "iou_scores", None)
+            mask = processed[0, 0].cpu().numpy() > 0
+            masks[output.frame_idx] = drop_small_components(
+                mask, config.track.min_component_fraction
+            )
+            if len(masks) % progress_every == 0:
+                log.info("  %d/%d masks", len(masks), len(samples))
+            # The video model reports `object_score_logits` -- how confident it is
+            # that the tracked object is present at all -- rather than the image
+            # model's mask-quality score. That is the more useful signal here:
+            # it drops when the machine is occluded, which is exactly when a
+            # sample should count as MISSING rather than as evidence.
+            logits = getattr(output, "object_score_logits", None)
             confidences[output.frame_idx] = (
-                float(scores.flatten()[0]) if scores is not None else float("nan")
+                float(torch.sigmoid(logits.flatten()[0]))
+                if logits is not None
+                else float("nan")
             )
 
         with torch.inference_mode():
@@ -363,6 +384,32 @@ def track(
 
     log.info("tracking complete: %d masks, QA %s", len(masks), qa["status"])
     return result
+
+
+def drop_small_components(mask: np.ndarray, min_fraction: float) -> np.ndarray:
+    """Remove stray specks, keeping any component of a meaningful size.
+
+    SAM sometimes leaves a few dozen pixels on the soil or in a shadow. Those
+    pixels are harmless to the area statistics and fatal to the geometry: the
+    bucket tip is defined as the point of the mask farthest from the machine's
+    centre, so one speck on the far side of the frame relocates the bucket.
+
+    Small components are dropped rather than keeping only the largest, because
+    an occlusion can legitimately split the arm from the body.
+    """
+    if not mask.any() or min_fraction <= 0:
+        return mask
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), connectivity=8
+    )
+    if count <= 2:  # background plus at most one component
+        return mask
+    total = float(mask.sum())
+    keep = np.zeros_like(mask)
+    for index in range(1, count):
+        if stats[index, cv2.CC_STAT_AREA] / total >= min_fraction:
+            keep |= labels == index
+    return keep if keep.any() else mask
 
 
 def _build_records(samples, masks, confidences, detections, truck_box, height, width):

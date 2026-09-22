@@ -155,6 +155,14 @@ class TrackConfig:
     negative_y_high: float = 0.90
     negative_x_margin: float = 0.15
 
+    # Connected components smaller than this fraction of the mask are dropped.
+    # SAM occasionally leaves a speck on the soil or a shadow; a few dozen stray
+    # pixels would move the "farthest point from the rotation centre" -- the
+    # bucket tip -- somewhere the machine is not. Kept as a fraction rather than
+    # a pixel count so it holds at any resolution. Not 0, because the arm can be
+    # legitimately split by an occlusion.
+    min_component_fraction: float = 0.05
+
     # Mask-area sanity, relative to this video's own median. A mask that doubles
     # has probably absorbed another object; one that collapses has lost the
     # machine. Neither needs an absolute size.

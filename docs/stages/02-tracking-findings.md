@@ -167,3 +167,63 @@ Negative points fix a merged frame **on its own terms**, with no history. So:
 * Six points, biased toward the lower part of the truck box where the arm rarely
   reaches, was the first configuration tried and it worked; the count and placement
   have not been swept.
+
+---
+
+## Stage 2 in code: results on the real video
+
+Evidence: [`../evidence/annotated-video-frames.jpg`](../evidence/annotated-video-frames.jpg)
+
+```
+uv run run.py track VIDEO --device mps --out CACHE/     # models, once
+uv run run.py render CACHE/ --scale 2                   # no models, seconds
+```
+
+| | |
+|---|---|
+| Samples | 296 at 10 Hz |
+| Seed | t = 29.0 s, chosen as the highest-confidence unmerged frame |
+| Truck box | `[235,134,377,211]` from 15 separated frames |
+| Coverage | **100%** |
+| Mask area | median **7.16%**, range 4.17-7.84% |
+| SAM confidence | median **0.9997** |
+| Agreement with independent detections | **0.911** median IoU |
+| Runtime | ~4 min on MPS (detection ~50 s, propagation ~3 min) |
+| Cache | 243 KB of masks + 132 KB of per-frame records |
+
+The mask never doubles, so the truck is never absorbed anywhere in the video --
+the merged-box problem is closed by the negative points plus propagation.
+
+### Three bugs the run exposed, none of which QA would have caught
+
+**1. The container lies about its length.** The header claims 1102 frames; 886
+decode. Duration overstated by 20%. Phase durations were already safe because
+they use real per-frame timestamps rather than `index / fps`, but anything
+derived from duration would have inherited the error silently. `probe()` now
+counts frames by demuxing when asked, and warns on a mismatch.
+
+**2. Confidence was silently NaN.** The video model reports
+`object_score_logits`, not the image model's `iou_scores`, so the code read a
+field that does not exist. Read correctly it is the better signal: SAM's estimate
+that the tracked object is *present*, which drops during occlusion -- exactly
+when a sample should count as MISSING rather than as evidence against a
+transition.
+
+**3. Stray mask specks.** A few dozen pixels on the soil, far from the machine.
+Harmless to area statistics and fatal to geometry: the bucket tip is the point
+of the mask farthest from the rotation centre, so one speck relocates the bucket
+across the frame. Components below 5% of the mask are now dropped -- small
+components rather than "keep the largest", because an occlusion can legitimately
+split the arm from the body.
+Before and after: [`../evidence/mask-cleanup-before-after.jpg`](../evidence/mask-cleanup-before-after.jpg).
+
+All three were visible in the annotated video and invisible in the metrics. That
+is the argument for building the renderer early rather than last.
+
+### An environmental failure worth recording
+
+The same command took 3 minutes on one run and stalled for two hours on the next.
+Cause: the machine was 12 GB into swap, and the session was pushing all 296
+decoded frames onto the accelerator. Frames now stay on the CPU, and propagation
+logs progress every 10% so a stalled run is distinguishable from a slow one --
+previously both looked like silence.

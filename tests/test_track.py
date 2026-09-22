@@ -222,3 +222,46 @@ def test_quality_tolerates_a_few_odd_frames():
     """Occupancy dips when the bucket is buried; that is physics, not failure."""
     qa = evaluate_quality(records([0.07] * 95 + [0.02] * 5), Config.load())
     assert qa["status"] == "pass"
+
+
+# --- mask cleanup -----------------------------------------------------------
+
+
+def test_specks_are_dropped():
+    """A stray blob far from the machine would relocate the derived bucket tip."""
+    from excavator_cycles.track import drop_small_components
+
+    mask = np.zeros((100, 100), bool)
+    mask[40:60, 40:60] = True  # the machine: 400 px
+    mask[5, 95] = True  # a speck: 1 px, far away
+
+    cleaned = drop_small_components(mask, 0.05)
+    assert cleaned[50, 50], "the machine must survive"
+    assert not cleaned[5, 95], "the speck must not"
+
+
+def test_meaningful_components_are_kept():
+    """An occlusion can split the arm from the body; both parts are real."""
+    from excavator_cycles.track import drop_small_components
+
+    mask = np.zeros((100, 100), bool)
+    mask[40:60, 10:30] = True  # body
+    mask[40:60, 60:80] = True  # arm, separated by an occluder
+
+    cleaned = drop_small_components(mask, 0.05)
+    assert cleaned[50, 20] and cleaned[50, 70]
+
+
+def test_cleanup_never_returns_an_empty_mask():
+    """Better a suspicious mask than none: QA can flag it, nothing can use empty."""
+    from excavator_cycles.track import drop_small_components
+
+    mask = np.zeros((50, 50), bool)
+    mask[10, 10] = True
+    assert drop_small_components(mask, 0.99).any()
+
+
+def test_cleanup_handles_an_empty_mask():
+    from excavator_cycles.track import drop_small_components
+
+    assert not drop_small_components(np.zeros((20, 20), bool), 0.05).any()

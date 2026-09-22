@@ -43,6 +43,7 @@ track:
   negative_y_low: 0.55        # low in the box: the bucket empties into the bed,
   negative_y_high: 0.90       #   so the upper region is where the bucket goes
   negative_x_margin: 0.15
+  min_component_fraction: 0.05  # drop mask specks below this share of the mask
   max_area_ratio: 1.8         # mask this far above the video's median = absorbed something
   min_area_ratio: 0.4         # this far below = lost the machine
   max_bad_area_fraction: 0.10
