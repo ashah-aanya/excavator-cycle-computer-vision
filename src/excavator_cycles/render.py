@@ -230,49 +230,52 @@ def _draw_frame(frame, mask, record, result: TrackResult, scale: float, draw_box
 def _draw_physics(canvas, mask, table, scene, position: int, scale: float):
     """Draw what the geometry stage measures, on top of the frame.
 
-    The point is that the derived quantities are checkable: the pivot should sit
-    on the machine's body, the arm line should follow the boom, the outer band
-    should cover the bucket and the inner one the stick, and the surface line
-    should lie on the material.
+    The point is that the derived quantities are checkable by eye: the chain's
+    links should lie along the boom, the stick and the bucket, the base should
+    sit where the boom is anchored, and the surface line should lie on the
+    material. If the drawing looks wrong, the numbers are wrong.
     """
     import numpy as np
-
-    from .geometry import radial_band
 
     centre = (scene["centre"][0] * scale, scene["centre"][1] * scale)
     reach = scene["scale"] * scale
 
-    if mask is not None:
-        # Tint the two bands the curl is measured from, so the reader can see
-        # exactly which pixels produced the angle.
-        for band, colour in (
-            ((scene_band_low(scene), 1.0), _BUCKET_BAND),
-            ((scene_forearm_low(scene), scene_band_low(scene)), _FOREARM_BAND),
-        ):
-            region = radial_band(mask, tuple(scene["centre"]), *band)
-            if not region.any():
-                continue
-            big = cv2.resize(
-                region.astype(np.uint8),
-                (canvas.shape[1], canvas.shape[0]),
-                interpolation=cv2.INTER_NEAREST,
-            ).astype(bool)
-            canvas[big] = (0.5 * np.array(colour) + 0.5 * canvas[big]).astype(np.uint8)
-
-    # Pivot, scale circle, and the arm line out to the measured bucket point.
+    # The machine's pivot and its reach, for scale.
     cv2.circle(canvas, (int(centre[0]), int(centre[1])), int(reach), _PIVOT, 1, cv2.LINE_AA)
     cv2.drawMarker(
         canvas, (int(centre[0]), int(centre[1])), _PIVOT, cv2.MARKER_CROSS, int(14 * scale), 2
     )
 
-    bearing = float(table.bearing[position])
-    extension = float(table.extension[position]) * reach
-    tip = (
-        int(centre[0] + np.cos(bearing) * extension),
-        int(centre[1] - np.sin(bearing) * extension),
-    )
-    cv2.line(canvas, (int(centre[0]), int(centre[1])), tip, _TRACE, 1, cv2.LINE_AA)
-    cv2.drawMarker(canvas, tip, _TIP, cv2.MARKER_TILTED_CROSS, int(12 * scale), 2)
+    # The fitted kinematic chain: boom base, the two joints, and the bucket tip.
+    # This is what every measurement is taken from, so it is what has to look
+    # right -- the links should lie along the boom, the stick and the bucket.
+    chain = [
+        (table.base_x[position], table.base_y[position]),
+        (table.joint1_x[position], table.joint1_y[position]),
+        (table.joint2_x[position], table.joint2_y[position]),
+        (table.tip_x[position], table.tip_y[position]),
+    ]
+    if all(np.isfinite(point).all() for point in chain):
+        drawn = [(int(x * scale), int(y * scale)) for x, y in chain]
+        for start, end in pairwise(drawn):
+            cv2.line(canvas, start, end, _TRACE, max(1, int(scale)), cv2.LINE_AA)
+        for point, colour, label in zip(
+            drawn,
+            (_PIVOT, _FOREARM_BAND, _BUCKET_BAND, _TIP),
+            ("base", "boom-stick", "stick-bucket", "bucket"),
+            strict=True,
+        ):
+            cv2.circle(canvas, point, max(2, int(3 * scale)), colour, -1, cv2.LINE_AA)
+            cv2.putText(
+                canvas,
+                label,
+                (point[0] + 6, point[1] - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.30 * scale,
+                colour,
+                1,
+                cv2.LINE_AA,
+            )
 
     # The material surface: the level that defines two of the four boundaries.
     if scene.get("surface_height") is not None:
@@ -305,14 +308,6 @@ def _draw_physics(canvas, mask, table, scene, position: int, scale: float):
                 cv2.LINE_AA,
             )
     return canvas
-
-
-def scene_band_low(scene) -> float:
-    return float(scene.get("bucket_band_low", 0.85))
-
-
-def scene_forearm_low(scene) -> float:
-    return float(scene.get("forearm_band_low", 0.55))
 
 
 def _signal_strip(table, scene, height: int = 96):

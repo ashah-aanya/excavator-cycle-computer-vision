@@ -49,7 +49,6 @@ def plot_signals(table: FeatureTable, scene: Scene, path: str | Path) -> Path:
         ("falling material (flow)\nINDEPENDENT of the mask", table.falling, None),
         ("speed (L/s)", table.speed, None),
         ("mask area (L^2)\ndips when buried", table.area, None),
-        ("bucket elongation\nbelow ~1.35 the axis is noise", table.elongation, 1.35),
     ]
 
     figure, axes = plt.subplots(len(panels), 1, figsize=(14, 2.0 * len(panels)), sharex=True)

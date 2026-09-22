@@ -32,16 +32,11 @@ from .config import Config
 from .geometry import (
     Scene,
     arm_reach,
-    bucket_axis,
     dwell_clusters,
-    farthest_point,
-    radial_band,
-    relative_angle,
     return_direction,
-    rotation_centre,
     surface_height,
-    unwrap_axis,
 )
+from .kinematics import body_core, boom_base, fit_frame
 from .logging_setup import get_logger
 from .track import TrackResult
 
@@ -63,8 +58,17 @@ class FeatureTable:
     curl: np.ndarray  # bucket long-axis angle (rad) -- the dumping cue
     curl_rate: np.ndarray
     area: np.ndarray  # mask area / L^2; collapses when the bucket is buried
-    elongation: np.ndarray  # long/short side of the bucket region; low = axis unreliable
-    curl_valid: np.ndarray  # bool: was the bucket axis actually measurable?
+    curl_valid: np.ndarray  # bool: was the arm's pose recovered for this sample?
+    # The fitted chain, four points per sample, for drawing and for any later
+    # measurement that wants a joint rather than a derived scalar.
+    base_x: np.ndarray
+    base_y: np.ndarray
+    joint1_x: np.ndarray
+    joint1_y: np.ndarray
+    joint2_x: np.ndarray
+    joint2_y: np.ndarray
+    tip_x: np.ndarray
+    tip_y: np.ndarray
     falling: np.ndarray  # downward pixel motion below the bucket -- INDEPENDENT of the mask
     in_dig_zone: np.ndarray  # bool
     in_dump_zone: np.ndarray  # bool
@@ -88,10 +92,27 @@ def build_features(
     confidence = np.array([result.frames[p].sam_confidence for p in positions])
     mask_list = [masks[p] for p in positions]
 
-    centre = rotation_centre(mask_list, config.geometry.occupancy_quantile)
-    tips = [farthest_point(m, centre) for m in mask_list]
+    # The arm's pose, fitted per sample: boom base, two joints, bucket tip.
+    # Everything below is measured from those four points rather than from
+    # whichever pixel happens to lie farthest from the machine.
+    core = body_core(mask_list, config.geometry.occupancy_quantile)
+    centre = boom_base(core)
+    chains = [fit_frame(mask, centre, core) for mask in mask_list]
+    fitted = sum(c is not None for c in chains)
+    log.info(
+        "boom base at (%.0f, %.0f); arm pose fitted on %d/%d samples",
+        centre[0],
+        centre[1],
+        fitted,
+        len(chains),
+    )
+    if fitted < 0.8 * len(chains):
+        log.warning(
+            "the arm's pose failed on %d%% of samples", (1 - fitted / len(chains)) * 100
+        )
+
+    tips = [c.tip if c is not None else None for c in chains]
     scale = arm_reach(tips, centre, config.geometry.reach_percentile)
-    log.info("pivot at (%.0f, %.0f); arm reach L = %.0f px", centre[0], centre[1], scale)
 
     xs = np.array([t[0] if t else np.nan for t in tips])
     ys = np.array([t[1] if t else np.nan for t in tips])
@@ -103,48 +124,35 @@ def build_features(
     elevation = np.full(len(positions), np.nan)
     curl = np.full(len(positions), np.nan)
     area = np.full(len(positions), np.nan)
-    elongation = np.full(len(positions), np.nan)
+    keypoints = np.full((len(positions), 4, 2), np.nan)
 
-    # Two bands along the arm, as fractions of its current reach. The outer one
-    # is the bucket; the inner one is the stick, which gives the reference the
-    # curl is measured against -- the absolute bucket axis swings through a whole
-    # revolution as the arm slews, burying the small rotation that signals
-    # dumping.
-    bucket_band = (config.geometry.bucket_band_low, 1.0)
-    forearm_band = (config.geometry.forearm_band_low, config.geometry.bucket_band_low)
-
-    for index, (mask, tip) in enumerate(zip(mask_list, tips, strict=True)):
+    for index, (mask, chain) in enumerate(zip(mask_list, chains, strict=True)):
         area[index] = mask.sum() / (scale**2)
-        if tip is None:
+        if chain is None:
             continue
+        keypoints[index] = np.array(chain.points)
 
-        region = radial_band(mask, centre, *bucket_band)
-        if not region.any():
-            continue
-        # The LOWEST pixel of the bucket, because the task defines hauling as
-        # beginning when the *entire* bucket clears the material surface.
-        elevation[index] = (centre[1] - np.nonzero(region)[0].max()) / scale
+        # The curl is now a real joint angle: the bucket link relative to the
+        # stick link. No hand-picked region, no axis of a blob -- the two links
+        # come from the fitted chain, so this is the quantity the phase
+        # definition talks about.
+        stick = np.subtract(chain.stick_bucket, chain.boom_stick)
+        bucket = np.subtract(chain.tip, chain.stick_bucket)
+        if np.hypot(*stick) > 1 and np.hypot(*bucket) > 1:
+            curl[index] = _signed_angle(bucket, stick)
 
-        bucket = bucket_axis(region)
-        forearm = bucket_axis(radial_band(mask, centre, *forearm_band))
-        if bucket is None or forearm is None:
-            continue
-        axis, ratio = bucket
-        elongation[index] = ratio
-        # A nearly round region has an arbitrary long axis: a couple of pixels
-        # flipping swings it by 90 degrees. Reject rather than record noise --
-        # a missing measurement is honest, a confident wrong one is not.
-        if ratio >= config.geometry.min_bucket_elongation:
-            curl[index] = relative_angle(axis, forearm[0])
+        # Elevation uses the LOWEST pixel of the bucket, because the task defines
+        # hauling as beginning when the *entire* bucket clears the surface. The
+        # bucket's pixels are those near the bucket link -- a y-extremum, so a
+        # loose region is harmless here in a way an axis would not be.
+        lowest = _lowest_near_segment(
+            mask, chain.stick_bucket, chain.tip, config.geometry.bucket_band_low * scale * 0.2
+        )
+        if lowest is not None:
+            elevation[index] = (centre[1] - lowest) / scale
 
     curl_valid = np.isfinite(curl)
-    curl = unwrap_axis(_fill_gaps(curl))
-    if curl_valid.mean() < 0.5:
-        log.warning(
-            "the bucket axis was measurable on only %.0f%% of samples; the curl "
-            "signal is mostly interpolation and should not be used as a clock cue",
-            curl_valid.mean() * 100,
-        )
+    curl = _fill_gaps(curl)
 
     dt = float(np.median(np.diff(times))) if len(times) > 1 else 1.0
     window = _odd(max(3, round(config.features.smoothing_window_seconds / dt)))
@@ -194,8 +202,15 @@ def build_features(
         curl=curl_s,
         curl_rate=curl_rate,
         area=area,
-        elongation=elongation,
         curl_valid=curl_valid,
+        base_x=keypoints[:, 0, 0],
+        base_y=keypoints[:, 0, 1],
+        joint1_x=keypoints[:, 1, 0],
+        joint1_y=keypoints[:, 1, 1],
+        joint2_x=keypoints[:, 2, 0],
+        joint2_y=keypoints[:, 2, 1],
+        tip_x=keypoints[:, 3, 0],
+        tip_y=keypoints[:, 3, 1],
         falling=falling,
         in_dig_zone=in_dig,
         in_dump_zone=in_dump,
@@ -272,6 +287,34 @@ def falling_material(
         relative = flow[..., 1] - bucket_dy
         signal[index] = float(np.clip(relative, 0, None).mean() / scale)
     return signal
+
+
+def _signed_angle(vector: np.ndarray, reference: np.ndarray) -> float:
+    """Angle of ``vector`` relative to ``reference``, in (-pi, pi].
+
+    Signed, and a full turn rather than an axis: these are links with a
+    direction, not lines, so there is no 180-degree ambiguity to wrap around.
+    That ambiguity is what made the earlier blob-axis measurement so fragile.
+    """
+    angle = np.arctan2(vector[1], vector[0]) - np.arctan2(reference[1], reference[0])
+    return float(np.arctan2(np.sin(angle), np.cos(angle)))
+
+
+def _lowest_near_segment(mask, start, end, radius: float) -> float | None:
+    """The lowest mask pixel lying near the segment from ``start`` to ``end``."""
+    ys, xs = np.nonzero(mask)
+    if xs.size == 0:
+        return None
+    start, end = np.asarray(start, float), np.asarray(end, float)
+    segment = end - start
+    length_squared = float(segment @ segment)
+    points = np.stack([xs, ys], axis=1).astype(float)
+    if length_squared == 0:
+        near = np.hypot(*(points - start).T) <= radius
+    else:
+        t = np.clip((points - start) @ segment / length_squared, 0, 1)[:, None]
+        near = np.hypot(*(points - (start + t * segment)).T) <= radius
+    return float(ys[near].max()) if near.any() else None
 
 
 def _smooth(values: np.ndarray, window: int, order: int) -> np.ndarray:
