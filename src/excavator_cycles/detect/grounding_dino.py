@@ -27,6 +27,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from ..devices import resolve_device
 from ..logging_setup import get_logger
 from .base import Detection
 
@@ -65,7 +66,7 @@ class GroundingDinoDetector:
         self.revision = revision
         self.box_threshold = box_threshold
         self.text_threshold = text_threshold
-        self.device = device or _default_device(torch)
+        self.device = resolve_device(device)
 
         log.info("loading %s (revision=%s) on %s", model_id, revision or "main", self.device)
         self.processor = AutoProcessor.from_pretrained(model_id, revision=revision)
@@ -145,7 +146,7 @@ class Owlv2Detector:
         self._torch = torch
         self.model_id = model_id
         self.box_threshold = box_threshold
-        self.device = device or _default_device(torch)
+        self.device = resolve_device(device)
 
         log.info("loading %s on %s", model_id, self.device)
         self.processor = Owlv2Processor.from_pretrained(model_id, revision=revision)
@@ -181,16 +182,6 @@ class Owlv2Detector:
             labels=[query] * len(boxes),
             prompt=query,
         )
-
-
-def _default_device(torch_module: object) -> str:
-    """Pick the fastest device available, preferring CUDA, then Apple Silicon."""
-    torch = torch_module
-    if torch.cuda.is_available():  # type: ignore[attr-defined]
-        return "cuda"
-    if torch.backends.mps.is_available():  # type: ignore[attr-defined]
-        return "mps"
-    return "cpu"
 
 
 def _normalise_prompt(prompt: str) -> str:

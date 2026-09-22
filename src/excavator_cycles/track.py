@@ -40,6 +40,7 @@ import numpy as np
 from . import masks as mask_io
 from .config import Config
 from .detect import Detection, build_detector, iou
+from .devices import resolve_device
 from .logging_setup import get_logger
 from .provenance import config_digest, file_digest, run_record, set_seeds
 from .video import Sample, VideoInfo, iter_samples, probe
@@ -282,7 +283,7 @@ def track(
         negatives = negative_points(truck_box, config)
         seed_position, seed_box = choose_seed(detections, config)
 
-        resolved_device = device or _default_device(torch)
+        resolved_device = resolve_device(device)
         log.info("loading %s on %s", config.track.model_id, resolved_device)
         processor = Sam2VideoProcessor.from_pretrained(config.track.model_id)
         model = (
@@ -525,11 +526,3 @@ def load_result(output_dir: str | Path) -> tuple[TrackResult, dict[int, np.ndarr
     result = TrackResult(**data)
     loaded, _ = mask_io.load(output_dir / "masks.npz")
     return result, loaded
-
-
-def _default_device(torch_module) -> str:
-    if torch_module.cuda.is_available():
-        return "cuda"
-    if torch_module.backends.mps.is_available():
-        return "mps"
-    return "cpu"
