@@ -13,8 +13,13 @@ import pytest
 
 from excavator_cycles.devices import best_available, resolve_device
 
-NO = lambda: False
-YES = lambda: True
+
+def NO() -> bool:
+    return False
+
+
+def YES() -> bool:
+    return True
 
 
 def test_prefers_cuda_then_mps_then_cpu():
@@ -52,3 +57,20 @@ def test_unrecognised_device_falls_back(bogus, caplog):
     with caplog.at_level("WARNING"):
         assert resolve_device(bogus, cuda=NO, mps=NO) == "cpu"
     assert "falling back" in caplog.text
+
+
+def test_noisy_libraries_are_silenced():
+    """The pipeline's own output must not be buried in HTTP redirect logs.
+
+    huggingface_hub downloads through httpx, which logs every cache probe and
+    307 at INFO -- dozens of lines per model load, around three lines of ours.
+    """
+    import logging
+
+    from excavator_cycles.logging_setup import configure_logging
+
+    configure_logging()
+    for name in ("httpx", "httpcore", "huggingface_hub", "urllib3"):
+        assert logging.getLogger(name).level >= logging.WARNING, name
+    # Ours must still be audible.
+    assert logging.getLogger("excavator_cycles.track").getEffectiveLevel() <= logging.INFO

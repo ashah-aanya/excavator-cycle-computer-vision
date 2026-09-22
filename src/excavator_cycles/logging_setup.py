@@ -56,8 +56,20 @@ def configure_logging(verbosity: int = 0, log_file: str | Path | None = None) ->
         file_handler.setFormatter(logging.Formatter(_FORMAT, _DATE_FORMAT))
         root.addHandler(file_handler)
 
-    # Third-party libraries are chatty at DEBUG and rarely say anything we need.
-    for noisy in ("urllib3", "filelock", "huggingface_hub", "PIL", "matplotlib"):
+    # Third-party libraries are chatty and rarely say anything we need. `httpx`
+    # is the loud one: newer huggingface_hub routes downloads through it, and it
+    # logs every redirect and cache probe at INFO, burying the pipeline's own
+    # output in HTTP traffic.
+    for noisy in (
+        "httpx",
+        "httpcore",
+        "urllib3",
+        "filelock",
+        "huggingface_hub",
+        "transformers",
+        "PIL",
+        "matplotlib",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
