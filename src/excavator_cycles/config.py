@@ -251,6 +251,39 @@ class FeatureConfig:
 
 
 @dataclass(frozen=True)
+class MotionConfig:
+    """Dense optical flow inside the mask (see ``motion.py``).
+
+    These are fractions and pixel counts rather than levels, for the reason the
+    module header gives: the numbers this produces are already normalised by the
+    machine's reach and by the sample interval, so nothing here is tied to one
+    video's scale or frame rate.
+    """
+
+    # Where "the moving part" of the silhouette starts, as a quantile of radius
+    # from the slew pivot. The body sits on the pivot and does not rotate about
+    # it in projection, so including it drags the median towards zero: measured
+    # at 0.005 rad/s over the whole mask against 0.257 rad/s over the outer half
+    # during the same swing.
+    radial_fraction: float = 0.5
+
+    # Stricter cut for the vertical rate, because the bucket is at the far end
+    # and its rise/fall is the digging and dumping evidence.
+    distal_fraction: float = 0.8
+
+    # Shrink the mask before sampling flow: on the silhouette's edge, flow mixes
+    # machine pixels with background pixels and measures neither.
+    erode_pixels: int = 2
+
+    # Below this many usable pixels, report no measurement rather than a number
+    # computed from too little. A gap is honest; a bad number is not.
+    min_pixels: int = 150
+
+    # Only used to report coverage -- how much of the machine is visibly moving.
+    moving_threshold_px: float = 0.3
+
+
+@dataclass(frozen=True)
 class FSMConfig:
     """State machine: how long evidence must persist, and how strong it must be.
 
@@ -323,6 +356,7 @@ class Config:
     track: TrackConfig = field(default_factory=TrackConfig)
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
+    motion: MotionConfig = field(default_factory=MotionConfig)
     fsm: FSMConfig = field(default_factory=FSMConfig)
     cycles: CycleConfig = field(default_factory=CycleConfig)
     qa: QAConfig = field(default_factory=QAConfig)

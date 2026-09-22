@@ -69,6 +69,7 @@ Ordered by how much each would change the answer.
 | Mask speck removal | strays relocate the tip across the frame |
 | Device fallback instead of crashing | the plan said "fall back loudly"; it did not |
 | Frame-count verification | this video's header overstates its length by 20% |
+| `motion.py` -- a motion-field cue family from dense optical flow | the plan derives every signal from arm pose, and arm pose has failed four times for one structural reason (a few parameters from a few pixels, chosen by an argmax). Flow measures motion directly and aggregates it over thousands of pixels. Measured: 295/295 intervals against the chain's 82 comparable, and the chain reports slew rates of +/-2-3.5 rad/s that no excavator can reach. Evidence in `04-motion-field-probe.md`. This *adds* a fourth independent cue family (§3 cue plan asks for independence); it does not remove the chain, which is still needed for the elevation LEVEL that T1/T2 cross |
 
 ## The pattern worth naming
 
@@ -78,6 +79,17 @@ tip — which the plan explicitly warned against and which was implemented anywa
 The missing temporal filter is the same kind of omission, and is the cause of
 the jitter currently visible on the video.
 
-**Next action, per §4.3:** implement the temporal filter the plan already
-specifies, before considering the 3D kinematic model, which would be an addition
-to the plan rather than a completion of it.
+The motion field (2026-09-22) is a fifth instance of the same pattern, and the
+sharpest: a pre-registered pass/fail criterion returned "abandon" twice, once
+because of a genuine join bug in the probe and once because the criterion used
+the chain as its yardstick when the chain is the thing being replaced. Both were
+settled by drawing the data on the frames.
+
+**Next action, per §7:** the state machine. The signals it needs now exist and
+are measured; what does not exist is any answer at all. The raw-vs-filtered
+inconsistency below should be resolved first, since it is cheap.
+
+**Still outstanding from the previous audit:** `elevation` and `curl` are
+computed from the RAW chain rather than the filtered track, and the renderer
+draws raw keypoints. The temporal filter therefore reaches only bearing,
+extension and speed.

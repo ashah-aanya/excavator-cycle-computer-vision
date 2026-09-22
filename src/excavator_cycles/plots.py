@@ -180,3 +180,190 @@ def plot_scene(frame: np.ndarray, table: FeatureTable, scene: Scene, path: str |
     plt.close(figure)
     log.info("wrote %s", path)
     return path
+
+
+def plot_motion(field, times: np.ndarray, path: str | Path) -> Path:
+    """The motion field as four stacked signals, with the dwell gate shaded.
+
+    Laid out so the three questions the state machine asks can be read off one
+    figure: which way is it swinging, is the bucket rising or falling, and is it
+    moving at all.
+    """
+    path = Path(path)
+    figure, axes = plt.subplots(4, 1, figsize=(15, 10), sharex=True)
+
+    still = np.isfinite(field.speed) & (field.speed < np.nanquantile(field.speed, 0.35))
+    panels = (
+        (
+            field.omega,
+            "tab:blue",
+            "swing rate (rad/s)",
+            "sign separates hauling from returning",
+        ),
+        (field.v_up, "tab:green", "bucket vertical (L/s)", "positive while the bucket rises"),
+        (field.v_radial, "tab:orange", "radial rate (L/s)", "reaching out vs folding in"),
+        (field.speed, "tab:purple", "speed (L/s)", "the dwell gate"),
+    )
+    for axis, (signal, colour, label, note) in zip(axes, panels, strict=True):
+        axis.plot(times, signal, lw=0.8, alpha=0.4, color=colour)
+        axis.plot(times, _smooth_for_display(signal), lw=2.0, color=colour)
+        axis.axhline(0, color="k", lw=0.8)
+        _shade(axis, times, still, "0.85", "dwell")
+        axis.set_ylabel(label, fontsize=9)
+        axis.set_title(note, fontsize=9, loc="left")
+        axis.grid(alpha=0.25)
+    axes[-1].set_xlabel("time (s)")
+    figure.suptitle("Motion field: measured from flow, not from arm pose", fontsize=11)
+    figure.tight_layout()
+    figure.savefig(path, dpi=110)
+    plt.close(figure)
+    log.info("wrote %s", path)
+    return path
+
+
+def _smooth_for_display(signal: np.ndarray, window: int = 9, order: int = 2) -> np.ndarray:
+    """Savitzky-Golay over the finite samples, for the eye only.
+
+    Symmetric, so it does not shift an extremum -- but nothing downstream reads
+    this; the state machine smooths for itself with the configured window.
+    """
+    from scipy.signal import savgol_filter
+
+    out = np.asarray(signal, dtype=float).copy()
+    good = np.isfinite(out)
+    if good.sum() < window:
+        return out
+    out[~good] = np.interp(np.flatnonzero(~good), np.flatnonzero(good), out[good])
+    return savgol_filter(out, window, order)
+
+
+def render_flow_overlay(
+    frames: list[np.ndarray],
+    masks: list[np.ndarray],
+    field,
+    times: np.ndarray,
+    pivot: tuple[float, float],
+    output_dir: str | Path,
+    upscale: int = 3,
+    arrow_gain: float = 8.0,
+) -> Path:
+    """Draw the flow field on the frames, with the measured numbers and a strip.
+
+    This exists because every wrong call on this project was caught by looking
+    at a picture. The arrows are the raw evidence; the HUD is what the pipeline
+    made of it; disagreeing with each other is the thing worth seeing.
+    """
+    from .motion import dense_flow
+
+    output_dir = Path(output_dir)
+    path = output_dir / "motion.mp4"
+    height, width = masks[0].shape
+    frame_width, frame_height = width * upscale, height * upscale
+    strip_height = 150
+
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        max(1.0, 1.0 / max(np.median(np.diff(times)), 1e-6)),
+        (frame_width, frame_height + strip_height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError(f"could not open a writer for {path}")
+
+    curves = [
+        (_normalise(_smooth_for_display(field.omega)), (255, 160, 60), 25, "swing"),
+        (_normalise(_smooth_for_display(field.v_up)), (60, 220, 60), 70, "bucket up/down"),
+        (_normalise(_smooth_for_display(field.speed)), (200, 120, 255), 115, "speed"),
+    ]
+
+    written = 0
+    for index in range(len(frames) - 1):
+        image = cv2.resize(
+            frames[index], None, fx=upscale, fy=upscale, interpolation=cv2.INTER_NEAREST
+        )
+        mask = masks[index]
+        contours, _ = cv2.findContours(
+            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        cv2.drawContours(image, [c * upscale for c in contours], -1, (0, 255, 255), 1)
+        cv2.circle(
+            image, (int(pivot[0] * upscale), int(pivot[1] * upscale)), 5, (255, 0, 255), -1
+        )
+
+        flow = dense_flow(frames[index], frames[index + 1])
+        for y in range(0, height, 6):
+            for x in range(0, width, 6):
+                if not mask[y, x]:
+                    continue
+                fx, fy = flow[y, x]
+                magnitude = float(np.hypot(fx, fy))
+                if magnitude < 0.25:
+                    continue
+                colour = (0, 255, 0) if magnitude > 0.8 else (0, 200, 255)
+                cv2.arrowedLine(
+                    image,
+                    (x * upscale, y * upscale),
+                    (
+                        int((x + fx * arrow_gain) * upscale),
+                        int((y + fy * arrow_gain) * upscale),
+                    ),
+                    colour,
+                    1,
+                    tipLength=0.3,
+                )
+
+        cv2.rectangle(image, (0, 0), (frame_width, 46), (0, 0, 0), -1)
+        cv2.putText(
+            image,
+            f"t={times[index]:5.2f}s   swing={field.omega[index]:+.3f} rad/s",
+            (6, 17),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+        )
+        cv2.putText(
+            image,
+            f"bucket={field.v_up[index]:+.3f} L/s   speed={field.speed[index]:.3f} L/s",
+            (6, 37),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 255, 180),
+            1,
+        )
+
+        panel = np.full((strip_height, frame_width, 3), 25, np.uint8)
+        for curve, colour, offset, label in curves:
+            points = [
+                (int(i * frame_width / max(len(curve) - 1, 1)), int(offset - curve[i] * 18))
+                for i in range(len(curve))
+                if np.isfinite(curve[i])
+            ]
+            for k in range(1, len(points)):
+                cv2.line(panel, points[k - 1], points[k], colour, 1)
+            cv2.line(panel, (0, offset), (frame_width, offset), (70, 70, 70), 1)
+            cv2.putText(
+                panel, label, (4, offset - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.35, colour, 1
+            )
+        playhead = int(index * frame_width / max(len(frames) - 1, 1))
+        cv2.line(panel, (playhead, 0), (playhead, strip_height), (255, 255, 255), 1)
+
+        canvas = np.vstack([image, panel])
+        if canvas.shape[:2] != (frame_height + strip_height, frame_width):
+            raise RuntimeError(f"frame {index} is {canvas.shape[:2]}, not the writer's size")
+        writer.write(canvas)
+        written += 1
+
+    writer.release()
+    # A writer that silently drops every frame leaves a valid but tiny file; it
+    # has happened here before, so the size is checked rather than trusted.
+    if path.stat().st_size < 10_000:
+        raise RuntimeError(f"{path} is {path.stat().st_size} bytes after {written} frames")
+    log.info("wrote %s (%d frames)", path, written)
+    return path
+
+
+def _normalise(signal: np.ndarray) -> np.ndarray:
+    """Scale to roughly [-1, 1] for drawing, without moving the zero line."""
+    peak = np.nanmax(np.abs(signal)) if np.isfinite(signal).any() else 0.0
+    return signal / peak if peak > 0 else signal

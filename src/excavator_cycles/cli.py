@@ -140,6 +140,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     features_parser.set_defaults(func=_cmd_features)
 
+    motion_parser = subparsers.add_parser(
+        "motion",
+        help="Stage 3b: measure the motion field (dense optical flow inside the "
+        "mask) and write motion.npz plus a diagnostic overlay video.",
+    )
+    motion_parser.add_argument("track_dir", type=Path, help="a directory from `track`")
+    motion_parser.add_argument("--config", type=Path, default=None)
+    motion_parser.add_argument(
+        "--no-video", action="store_true", help="skip the flow overlay video"
+    )
+    motion_parser.set_defaults(func=_cmd_motion)
+
     args = parser.parse_args(argv)
     configure_logging(args.verbose, args.log_file)
     return args.func(args)
@@ -297,6 +309,79 @@ def _cmd_render(args: argparse.Namespace) -> int:
     )
     print(f"\n  wrote {stats.output_path}")
     print(f"  {stats.frames_written} frames, {stats.frames_with_mask} carrying a mask")
+    return 0
+
+
+def _cmd_motion(args: argparse.Namespace) -> int:
+    """Measure the motion field, and draw it so the measurement can be judged.
+
+    The video this writes is not decoration. Every wrong call so far on this
+    project was found by looking at a picture and none by reading a metric, so
+    the overlay ships with the numbers rather than after them.
+    """
+    import numpy as np
+
+    from .motion import build_motion_field, save_motion
+    from .plots import plot_motion, render_flow_overlay
+    from .track import load_result
+    from .video import iter_samples
+
+    config = Config.load(args.config)
+    result, masks = load_result(args.track_dir)
+    scene = json.loads((args.track_dir / "scene.json").read_text())
+
+    # Masks are stored by SAMPLE ORDINAL, not by source frame index. Joining on
+    # the wrong one silently pairs each frame with a mask from elsewhere in the
+    # video and produces a confident null result; it has happened once already.
+    mask_list = [masks[ordinal] for ordinal in range(len(result.frames))]
+    frames = [s.image for s in iter_samples(result.video, config.sampling.rate_hz)]
+    if len(frames) != len(mask_list):
+        log.warning(
+            "decoded %d frames but hold %d masks; truncating to the shorter",
+            len(frames),
+            len(mask_list),
+        )
+        keep = min(len(frames), len(mask_list))
+        frames, mask_list = frames[:keep], mask_list[:keep]
+
+    times = np.array([f.time_seconds for f in result.frames[: len(frames)]])
+    dt = float(np.median(np.diff(times)))
+
+    field = build_motion_field(
+        frames,
+        mask_list,
+        pivot=tuple(scene["centre"]),
+        scale=float(scene["scale"]),
+        dt=dt,
+        radial_fraction=config.motion.radial_fraction,
+        distal_fraction=config.motion.distal_fraction,
+        erode_pixels=config.motion.erode_pixels,
+        min_pixels=config.motion.min_pixels,
+        moving_threshold_px=config.motion.moving_threshold_px,
+    )
+    save_motion(field, times, args.track_dir)
+    plot_motion(field, times, args.track_dir / "motion.png")
+
+    if not args.no_video:
+        path = render_flow_overlay(
+            frames, mask_list, field, times, tuple(scene["centre"]), args.track_dir
+        )
+        print(f"\n  wrote {path}")
+
+    measured = int(np.isfinite(field.omega).sum())
+    moving = np.isfinite(field.speed) & (field.speed > np.nanmedian(field.speed))
+    print(f"  samples        : {len(field)}  ({measured} with a flow measurement)")
+    omega_p95 = np.nanquantile(np.abs(field.omega), 0.95)
+    print(f"  swing rate     : p95 |omega| = {omega_p95:.3f} rad/s")
+    print(
+        f"  bucket vertical: p95 |v_up|  = {np.nanquantile(np.abs(field.v_up), 0.95):.3f} L/s"
+    )
+    print(
+        f"  speed          : median {np.nanmedian(field.speed):.4f} L/s, "
+        f"p95 {np.nanquantile(field.speed, 0.95):.4f} L/s"
+    )
+    print(f"  moving samples : {int(moving.sum())} of {measured}")
+    print(f"\n  wrote motion.npz, motion.csv, motion.png to {args.track_dir}")
     return 0
 
 
