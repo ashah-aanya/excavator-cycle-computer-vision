@@ -57,11 +57,23 @@ class Chain:
         return [self.base, self.boom_stick, self.stick_bucket, self.tip]
 
     def link_lengths(self) -> tuple[float, float, float]:
-        """Boom, stick and bucket lengths implied by this frame's fit.
+        """Boom, stick and bucket lengths implied by this frame's fit, in pixels.
 
-        These are the physical constraint: the boom does not change length, so a
-        frame whose fit disagrees with the video's median is a bad fit, not a
-        machine that grew.
+        NOT a constant, and not a validity check. The links are rigid in three
+        dimensions, but the machine slews, so the arm rotates out of the image
+        plane and its *projected* lengths shrink and grow with the swing angle.
+        Measured across this video they vary by 55-82% -- most of which is real
+        foreshortening rather than bad fits.
+
+        An earlier version of this docstring claimed the opposite and proposed
+        using it as a physical constraint. Enforcing it would have rejected
+        correct fits taken at an angle to the camera. Treating projected lengths
+        as fixed only works after reconstructing 3D pose, which is what the
+        papers that use this constraint actually do.
+
+        Kept because the ratios between links are more stable than the lengths,
+        and because a sudden jump between consecutive frames still signals a
+        broken fit.
         """
         points = self.points
         return tuple(float(np.hypot(b[0] - a[0], b[1] - a[1])) for a, b in pairwise(points))
@@ -181,31 +193,30 @@ def fit_chain(path: list[tuple[int, int]], min_length: int = 12) -> Chain | None
     if len(path) < min_length:
         return None
 
-    points = np.array(path, dtype=np.int32).reshape(-1, 1, 2)
-    total = cv2.arcLength(points, closed=False)
+    array = np.array(path, dtype=float)
+    total = float(cv2.arcLength(np.array(path, dtype=np.int32).reshape(-1, 1, 2), False))
 
-    # Start tight and relax until the path reduces to at most four vertices.
-    for tolerance in (0.01, 0.02, 0.04, 0.08, 0.15):
-        simplified = cv2.approxPolyDP(points, tolerance * total, closed=False)
-        vertices = simplified.reshape(-1, 2)
-        if len(vertices) <= 4:
-            break
-
-    if len(vertices) < 2:
+    # Choose the two breakpoints that best explain the path, rather than
+    # accepting whatever a simplifier returns. Douglas-Peucker keeps the points
+    # that deviate most from a chord, which on a long gently-curved boom lands a
+    # vertex mid-boom and pushes the real joints along by one.
+    n = len(array)
+    margin = max(3, n // 12)  # joints are not at the very ends
+    step = max(1, n // 60)  # coarse search; the path is dense
+    best, best_error = None, np.inf
+    for i in range(margin, n - 2 * margin, step):
+        for j in range(i + margin, n - margin, step):
+            error = (
+                _segment_error(array[: i + 1])
+                + _segment_error(array[i : j + 1])
+                + _segment_error(array[j:])
+            )
+            if error < best_error:
+                best, best_error = (i, j), error
+    if best is None:
         return None
-    while len(vertices) > 4:  # drop the least significant corner
-        angles = [
-            _turn_angle(vertices[i - 1], vertices[i], vertices[i + 1])
-            for i in range(1, len(vertices) - 1)
-        ]
-        vertices = np.delete(vertices, int(np.argmin(angles)) + 1, axis=0)
-    while len(vertices) < 4:  # split the longest link to keep four points
-        lengths = [
-            np.hypot(*(vertices[i + 1] - vertices[i])) for i in range(len(vertices) - 1)
-        ]
-        index = int(np.argmax(lengths))
-        midpoint = ((vertices[index] + vertices[index + 1]) / 2).astype(np.int32)
-        vertices = np.insert(vertices, index + 1, midpoint, axis=0)
+
+    vertices = np.array([array[0], array[best[0]], array[best[1]], array[-1]])
 
     chain = Chain(
         base=tuple(map(float, vertices[0])),
@@ -213,9 +224,26 @@ def fit_chain(path: list[tuple[int, int]], min_length: int = 12) -> Chain | None
         stick_bucket=tuple(map(float, vertices[2])),
         tip=tuple(map(float, vertices[3])),
         path_length=float(total),
-        residual=_residual(np.array(path, dtype=float), vertices.astype(float)),
+        residual=_residual(array, vertices),
     )
     return chain
+
+
+def _segment_error(points: np.ndarray) -> float:
+    """Total distance from a run of path points to the straight line through its ends.
+
+    Summed rather than averaged so that a long badly-fitting run costs more than
+    a short one -- otherwise the optimum is a tiny segment at one end.
+    """
+    if len(points) < 3:
+        return 0.0
+    start, end = points[0], points[-1]
+    direction = end - start
+    length = float(np.hypot(*direction))
+    if length == 0:
+        return float(np.sum(np.hypot(*(points - start).T)))
+    normal = np.array([-direction[1], direction[0]]) / length
+    return float(np.sum(np.abs((points - start) @ normal)))
 
 
 def _turn_angle(a, b, c) -> float:
@@ -254,11 +282,33 @@ def _point_segment_distance(point, start, end) -> float:
     return float(np.hypot(*(point - (start + t * segment))))
 
 
-def fit_frame(mask: np.ndarray, base: tuple[float, float]) -> Chain | None:
+def arm_region(mask: np.ndarray, core: np.ndarray | None) -> np.ndarray:
+    """The mask with the machine's persistent body removed.
+
+    Without this the geodesic path can run down the undercarriage instead of out
+    along the arm: the tracks are long, and when the arm folds they are the
+    farthest thing from the base. Removing the body leaves only the part that
+    moves, which is the part we are trying to measure.
+
+    The body is dilated slightly before subtraction so the cab's outline does not
+    survive as a thin bridge the path can follow.
+    """
+    if core is None:
+        return mask
+    grown = cv2.dilate(core.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1)
+    region = mask & ~grown.astype(bool)
+    # Keep only what still connects to the base's neighbourhood; stray fragments
+    # elsewhere in the frame are not the arm.
+    return region if region.any() else mask
+
+
+def fit_frame(
+    mask: np.ndarray, base: tuple[float, float], core: np.ndarray | None = None
+) -> Chain | None:
     """Fit the chain in one frame: geodesic distance, trace, then three links."""
     if not mask.any():
         return None
-    distance = geodesic_distance(mask, base)
+    distance = geodesic_distance(arm_region(mask, core), base)
     if not (distance > 0).any():
         return None
     # The geodesically farthest point is the end of the arm in ANY pose -- the
