@@ -142,3 +142,40 @@ def test_rejection_rate_counts_only_measured_samples():
     track[20:25] = np.nan
     result = constant_velocity_filter(track, DT, 0.5, NOISE, GATE)
     assert 0 < result.rejection_rate < 0.1
+
+
+# --- the backward pass ------------------------------------------------------
+
+
+def test_smoothing_pulls_a_coasting_gap_back_onto_the_track():
+    """A forward-only filter extrapolates through a gap; the backward pass corrects it.
+
+    With measurements missing for a stretch, a constant-velocity prediction
+    drifts off. Because this is offline, the measurement that *ends* the gap
+    constrains everything inside it -- which is what turned long straight
+    excursions in the real bucket track back into the real path.
+    """
+    n = 80
+    t = np.arange(n) * DT
+    track = np.stack([np.sin(t) * 0.5, np.cos(t) * 0.5], axis=1)  # a curving path
+    with_gap = track.copy()
+    with_gap[30:40] = np.nan
+
+    result = constant_velocity_filter(with_gap, DT, 1.0, NOISE, GATE, max_coast_seconds=5.0)
+
+    error = np.max(np.hypot(*(result.positions[30:40] - track[30:40]).T))
+    assert error < 0.12, f"smoothed gap strays {error:.3f} from the true curve"
+
+
+def test_coasting_is_capped():
+    """Past the limit the filter restarts rather than inventing a trajectory."""
+    n = 60
+    track = np.full((n, 2), np.nan)
+    track[:10] = smooth_track(10)
+    track[50:] = [[5.0, 5.0]] * 10  # reappears somewhere else entirely
+
+    result = constant_velocity_filter(track, DT, 0.5, NOISE, GATE, max_coast_seconds=0.3)
+
+    # It must latch onto the new position rather than refusing it forever as an
+    # outlier from a stale prediction.
+    assert result.accepted[50:].any(), "the filter must recover after losing the target"

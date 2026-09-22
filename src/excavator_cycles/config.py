@@ -203,6 +203,18 @@ class GeometryConfig:
     # arm from the rotation centre, as a fraction of the distance to the tip.
     elbow_frac: float = 0.60
 
+    # Temporal filter on the bucket's position (design doc section 4.3). All in
+    # units of the machine's reach L and in seconds, so one set of values serves
+    # any video at any scale or frame rate.
+    #
+    # process_noise is how much the bucket's velocity may change per second: it
+    # sets how much the filter trusts its own motion model against the next
+    # measurement. Too low and a real swing gets rejected; too high and the
+    # filter believes everything and does nothing.
+    tip_process_noise: float = 2.0  # L per second squared
+    tip_measurement_noise: float = 0.02  # L, expected error of one pose fit
+    tip_gate_sigma: float = 3.0  # reject beyond this many sigmas
+
     # Below this ratio of long side to short side, the bucket region is too
     # round for its axis to mean anything -- a couple of pixels flipping swings
     # it by 90 degrees -- so the curl measurement is rejected for that sample.

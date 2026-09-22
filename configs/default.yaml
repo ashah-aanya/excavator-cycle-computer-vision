@@ -55,6 +55,9 @@ geometry:
   forearm_band_low: 0.55     # stick = the band inside it, gives the reference axis
   bucket_radius_frac: 0.22   # optical-flow patch size, in units of L
   elbow_frac: 0.60           # where along the arm the forearm direction is taken
+  tip_process_noise: 2.0       # L/s^2  -- how much the bucket may accelerate
+  tip_measurement_noise: 0.02  # L      -- expected error of one pose fit
+  tip_gate_sigma: 3.0          # reject measurements beyond this many sigmas
   min_bucket_elongation: 1.35  # below this the bucket axis is meaningless
   dwell_speed_quantile: 0.25 # "slow enough to count as lingering"
   min_zone_separation: 0.40  # dig and dump must be this far apart, in units of L

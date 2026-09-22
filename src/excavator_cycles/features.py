@@ -29,6 +29,7 @@ import numpy as np
 from scipy.signal import savgol_filter
 
 from .config import Config
+from .filtering import filter_track
 from .geometry import (
     Scene,
     arm_reach,
@@ -111,8 +112,28 @@ def build_features(
             "the arm's pose failed on %d%% of samples", (1 - fitted / len(chains)) * 100
         )
 
-    tips = [c.tip if c is not None else None for c in chains]
-    scale = arm_reach(tips, centre, config.geometry.reach_percentile)
+    raw_tips = [c.tip if c is not None else None for c in chains]
+    scale = arm_reach(raw_tips, centre, config.geometry.reach_percentile)
+
+    # Design doc section 4.3: reject single-frame jumps rather than integrating
+    # them. The pose is fitted independently per frame, so nothing else stops
+    # one frame disagreeing with its neighbours -- and a bucket cannot teleport.
+    dt_nominal = float(np.median(np.diff(times))) if len(times) > 1 else 0.1
+    track = filter_track(
+        raw_tips,
+        dt_nominal,
+        scale,
+        config.geometry.tip_process_noise,
+        config.geometry.tip_measurement_noise,
+        config.geometry.tip_gate_sigma,
+    )
+    tips = [(p[0], p[1]) if np.isfinite(p).all() else None for p in track.positions]
+    log.info(
+        "temporal filter: %d/%d poses accepted (%.0f%% rejected as implausible jumps)",
+        int(track.accepted.sum()),
+        len(track.accepted),
+        track.rejection_rate * 100,
+    )
 
     xs = np.array([t[0] if t else np.nan for t in tips])
     ys = np.array([t[1] if t else np.nan for t in tips])
@@ -151,7 +172,8 @@ def build_features(
         if lowest is not None:
             elevation[index] = (centre[1] - lowest) / scale
 
-    curl_valid = np.isfinite(curl)
+    # A coasted sample has a position but no measurement behind it.
+    curl_valid = np.isfinite(curl) & track.accepted
     curl = _fill_gaps(curl)
 
     dt = float(np.median(np.diff(times))) if len(times) > 1 else 1.0
@@ -215,7 +237,11 @@ def build_features(
         in_dig_zone=in_dig,
         in_dump_zone=in_dump,
         confidence=confidence,
-        valid=np.isfinite(elevation) & (confidence >= config.features.min_sample_confidence),
+        valid=(
+            np.isfinite(elevation)
+            & track.accepted
+            & (confidence >= config.features.min_sample_confidence)
+        ),
     )
     return table, scene
 

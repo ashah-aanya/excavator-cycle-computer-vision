@@ -18,6 +18,17 @@ reject genuine fast motion, which is most of a swing.
 
 Everything here is in units of the machine's reach ``L`` and in seconds, so the
 noise parameters mean the same thing on any video at any scale or frame rate.
+
+**Filtering forwards is not enough.** A forward-only filter knows only the past,
+so a run of rejected measurements makes it coast at constant velocity and
+extrapolate into empty space -- trading spikes for excursions. This video is not
+a live feed, so the whole track is available: running the filter backwards as
+well and combining the two (a Rauch-Tung-Striebel smoother) lets later evidence
+pull those excursions back. Same argument as the two-pass state machine in
+§2.2 -- offline, decide with everything you have.
+
+The plan (§4.3) asks for a filter; this is a smoother built from that filter.
+Recorded as a deviation in ``docs/stages/plan-audit.md``.
 """
 
 from __future__ import annotations
@@ -35,7 +46,7 @@ log = get_logger(__name__)
 class FilterResult:
     """Filtered track, plus which measurements were believed."""
 
-    positions: np.ndarray  # (N, 2), filtered, in the input's units
+    positions: np.ndarray  # (N, 2), smoothed, in the input's units
     velocities: np.ndarray  # (N, 2) per second
     accepted: np.ndarray  # bool: the measurement passed the gate
     innovation: np.ndarray  # how far each measurement was from the prediction, in sigmas
@@ -54,6 +65,7 @@ def constant_velocity_filter(
     process_noise: float,
     measurement_noise: float,
     gate_sigma: float,
+    max_coast_seconds: float = 0.5,
 ) -> FilterResult:
     """Smooth a 2D track, rejecting measurements that disagree with its motion.
 
@@ -67,6 +79,10 @@ def constant_velocity_filter(
         gate_sigma: reject a measurement this many standard deviations from the
             prediction. The rejected sample is *coasted*, not interpolated: the
             filter keeps its own estimate and records that it did.
+        max_coast_seconds: how long to keep extrapolating through rejected or
+            missing samples before admitting the target is lost and restarting.
+            Without a limit, a long gap produces a confident straight line
+            through empty space.
 
     Returns:
         Filtered positions for every sample, including ones with no measurement.
@@ -99,6 +115,15 @@ def constant_velocity_filter(
 
     state: np.ndarray | None = None
     covariance = np.eye(4)
+    coasting = 0
+    max_coast = max(1, round(max_coast_seconds / dt)) if max_coast_seconds else 10**9
+
+    # Kept for the backward pass. `restarts` marks samples where the filter
+    # began a NEW track after losing the target: the backward sweep must not
+    # link across one, because the two sides are not the same motion.
+    priors: list[tuple[np.ndarray, np.ndarray] | None] = []
+    posteriors: list[tuple[np.ndarray, np.ndarray] | None] = []
+    restarts: list[bool] = []
 
     for index, measurement in enumerate(measurements):
         valid = np.all(np.isfinite(measurement))
@@ -111,10 +136,20 @@ def constant_velocity_filter(
                 velocities[index] = 0.0
                 accepted[index] = True
                 innovation[index] = 0.0
+                coasting = 0
+                priors.append((state.copy(), covariance.copy()))
+                posteriors.append((state.copy(), covariance.copy()))
+                restarts.append(True)
+            else:
+                priors.append(None)
+                posteriors.append(None)
+                restarts.append(True)
             continue
 
         state = transition @ state
         covariance = transition @ covariance @ transition.T + Q
+        priors.append((state.copy(), covariance.copy()))
+        restarts.append(False)
 
         if valid:
             residual = measurement - observation @ state
@@ -127,12 +162,31 @@ def constant_velocity_filter(
                 state = state + gain @ residual
                 covariance = (np.eye(4) - gain @ observation) @ covariance
                 accepted[index] = True
-            # Otherwise coast: keep the prediction, and leave `accepted` False so
-            # the caller can treat this sample as unmeasured rather than as a
-            # measurement of something.
+                coasting = 0
+            else:
+                # Coast: keep the prediction, and leave `accepted` False so the
+                # caller treats this sample as unmeasured rather than as a
+                # measurement of something.
+                coasting += 1
+        else:
+            coasting += 1
 
         positions[index] = state[:2]
         velocities[index] = state[2:]
+        posteriors.append((state.copy(), covariance.copy()))
+
+        if coasting >= max_coast:
+            # Extrapolating indefinitely invents a trajectory. Past this point
+            # the filter admits it has lost the target and restarts at the next
+            # real measurement.
+            state = None
+            coasting = 0
+
+    smoothed = _smooth_backwards(priors, posteriors, transition, restarts)
+    for index, entry in enumerate(smoothed):
+        if entry is not None:
+            positions[index] = entry[0][:2]
+            velocities[index] = entry[0][2:]
 
     return FilterResult(
         positions=positions,
@@ -142,6 +196,49 @@ def constant_velocity_filter(
     )
 
 
+def _smooth_backwards(priors, posteriors, transition, restarts):
+    """Rauch-Tung-Striebel: sweep back, correcting each estimate with the future.
+
+    A forward filter's estimate at frame t uses frames up to t. Offline we also
+    have t+1 onward, and the backward sweep folds that in -- which is what pulls
+    a coasting excursion back onto the track, because the measurement that ends
+    the gap constrains everything inside it.
+
+    It must not sweep across a restart. When the filter gives up and re-acquires
+    somewhere else, the two sides are different motions, and linking them makes
+    the smoother interpolate a flight between them -- measured at 268 px in one
+    frame on the real video, worse than the jitter it was fixing.
+    """
+    n = len(posteriors)
+    smoothed: list[tuple[np.ndarray, np.ndarray] | None] = [None] * n
+    for index in range(n - 1, -1, -1):
+        current = posteriors[index]
+        if current is None:
+            continue
+        if (
+            index + 1 >= n
+            or smoothed[index + 1] is None
+            or priors[index + 1] is None
+            or restarts[index + 1]  # the next sample belongs to a different track
+        ):
+            smoothed[index] = current
+            continue
+
+        state, covariance = current
+        next_prior_state, next_prior_cov = priors[index + 1]
+        next_state, next_cov = smoothed[index + 1]
+        try:
+            gain = covariance @ transition.T @ np.linalg.inv(next_prior_cov)
+        except np.linalg.LinAlgError:  # pragma: no cover - singular, keep the filter's word
+            smoothed[index] = current
+            continue
+        smoothed[index] = (
+            state + gain @ (next_state - next_prior_state),
+            covariance + gain @ (next_cov - next_prior_cov) @ gain.T,
+        )
+    return smoothed
+
+
 def filter_track(
     points: list[tuple[float, float] | None],
     dt: float,
@@ -149,6 +246,7 @@ def filter_track(
     process_noise: float,
     measurement_noise: float,
     gate_sigma: float,
+    max_coast_seconds: float = 0.5,
 ) -> FilterResult:
     """Filter a sequence of optional points, working in units of ``scale``.
 
@@ -160,7 +258,7 @@ def filter_track(
         [[p[0] / scale, p[1] / scale] if p is not None else [np.nan, np.nan] for p in points]
     )
     result = constant_velocity_filter(
-        measurements, dt, process_noise, measurement_noise, gate_sigma
+        measurements, dt, process_noise, measurement_noise, gate_sigma, max_coast_seconds
     )
     rejected = int((~result.accepted & np.isfinite(result.innovation)).sum())
     if rejected:

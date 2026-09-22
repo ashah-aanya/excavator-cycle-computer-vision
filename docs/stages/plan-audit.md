@@ -19,6 +19,7 @@ problem this file exists to stop.
 | 4.1 | Machine pivot from a pixel occupancy map | |
 | 4.2 | Scale `L` as a percentile of reach | every distance divided by it |
 | 4.3 | Tip measured **along the mask**, not straight-line | now via the fitted chain |
+| 4.3 | **Constant-velocity filter with outlier gating** | built; extended with a backward pass, see deviations |
 | 4.4 | Dig/dump zones by clustering dwell positions | plus the derived return direction |
 | 4.5 | Surface height by Otsu inside the dig zone | |
 | 5 | Feature table: bearing, slew, extension, elevation, speed, curl, area, zones, confidence | |
@@ -36,7 +37,6 @@ Ordered by how much each would change the answer.
 |---|---|---|
 | 7 | **The state machine** — both passes, the four transitions, debounce, onset back-dating, revert rule, initialisation, stage-plausibility audit | no phases, so no answer |
 | 8 | **Cycle assembly, statistics, `answer.json`** | the deliverable does not exist |
-| 4.3 | **Temporal filter on the tip** — the plan says "a constant-velocity filter with outlier gating rejects single-frame jumps" | **this is the jitter being seen now**; every frame is fitted independently with nothing tying it to its neighbours |
 | 8 | Periodicity cross-check on cycle count | no independent check on the field that matters most |
 | 7 | Anomaly log | failures are invisible rather than recorded |
 | 9 | QA metrics: tip-jump rate, frame-to-frame mask IoU, identity switches, background motion, cyclicity | drift and camera motion would go unnoticed |
@@ -58,6 +58,7 @@ Ordered by how much each would change the answer.
 | 5 | curl = bucket axis vs forearm axis | joint angle between the fitted bucket and stick links | a link has a direction where an axis has a 180-degree ambiguity; the ambiguity was a large part of the earlier noise |
 | 9 | features stored as parquet | `.npz` plus a readable `.csv` | avoids a pyarrow dependency for no loss |
 | 5 | falling-material flow as corroboration for dumping | built, then measured as non-discriminating | it reads highest while the bucket descends to dig and lowest over the truck |
+| 4.3 | a forward filter | forward filter **plus a backward smoothing pass**, and a cap on coasting | forward-only trades spikes for excursions: it coasts at constant velocity through rejected runs and extrapolates into empty space. Offline the whole track is available, so later evidence can pull those back. Worst frame-to-frame jump: 86 px raw, 268 px with a naive backward pass that swept across filter restarts, 23.5 px once restarts are respected |
 
 ## Beyond the plan
 
