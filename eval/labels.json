@@ -1,0 +1,80 @@
+{
+  "_README": "Hand-made ground truth for ONE video. EVALUATION ONLY. Nothing under src/excavator_cycles/ may import or read this file, and the pipeline must never open it -- reading the answer is explicitly disallowed by the task spec (docs/pipeline-design.md 1.2). See eval/README.md.",
+  "schema_version": 1,
+
+  "video": {
+    "filename": "construction_excavator_cycle_duration_1.mp4",
+    "fps": 29.97396912419384,
+    "_fps_note": "The real rate, not 30. Treating this clip as 30 fps introduces a ~0.1% error in every duration -- small, but the task is graded at +/-0.6 s per field, so it is not free.",
+    "frame_count": 886,
+    "frame_index_range": [0, 885],
+    "_frame_count_note": "886 frames actually decode. The container header claims 1102, so cv2.CAP_PROP_FRAME_COUNT lies about this file by ~20%. The count above was obtained by demuxing the whole clip (grab() until it fails), which is what excavator_cycles.video.probe(verify=True) does."
+  },
+
+  "provenance": {
+    "source": "hand-decided by Aanya from frame-by-frame inspection of the video",
+    "method": "manual frame-by-frame review; these are NOT model outputs and were not produced by the pipeline",
+    "purpose": "verifying pipeline output only"
+  },
+
+  "boundaries": {
+    "_units": "Each value is an INSTANT BETWEEN FRAMES, not a frame index: boundary f means 'immediately before frame f'. A value may legitimately be 886 or larger, meaning 'after the final decoded frame'.",
+    "_definition_source": "The four phase definitions come from the task spec, quoted in docs/pipeline-design.md 1.1. The four phases tile the cycle with no gaps: each phase ends immediately before the next phase begins. Only the four ONSETS are defined; no phase has an independently labelled end.",
+    "digging_begins": 125,
+    "hauling_begins": 322,
+    "dumping_begins": 559,
+    "swinging_begins": 691,
+    "cycle_ends": 880,
+    "_cycle_ends_note": "The onset of the NEXT digging phase, which is also where swinging ends and the one complete cycle closes."
+  },
+
+  "cycle_count": 1,
+  "_cycle_count_note": "Exactly one complete cycle: f125 -> f880. Everything before f125 and everything after f880 is an incomplete partial cycle and is ignored, per the task spec.",
+
+  "durations": {
+    "_units": "frames = (next onset - this onset). seconds_exact = frames / fps, kept at full precision for checking arithmetic. seconds = the graded value, what a correct answer.json should report.",
+    "digging":  { "from_frame": 125, "to_frame": 322, "frames": 197, "seconds_exact": 6.572369484460073,  "seconds": 6.572 },
+    "hauling":  { "from_frame": 322, "to_frame": 559, "frames": 237, "seconds_exact": 7.906860750340290,  "seconds": 7.907 },
+    "dumping":  { "from_frame": 559, "to_frame": 691, "frames": 132, "seconds_exact": 4.403821177404719,  "seconds": 4.404 },
+    "swinging": { "from_frame": 691, "to_frame": 880, "frames": 189, "seconds_exact": 6.305471231284029,  "seconds": 6.305 },
+    "cycle":    { "from_frame": 125, "to_frame": 880, "frames": 755, "seconds_exact": 25.18852264348911, "seconds": 25.188 }
+  },
+
+  "expected_answer": {
+    "_note": "The shape a correct answer.json takes (docs/pipeline-design.md 1.1), filled in with these labels. eval/score.py scores a candidate answer.json against exactly these five fields.",
+    "cycle_count": 1,
+    "average_cycle_duration_seconds": 25.188,
+    "average_phase_duration_seconds": {
+      "digging": 6.572,
+      "hauling": 7.907,
+      "dumping": 4.404,
+      "swinging": 6.305
+    }
+  },
+
+  "scoring": {
+    "tolerance_seconds": 0.6,
+    "_tolerance_note": "+/-0.6 s per field, applied to the cycle average and to each of the four phase averages. cycle_count is an integer and must match exactly; a tolerance on a count is meaningless.",
+    "fields": [
+      "cycle_count",
+      "average_cycle_duration_seconds",
+      "average_phase_duration_seconds.digging",
+      "average_phase_duration_seconds.hauling",
+      "average_phase_duration_seconds.dumping",
+      "average_phase_duration_seconds.swinging"
+    ]
+  },
+
+  "conventions": [
+    "Boundaries are instants between frames, not frame indices. Phase duration in frames is the difference of two onsets, so no off-by-one correction is needed and none should be applied.",
+    "The four phases tile the cycle with no gaps. Only the four onsets are labelled; each phase ends exactly where the next begins, so the four phase durations sum to the cycle duration by construction.",
+    "Digging onset convention: the onset is marked +9 frames AFTER the bucket's teeth first touch the material. First touch for this cycle was observed at ~f116, so the labelled onset is f125. The offset exists because first contact is ambiguous to the eye across a frame or two, while the start of visible scooping motion is not.",
+    "Rounding: seconds values are the exact frame/fps quotient rounded to 3 decimals, EXCEPT the cycle, whose exact value is 25.1885 s. It is reported as 25.188 (not 25.189) so that the four rounded phase durations sum exactly to the rounded cycle duration."
+  ],
+
+  "known_caveats": [
+    "ASYMMETRIC ONSET OFFSET. The digging onset at f125 uses +9 frames after first touch (~f116), but the cycle-closing onset at f880 uses a larger offset of ~+22 frames after its own first touch at ~f858. The two ends of the cycle therefore do not use the same convention. The ~13-frame difference (~0.43 s at 29.974 fps) is added to the labelled 'swinging' duration and to the labelled cycle duration, relative to what a symmetric convention would give. Both of those labels are therefore ~0.43 s long; 'digging', 'hauling' and 'dumping' are unaffected, because a shift applied to both ends of a phase cancels. With a +/-0.6 s tolerance this consumes most of the budget on two of the five fields, so a pipeline that is 'wrong' by ~0.4 s on swinging may in fact be using a more consistent convention than these labels do.",
+    "SINGLE CYCLE, SINGLE VIDEO. cycle_count is 1, so every 'average' here is an average over one sample. These labels say nothing about the pipeline's behaviour on multi-cycle or hidden videos.",
+    "The labels are one careful human's reading of ambiguous footage. Treat a sub-0.5 s disagreement as within labelling noise, not as a pipeline defect."
+  ]
+}
