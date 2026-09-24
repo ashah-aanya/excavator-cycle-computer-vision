@@ -264,7 +264,160 @@ def rest_boundary(
             return float(times[index + (hold - 1) * -step])
         index = nxt
 
-    return float(times[limit])
+    # The walk reached the edge without ever finding rest. Returning
+    # `times[limit]` here reported the BRACKET'S OWN OPENING TIME as a measured
+    # onset -- and that was this project's only "passing" transition for a
+    # while, passing because the bracket happened to open near the truth. A
+    # failure that looks like a measurement is worse than no measurement.
+    return None
+
+
+def noise_scale(signal: np.ndarray) -> float:
+    """How big is this signal's noise? MAD of successive differences / sqrt(2).
+
+    Differencing cancels any trend -- a plateau at any level, a steady ramp, a
+    slow drift -- and leaves the sample-to-sample noise. The ``sqrt(2)`` undoes
+    the variance doubling that comes from subtracting two noisy samples. MAD
+    rather than a standard deviation so that one genuine jump (a step edge
+    contributes exactly one large difference) cannot inflate the estimate.
+
+    Why not "the spread of the quietest window", which this module used first
+    ------------------------------------------------------------------------
+    Because a window short enough to be quiet is too short to measure a spread
+    with, and taking a low percentile across many noisy window estimates lands
+    in their low tail. Measured against a known ``sigma = 0.0100``:
+
+        window   median-of-bottom-20%   the p20 itself
+        0.8 s        0.46x                  0.61x
+        1.5 s        0.65x                  0.76x
+        2.5 s        0.77x                  0.80x
+
+    A nominal 3-sigma band was really 1.37 sigma, which ordinary noise clears
+    17% of the time -- so noise read as motion and every walk stopped early.
+    Widening the window narrows the bias but never removes it, and a longer
+    window is less likely to be quiet at all.
+
+    This estimator instead returns 0.85-0.86x on a step, on a ramp, and on a
+    signal that is moving for 90% of its length. The bias is small and, more
+    importantly, **stable**: it does not depend on how much of the clip is
+    moving, which is the property that matters when the same code has to serve
+    a digging plateau and a full-speed slew.
+    """
+    values = np.asarray(signal, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if len(values) < 3:
+        return float("nan")
+    steps = np.diff(values)
+    return float(np.median(np.abs(steps - np.median(steps))) * 1.4826 / np.sqrt(2.0))
+
+
+def motion_boundary(
+    rate: np.ndarray,
+    times: np.ndarray,
+    bracket: tuple[float, float],
+    mode: str = "departs",
+    sigma: float = 3.0,
+    hold_seconds: float = 0.3,
+) -> float | None:
+    """When does a RATE leave rest, or settle into it? Rest is zero, by definition.
+
+    Why this exists alongside ``rest_boundary``
+    -------------------------------------------
+    ``rest_boundary`` estimates *both* halves of "rest": the level and the
+    spread. For a **level** -- a height, a bearing -- it has no choice, because
+    a level has a value even when nothing is moving and that value means
+    nothing on another video.
+
+    For a **rate**, half of that estimation is not merely unnecessary, it is
+    the bug. Not moving is ``0``. It is absolute, it is the same on every video
+    ever shot, and estimating it can only go wrong -- which it did: on the
+    development video the level estimator settled on the *hauling* rate
+    (+0.0737 L) instead of the dig plateau (-0.31 L), and every transition
+    measured from it was meaningless. Fixing the level at zero removes that
+    failure outright.
+
+    So this function measures one thing: how wide the noise is, via
+    ``noise_scale``. And it measures it **inside the bracket**, not over the
+    whole clip, because rest has to occur inside the bracket for the walk to
+    terminate. Noise borrowed from elsewhere is a different regime of the
+    machine, and borrowing it is what made the swing onset unfindable: the
+    house's quietest moment during the dump is 0.0347, while the whole-video
+    band was 0.0366 -- the search was hunting for a stillness that, by its own
+    yardstick, was not there.
+
+    The scale of a rate is also not simply its own MAD. Over a whole clip that
+    measures the typical *motion*, not the noise: on ``dh/dt`` it came out 20x
+    too wide (0.0420 against 0.0021) and swallowed the entire hauling lift.
+
+    Args:
+        rate: a derivative -- rad/s, L/s, px/s. NaNs tolerated.
+        times: seconds per sample, parallel to ``rate``.
+        bracket: ``(start, end)`` seconds. Pass 1's answer, and the region the
+            noise is measured over.
+        mode: ``"departs"`` walks back from the excursion to where motion
+            began; ``"arrives"`` walks forward to where it stopped.
+        sigma: band half-width in multiples of the measured noise.
+        hold_seconds: how long the rate must stay inside the band to count.
+
+    Returns the time, or ``None`` when the walk never finds rest. ``None`` is
+    the honest answer: returning the bracket edge instead reads as a confident
+    measurement and produced this project's only "passing" transition, which
+    was the bracket's own opening time.
+    """
+    if mode not in ("departs", "arrives"):
+        raise ValueError(f"mode must be 'departs' or 'arrives', not {mode!r}")
+    if bracket[1] <= bracket[0]:
+        raise ValueError(
+            f"bracket ({bracket[0]:.3f}, {bracket[1]:.3f}) ends at or before it "
+            "starts; the transition ordering upstream is wrong"
+        )
+
+    times = np.asarray(times, dtype=np.float64)
+    rate = np.asarray(rate, dtype=np.float64)
+    if len(rate) != len(times):
+        raise ValueError(f"{len(rate)} values but {len(times)} times; they must be parallel")
+
+    window = np.where(
+        (times >= bracket[0]) & (times <= bracket[1]) & np.isfinite(rate)
+    )[0]
+    if len(window) < 5:
+        return None
+
+    band = sigma * noise_scale(rate[window])
+    if not np.isfinite(band) or band <= 0:
+        return None
+
+    hold = _samples(hold_seconds, times)
+    moving = np.abs(rate[window]) > band
+
+    runs, start = [], None
+    for position in range(len(moving) + 1):
+        marked = position < len(moving) and moving[position]
+        if marked and start is None:
+            start = position
+        elif not marked and start is not None:
+            if position - start >= hold:
+                runs.append((start, position))
+            start = None
+    if not runs:
+        return None
+
+    loudest = max(runs, key=lambda r: float(np.max(np.abs(rate[window[r[0] : r[1]]]))))
+    span = window[loudest[0] : loudest[1]]
+    index = span[int(np.argmax(np.abs(rate[span])))]
+
+    step = -1 if mode == "departs" else 1
+    limit = window[0] if mode == "departs" else window[-1]
+    quiet = 0
+    while index != limit:
+        nxt = index + step
+        value = rate[nxt]
+        quiet = quiet + 1 if np.isfinite(value) and abs(value) <= band else 0
+        if quiet >= hold:
+            return float(times[index + (hold - 1) * -step])
+        index = nxt
+
+    return None
 
 
 def smooth(signal: np.ndarray, times: np.ndarray, window_seconds: float = 0.9) -> np.ndarray:
