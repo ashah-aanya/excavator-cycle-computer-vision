@@ -120,6 +120,7 @@ def build_signals(
     dt: float,
     truck_box: tuple[float, float, float, float] | None = None,
     times: np.ndarray | None = None,
+    bucket_masks: list[np.ndarray] | None = None,
     house_fraction: float = 0.45,
     min_pixels: int = 40,
 ) -> KinematicSignals:
@@ -130,6 +131,15 @@ def build_signals(
     indices; joining on the wrong one pairs each frame with a mask from
     elsewhere in the video and produces a confident null result. That has
     happened once on this project, so the lengths are checked here.
+
+    ``bucket_masks`` optionally supplies a tracked bucket mask per sample -- SAM
+    2's second object -- in place of the geodesic band. Both are bucket regions
+    and both feed the same four signals; the band is free and works on 97% of
+    frames, the tracked mask costs a GPU pass and works on 100%. On the
+    development video they agree within 40 px on 92% of frames and produce
+    phase medians that are indistinguishable, so which one is better is an open
+    question that only onset timing can settle. The stick band always comes from
+    geometry, since SAM is not tracking a stick.
 
     The last entry of every rate is NaN: ``n`` samples give ``n - 1`` intervals.
     """
@@ -151,7 +161,10 @@ def build_signals(
         if mask is None or not mask.any():
             continue
 
-        bucket, stick, _ = geodesic_bands(mask, core, pivot)
+        band, stick, _ = geodesic_bands(mask, core, pivot)
+        bucket = band if bucket_masks is None else bucket_masks[index]
+        if bucket is None or not bucket.any():
+            bucket = band
         height[index] = bucket_height(bucket, pivot, scale)
         if truck_box is not None:
             overlap[index] = truck_overlap(bucket, truck_box)
