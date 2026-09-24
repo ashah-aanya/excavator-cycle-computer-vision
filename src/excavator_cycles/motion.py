@@ -305,3 +305,41 @@ def load_motion(output_dir: str | Path) -> tuple[MotionField, np.ndarray]:
             coverage=data["coverage"],
         )
     return field, times
+
+
+def region_omega(
+    flow: np.ndarray,
+    region: np.ndarray,
+    pivot: tuple[float, float],
+    dt: float,
+    min_pixels: int = 40,
+) -> float:
+    """Rotation rate of one region about the pivot, in rad/s.
+
+    The same reduction ``decompose`` performs, exposed so that two regions can
+    be compared. ``|r|**2`` in the denominator is what makes that comparison
+    mean something: for a rigid body it returns the *same* value at every
+    radius, so a difference between two regions is a JOINT rate rather than the
+    ``v = omega * r`` velocity gradient you get from comparing raw pixel speeds.
+
+    Measured on the development video, comparing raw velocities made a rigid
+    swing look like 6.50 of articulation; comparing ``omega`` brought the same
+    frames to 0.360.
+
+    Sign convention follows ``features.bearing`` -- ``atan2(-(y-cy), x-cx)`` --
+    so the cross product is taken with the y axis flipped. Returns NaN when the
+    region is too small to reduce.
+    """
+    if region.sum() < min_pixels:
+        return float("nan")
+
+    height, width = region.shape
+    ys, xs = np.mgrid[0:height, 0:width]
+    rx = xs[region] - pivot[0]
+    ry = ys[region] - pivot[1]
+    radius_squared = np.maximum(rx**2 + ry**2, 1.0)
+
+    fx = flow[..., 0][region]
+    fy = flow[..., 1][region]
+    cross = ry * fx - rx * fy
+    return float(np.median(cross / radius_squared)) / dt

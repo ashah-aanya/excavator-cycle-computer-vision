@@ -17,6 +17,7 @@ Two figures:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import cv2
 import matplotlib
@@ -426,5 +427,115 @@ def plot_mask_contact_sheet(
         for i in range(0, len(panels) - columns + 1, columns)
     ]
     cv2.imwrite(str(path), np.vstack(rows), [cv2.IMWRITE_JPEG_QUALITY, 92])
+    log.info("wrote %s", path)
+    return path
+
+
+def plot_kinematic_signals(
+    signals: Any,
+    path: str | Path,
+    marks: dict[str, float] | None = None,
+    truck_gate: float = 0.05,
+) -> Path:
+    """Four panels, one per signal, with the moment each one is meant to find.
+
+    ``marks`` is an optional ``{label: seconds}`` overlay -- hand-marked
+    boundaries, a previous run's onsets, anything. It is a caller's argument on
+    purpose: the pipeline must never read the evaluation ground truth, and a
+    plotting function that reached for it would quietly break that. A test
+    greps this package to keep it honest.
+
+    Raw and smoothed are both drawn. The smoothing is Savitzky-Golay, which is
+    symmetric and therefore zero-phase -- it does not shift a departure or an
+    extremum in time. A causal filter would lag every boundary by the same
+    amount, which is exactly the systematic error a +/-0.6 s tolerance cannot
+    absorb, so it is worth seeing that the thin and thick lines turn at the
+    same place.
+    """
+    path = Path(path)
+    times = np.asarray(signals.time_seconds)
+
+    panels = [
+        (
+            "omega  (rad/s)\nhouse vs stick vs bucket",
+            [
+                ("house", signals.omega_house, "#c62828"),
+                ("stick", signals.omega_stick, "#1f4e79"),
+                ("bucket", signals.omega_bucket, "#2e7d32"),
+            ],
+            0.0,
+            "T4 swinging: the HOUSE departs rest",
+        ),
+        (
+            "delta omega  (rad/s)\nbucket relative to stick",
+            [("bucket - stick", signals.delta_omega, "#6a1b9a")],
+            0.0,
+            "T3 dumping: departs zero WHILE over the truck",
+        ),
+        (
+            "h  (units of L)\nbucket height above the pivot",
+            [("h", signals.h, "#ef6c00")],
+            None,
+            "T1 / T2: arrives at, then departs, its own plateau",
+        ),
+        (
+            "bucket over truck\nfraction of bucket inside the bed",
+            [("overlap", signals.truck_overlap, "#00695c")],
+            truck_gate,
+            "the GATE for T3 -- a location, never a clock",
+        ),
+    ]
+
+    figure, axes = plt.subplots(
+        len(panels), 1, figsize=(15, 2.6 * len(panels)), sharex=True
+    )
+    for axis, (label, series, reference, note) in zip(axes, panels, strict=True):
+        for name, values, colour in series:
+            values = np.asarray(values, dtype=np.float64)
+            axis.plot(times, values, linewidth=0.8, alpha=0.35, color=colour)
+            axis.plot(
+                times,
+                _smooth_for_display(values),
+                linewidth=2.0,
+                color=colour,
+                label=name,
+            )
+        if reference is not None:
+            axis.axhline(reference, color="#999999", linewidth=0.9, linestyle="--")
+        axis.set_ylabel(label, fontsize=9)
+        axis.grid(alpha=0.18)
+        axis.text(
+            0.995,
+            0.06,
+            note,
+            transform=axis.transAxes,
+            fontsize=8,
+            color="#555555",
+            ha="right",
+        )
+        if len(series) > 1:
+            axis.legend(fontsize=8, loc="upper left", ncol=len(series))
+
+        if marks:
+            for name, when in marks.items():
+                axis.axvline(when, color="#b71c1c", linewidth=1.0, alpha=0.55)
+                if axis is axes[0]:
+                    axis.text(
+                        when,
+                        axis.get_ylim()[1],
+                        f" {name}",
+                        rotation=90,
+                        fontsize=7.5,
+                        color="#b71c1c",
+                        va="top",
+                    )
+
+    axes[-1].set_xlabel("seconds")
+    figure.suptitle(
+        "Kinematic signals -- each panel is the evidence for one onset", fontsize=11
+    )
+    figure.tight_layout()
+    figure.savefig(path, dpi=140)
+    plt.close(figure)
     log.info("wrote %s", path)
     return path
