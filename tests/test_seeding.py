@@ -25,6 +25,7 @@ from excavator_cycles.seeding import (
     choose_seed,
     geodesic_bands,
     interior_points,
+    looks_like_the_boom_apex,
     score_frame,
 )
 
@@ -211,3 +212,47 @@ def test_negatives_sit_on_the_arm_not_the_bucket():
 def test_no_usable_frame_returns_none_rather_than_guessing():
     empty = np.zeros(SHAPE, bool)
     assert choose_seed([empty, empty], empty, PIVOT, SCALE) is None
+
+
+# --- the one failure geodesic distance genuinely has ------------------------
+
+
+def test_a_band_on_the_boom_apex_is_rejected_outright():
+    """When the arm folds so the bucket touches the cab, the path short-circuits.
+
+    The shape really is ambiguous there -- two parts of the machine are in
+    contact in projection -- so no band edge fixes it. What can be done is
+    refusing to SEED from such a frame. On an excavator the apex is the top of
+    the silhouette by construction and the bucket hangs below it, so a band
+    whose centroid sits at the machine's highest row is the apex.
+
+    Scoring alone was not enough: the worst such frame still ranked #110 of 287
+    on the development video, because reach demotes but does not exclude it.
+    """
+    mask, core = machine()
+    band, _, reach = geodesic_bands(mask, core, PIVOT)
+
+    top_row = np.nonzero(mask)[0].min()
+    apex_band = np.zeros_like(mask)
+    apex_band[top_row : top_row + 10, 140:165] = True
+
+    assert looks_like_the_boom_apex(apex_band, mask, SCALE)
+    assert not looks_like_the_boom_apex(band, mask, SCALE), "the real bucket band was flagged"
+    assert score_frame(apex_band, reach, SCALE, None, 5, 10, mask) == 0.0
+    assert score_frame(band, reach, SCALE, None, 5, 10, mask) > 0.0
+
+
+def test_a_raised_bucket_is_not_mistaken_for_the_apex():
+    """Dumping raises the bucket high, and that must still be a usable frame.
+
+    Measured on the development video: this check fires on 19% of hauling and
+    on 0 of 44 dumping samples, because the boom stays above the bucket even
+    when the bucket is up.
+    """
+    mask, core = machine(elbow=(150, 40), bucket=(230, 80))
+    band, _, _ = geodesic_bands(mask, core, PIVOT)
+
+    assert band.any()
+    assert not looks_like_the_boom_apex(band, mask, SCALE), (
+        "a legitimately raised bucket was rejected as the boom apex"
+    )

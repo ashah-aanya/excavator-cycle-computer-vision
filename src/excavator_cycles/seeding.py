@@ -190,6 +190,38 @@ def _compactness(region: np.ndarray) -> float:
     return float(region.sum()) / box_area
 
 
+def looks_like_the_boom_apex(
+    bucket: np.ndarray, mask: np.ndarray, scale: float, margin_fraction: float = 0.08
+) -> bool:
+    """Is this band on the top of the machine rather than on the bucket?
+
+    The one failure geodesic distance genuinely has. When the arm folds far
+    enough that the bucket touches the cab *in projection*, the wavefront takes
+    the shortcut and the farthest point along the shape becomes the boom apex.
+    The shape really is ambiguous there -- two parts of the machine are in
+    contact -- so no band edge fixes it.
+
+    On an excavator the apex is the top of the silhouette by construction, and
+    the bucket hangs at the end of the arm below it. Measured on the development
+    video this fires on 19% of hauling and, importantly, on **0 of 44** dumping
+    samples -- so it does not punish a legitimately raised bucket, because the
+    boom is still above it.
+
+    Reach alone does not catch this. The short-circuit shortens the path, so bad
+    frames do score lower on average (median reach 108 against 158), but the
+    worst of them still reach 223 -- as high as a good frame.
+
+    The margin is a fraction of ``scale`` (the arm's reach), never a pixel
+    count. A video shot from twice as far would make any pixel constant mean
+    something different, and a constant fitted to one clip is the thing this
+    project is not allowed to ship. 0.08 L is ~18 px on the development video.
+    """
+    if not bucket.any() or not mask.any():
+        return False
+    gap = float(np.nonzero(bucket)[0].mean() - np.nonzero(mask)[0].min())
+    return gap < margin_fraction * max(scale, 1.0)
+
+
 def score_frame(
     bucket: np.ndarray,
     reach: float,
@@ -197,6 +229,7 @@ def score_frame(
     truck_box: tuple[float, float, float, float] | None,
     position: int,
     total: int,
+    mask: np.ndarray | None = None,
 ) -> float:
     """How good a frame is to seed from. Higher is better; 0 means unusable.
 
@@ -210,8 +243,15 @@ def score_frame(
     * **mid-clip position** -- SAM propagates both ways from the seed, so a
       frame at the very end makes the whole video one long reverse pass. The
       naive "maximum reach" rule picked the *last* frame of the clip.
+
+    Passing ``mask`` additionally rejects frames where the band has landed on
+    the boom apex, which is the one failure geodesic distance genuinely has;
+    see ``looks_like_the_boom_apex``. Without it, the best such frame still
+    ranked #110 of 287 -- demoted, but not excluded.
     """
     if not bucket.any() or reach <= 0:
+        return 0.0
+    if mask is not None and looks_like_the_boom_apex(bucket, mask, scale):
         return 0.0
 
     _, xs = np.nonzero(bucket)
@@ -259,7 +299,7 @@ def choose_seed(
             continue
         usable += 1
 
-        score = score_frame(bucket, reach, scale, truck_box, position, len(masks))
+        score = score_frame(bucket, reach, scale, truck_box, position, len(masks), mask)
         if best is not None and score <= best.score:
             continue
 
