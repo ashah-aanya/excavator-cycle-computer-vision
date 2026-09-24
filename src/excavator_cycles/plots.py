@@ -367,3 +367,64 @@ def _normalise(signal: np.ndarray) -> np.ndarray:
     """Scale to roughly [-1, 1] for drawing, without moving the zero line."""
     peak = np.nanmax(np.abs(signal)) if np.isfinite(signal).any() else 0.0
     return signal / peak if peak > 0 else signal
+
+
+def plot_mask_contact_sheet(
+    frames: list[np.ndarray],
+    masks: list[np.ndarray],
+    times: np.ndarray,
+    path: str | Path,
+    tiles: int = 16,
+    columns: int = 4,
+    upscale: int = 3,
+) -> Path:
+    """A grid of frames spanning the clip, each with its mask filled in.
+
+    The point is to judge segmentation over the WHOLE video rather than at a few
+    chosen moments: a mask that drifts, or that swallows the truck, shows up as
+    one bad tile among good ones. `frames` and `masks` are parallel and in sample
+    order -- the same join the motion stage insists on, for the same reason.
+    """
+    if len(frames) != len(masks):
+        raise ValueError(f"{len(frames)} frames but {len(masks)} masks; they must be parallel")
+
+    path = Path(path)
+    picks = np.linspace(0, len(frames) - 1, tiles).astype(int)
+    panels = []
+    for index in picks:
+        image = cv2.resize(
+            frames[index], None, fx=upscale, fy=upscale, interpolation=cv2.INTER_NEAREST
+        )
+        mask = cv2.resize(
+            masks[index].astype(np.uint8),
+            None,
+            fx=upscale,
+            fy=upscale,
+            interpolation=cv2.INTER_NEAREST,
+        ).astype(bool)
+        tinted = image.copy()
+        tinted[mask] = (0, 0, 255)
+        image = cv2.addWeighted(image, 0.55, tinted, 0.45, 0)
+        contours, _ = cv2.findContours(
+            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        cv2.drawContours(image, contours, -1, (0, 255, 255), 1)
+        cv2.rectangle(image, (0, 0), (image.shape[1], 18), (0, 0, 0), -1)
+        cv2.putText(
+            image,
+            f"t={times[index]:5.2f}s   mask={masks[index].mean() * 100:.1f}% of frame",
+            (5, 13),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 255, 255),
+            1,
+        )
+        panels.append(image)
+
+    rows = [
+        np.hstack(panels[i : i + columns])
+        for i in range(0, len(panels) - columns + 1, columns)
+    ]
+    cv2.imwrite(str(path), np.vstack(rows), [cv2.IMWRITE_JPEG_QUALITY, 92])
+    log.info("wrote %s", path)
+    return path
