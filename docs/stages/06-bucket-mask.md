@@ -56,6 +56,37 @@ why:
   records: the box is moving between objects, not tracking one.
 * `"bucket."` alone returns nothing — without a machine word there is no anchor.
 
+### A wider sweep, because three prompts is a thin basis for "does not work"
+
+Eight more prompts across **two** detectors (Grounding DINO and OWLv2), 16
+combinations, same criteria. Only two landed inside the area band, both OWLv2:
+
+| detector | prompt | found | median area | jump |
+|---|---|---|---|---|
+| owlv2 | `"digging attachment."` | 100% | **2,155 px²** (target 1900) | 0.75 |
+| owlv2 | `"backhoe bucket."` | 68% | 2,560 px² | 0.96 |
+
+Everything else was 4-16x too large or returned nothing. Cross-model agreement
+between the two detectors was **median IoU 0.12** — they are not finding the same
+object.
+
+`owlv2 / "digging attachment."` was re-run alone so its contact sheet could be
+read. Isolated, its centre jump is **0.04** — and that number is the tell. A box
+genuinely on the bucket *must* move, because the bucket swings across the frame;
+a box that barely moves is on something that does not. Looking confirms it: the
+modal detection is the **tracks and undercarriage**.
+
+Not uniformly, though. At f114 the box is squarely on the bucket at **0.47**, the
+highest score anywhere in the sweep, and the same happens at f160 and f850. The
+pattern is legible: OWLv2 finds the bucket when it is **low and visually
+separated during digging**, and falls back to the undercarriage once the bucket
+is airborne near the truck.
+
+That is not a detector we can seed from. But it is a useful negative: the word
+that works best is a *function* word (`"digging attachment"`), not a part name,
+and it works exactly where the part is visually isolated — which is the same
+condition that makes the geometric seed unambiguous.
+
 **The spike harness's own gate printed PASS.** That gate's area thresholds are
 calibrated for a whole excavator, so it is not a judgement about a bucket. This is
 why the criteria above were written down first, and why the harness prints *"Look
@@ -63,9 +94,10 @@ at contact_sheet.jpg before trusting these numbers."*
 
 ## What follows
 
-The design doc's assumption was right, and is now measured rather than assumed:
-**part-level open-vocabulary grounding does not work on this footage.** Do not
-re-litigate it with another prompt list.
+The design doc's assumption was right, and is now measured rather than assumed
+across **19 detector x prompt combinations on two architectures**: part-level
+open-vocabulary grounding does not work on this footage. Do not re-litigate it
+with another prompt list.
 
 The bucket seed therefore comes from **geometry**, not from a detector: on one
 deliberately-chosen frame — arm near full extension, inside the dig window, truck
