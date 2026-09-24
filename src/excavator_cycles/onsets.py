@@ -202,8 +202,20 @@ def rest_boundary(
 
     times = np.asarray(times, dtype=np.float64)
     signal = np.asarray(signal, dtype=np.float64)
+    if len(signal) != len(times):
+        raise ValueError(f"{len(signal)} values but {len(times)} times; they must be parallel")
+
     inside_bracket = np.ones(len(signal), dtype=bool)
     if bracket is not None:
+        # An inverted bracket means the caller's ordering logic went wrong --
+        # a later transition was placed before an earlier one. Silently
+        # returning None hides that as "no event here", which is a different
+        # and much more believable failure. It has already happened once.
+        if bracket[1] <= bracket[0]:
+            raise ValueError(
+                f"bracket ({bracket[0]:.3f}, {bracket[1]:.3f}) ends at or before it "
+                "starts; the transition ordering upstream is wrong"
+            )
         inside_bracket = (times >= bracket[0]) & (times <= bracket[1])
     window = np.where(inside_bracket & np.isfinite(signal))[0]
     if len(window) < 3:
@@ -253,3 +265,53 @@ def rest_boundary(
         index = nxt
 
     return float(times[limit])
+
+
+def smooth(signal: np.ndarray, times: np.ndarray, window_seconds: float = 0.9) -> np.ndarray:
+    """Zero-phase smoothing, with the window given in SECONDS.
+
+    Savitzky-Golay is symmetric, so it does not move a departure or an extremum
+    in time. A causal filter would lag every boundary by the same amount, which
+    is the systematic error a +/-0.6 s tolerance cannot absorb.
+
+    The window must be expressed in seconds and converted through the observed
+    sample spacing. Giving it in *samples* -- which is what ``savgol_filter``
+    takes directly -- makes the amount of smoothing depend on the frame rate: 9
+    samples is 0.9 s at 10 Hz and 0.45 s at 20 Hz, so the same footage sampled
+    differently would yield different onsets. ``features.py`` already does this
+    correctly; a scratch script that did not is what prompted this helper.
+    """
+    from scipy.signal import savgol_filter
+
+    filled = _interpolate(signal)
+    width = _odd(max(3, _samples(window_seconds, times)))
+    if len(filled) <= width or not np.isfinite(filled).any():
+        return filled
+    return savgol_filter(filled, width, 2)
+
+
+def derivative(
+    signal: np.ndarray, times: np.ndarray, window_seconds: float = 0.9
+) -> np.ndarray:
+    """Zero-phase first derivative, window in seconds. See ``smooth``."""
+    from scipy.signal import savgol_filter
+
+    filled = _interpolate(signal)
+    width = _odd(max(3, _samples(window_seconds, times)))
+    if len(filled) <= width or not np.isfinite(filled).any():
+        return np.full_like(filled, np.nan)
+    return savgol_filter(filled, width, 2, deriv=1, delta=_spacing(times))
+
+
+def _interpolate(values: np.ndarray) -> np.ndarray:
+    """Fill interior gaps so a filter can run; callers keep their own validity."""
+    values = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(values)
+    if finite.all() or finite.sum() < 2:
+        return values.copy()
+    index = np.arange(len(values))
+    return np.interp(index, index[finite], values[finite])
+
+
+def _odd(value: int) -> int:
+    return value if value % 2 else value + 1
