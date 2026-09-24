@@ -113,6 +113,43 @@ registered before any object has produced a conditioning output. Hence a
 two-phase session: a throwaway pass to get the excavator mask, then a fresh
 session carrying both prompts.
 
+## The geometric seed, drawn and checked
+
+`farthest_point` was run against every cached mask and the proposed box drawn on
+the frame (`docs/evidence/geometric-seed-across-clip.jpg`). Two things showed up
+that no summary statistic would have surfaced.
+
+**Where the farthest point actually lands:**
+
+| arm attitude | box lands on |
+|---|---|
+| extended, in the dig window | the bucket |
+| extended right over the truck | the bucket |
+| **raised high (the dumping window)** | **the boom apex** |
+| folded | the tracks |
+
+This is the known failure of an extreme point and it is harmless, because the
+seed is taken **once** on a frame we choose. It is also a reminder of why the
+same operation could not be trusted per-frame in the arm chain.
+
+**Two corrections to the seed rule, both found by looking:**
+
+1. *Max extension alone picks the wrong frame.* It chose sample 295 — the last
+   frame in the clip — so SAM would reverse-propagate the entire video from one
+   end. Score candidates on reach x box-fill x mid-clip-ness instead.
+2. *The box was centred on the bucket's outermost corner*, so it covered roughly
+   half bucket and half background. `farthest_point` returns an extremity, not a
+   centre. Step inward toward the pivot by half a box side.
+
+With both fixed, the rule chooses **sample 53 (t = 5.3 s, frame 159)**: reach
+0.74 L, tip 198 px clear of the truck box, and the seed box **83% machine
+pixels** (`docs/evidence/geometric-seed-chosen.jpg`). **92 of 296 samples**
+qualify as candidates, so the rule does not hang on one lucky frame.
+
+The box still clips a little of the stick at its top-right corner. SAM segments
+the dominant object inside a box, and the pivot is available as a negative point
+if object 2 over-reaches up the arm.
+
 ## Still open
 
 * **Whether SAM 2.1-tiny can hold a ~25 px object for 296 samples.** This is the
