@@ -22,6 +22,25 @@ docs/stages/02-tracking-findings.md:
    seed does not have to be the first frame -- it is the best-scoring frame that
    is not merged.
 
+Two objects, two phases
+-----------------------
+Three of the four phase onsets need the bucket separated from the rest of the
+machine, and no detector can box it -- measured across 19 detector x prompt
+combinations on two architectures (docs/stages/06-bucket-mask.md). The bucket is
+therefore found by geometry (``seeding.py``) and tracked as SAM 2's **second
+object**, which forces this stage into two passes over the same video:
+
+1. a throwaway session carrying only the excavator, run far enough to know what
+   part of the machine is its body and what part is its arm;
+2. a fresh session carrying **both** prompts, registered before any forward
+   pass, which is the one that produces the masks we keep.
+
+The split is not a style choice. The bucket seed is derived from the excavator
+*mask*, so it cannot exist before a forward pass; and the processor assigns
+rather than appends its "these objects have new inputs" list, so an object
+registered after another has already been conditioned is either clobbered or
+conditioned on nothing. See ``register_prompts``.
+
 Nothing here is specific to a particular video: every threshold is either a
 dimensionless constant from the config or a statistic of the video being
 analysed.
@@ -38,19 +57,36 @@ import cv2
 import numpy as np
 
 from . import masks as mask_io
+from . import seeding
 from .config import Config
 from .detect import Detection, build_detector, iou
 from .devices import resolve_device
+from .geometry import arm_reach, farthest_point, rotation_centre
+from .kinematics import body_core, boom_base
 from .logging_setup import get_logger
 from .provenance import config_digest, file_digest, run_record, set_seeds
+from .seeding import BucketSeed
 from .video import Sample, VideoInfo, iter_samples, probe
 
 log = get_logger(__name__)
 
+# SAM 2 object ids. Any integers would do; these are fixed so that a mask read
+# back from disk can be attributed without consulting the run that wrote it.
+EXCAVATOR_OBJECT_ID = 1
+BUCKET_OBJECT_ID = 2
+
+BUCKET_PROMPT_FORMS = ("mask", "points", "box")
+
 
 @dataclass
 class FrameRecord:
-    """What is known about one sampled frame."""
+    """What is known about one sampled frame.
+
+    Every field after the first two carries a default, because ``load_result``
+    rebuilds these straight from JSON and several completed runs predate the
+    bucket. A field without a default would make every one of those files
+    unreadable.
+    """
 
     frame_index: int
     time_seconds: float
@@ -63,6 +99,10 @@ class FrameRecord:
     truck_box: list[float] | None = None
     detection_truck_iou: float | None = None
     detection_mask_iou: float | None = None
+    # The second tracked object. Absent from runs made before it existed.
+    bucket_area_fraction: float = 0.0
+    bucket_confidence: float = 0.0
+    has_bucket_mask: bool = False
 
 
 @dataclass
@@ -80,6 +120,10 @@ class TrackResult:
     seed: dict[str, Any]
     frames: list[FrameRecord]
     qa: dict[str, Any]
+    # Where the bucket was pointed at, and in what form. None when no frame
+    # yielded a usable band, which is a legitimate outcome: the run then carries
+    # excavator masks only, exactly as it did before there was a second object.
+    bucket_seed: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -236,6 +280,189 @@ def choose_seed(detections: DetectionPass, config: Config) -> tuple[int, np.ndar
 
 
 # --------------------------------------------------------------------------
+# The second object: pointing SAM 2 at the bucket
+# --------------------------------------------------------------------------
+
+
+def derive_bucket_seed(
+    seed_masks: dict[int, np.ndarray],
+    sample_count: int,
+    seed_position: int,
+    truck_box: np.ndarray | None,
+    config: Config,
+) -> BucketSeed | None:
+    """Turn the throwaway pass's excavator masks into a prompt for the bucket.
+
+    The geodesic rule in ``seeding.py`` needs three things the masks themselves
+    supply, and nothing else:
+
+    * the **body core** -- which pixels are machine in almost every frame. It is
+      subtracted before the arm is traced, and that subtraction is the reason
+      the far end of the geodesic is the bucket rather than the undercarriage.
+      It needs several frames of arm motion to exist at all: the persistent core
+      of one mask is that whole mask, which would leave the body in and let the
+      tracks compete with the bucket for "farthest along the metal";
+    * the **pivot** -- the top of that core, where the boom is anchored, which is
+      where the geodesic wavefront starts;
+    * the **scale** -- how far the arm reaches in this video's pixels, used only
+      to compare candidate frames.
+
+    The bucket is seeded on the excavator's own seed sample and no other. Both
+    objects must be conditioned on the *same* frame (see ``register_prompts``),
+    so the candidate list holds one real mask and is padded with ``None``
+    elsewhere -- which keeps ``BucketSeed.sample`` a true sample ordinal.
+
+    Returns ``None`` when no band can be derived; the caller then tracks the
+    excavator alone rather than prompting SAM 2 with a guess.
+    """
+    window = [mask for mask in seed_masks.values() if mask.any()]
+    if not window or seed_position not in seed_masks:
+        log.warning("the seeding pass produced no usable excavator mask")
+        return None
+
+    core = body_core(window, config.geometry.occupancy_quantile)
+    if not core.any():
+        log.warning("no persistent body core in the seeding pass; cannot place a pivot")
+        return None
+    if len(window) == 1:
+        log.warning(
+            "body core taken from a single mask: the persistent body of one "
+            "mask is that whole mask, so the band will be empty or will include "
+            "the undercarriage (raise track.bucket_seed_window_seconds)"
+        )
+
+    pivot = boom_base(core)
+    centre = rotation_centre(window, config.geometry.occupancy_quantile)
+    tips = [farthest_point(mask, centre) for mask in window]
+    scale = arm_reach(tips, centre, config.geometry.reach_percentile)
+
+    # `None` entries are skipped by `seeding.choose_seed`, so this is a
+    # full-length candidate list with exactly one candidate in it.
+    candidates: list[np.ndarray | None] = [None] * sample_count
+    candidates[seed_position] = seed_masks[seed_position]
+
+    return seeding.choose_seed(
+        candidates,
+        core,
+        pivot,
+        scale,
+        truck_box=None if truck_box is None else tuple(float(v) for v in truck_box),
+        point_count=config.track.bucket_point_count,
+        negative_count=config.track.bucket_negative_count,
+    )
+
+
+def bucket_prompt_payload(seed: BucketSeed, form: str) -> dict[str, Any]:
+    """The prompt keyword arguments SAM 2's processor expects, in one of three forms.
+
+    The seed carries all three because the model's own ablation prices them
+    apart -- a box is worth 72.9 J&F, five clicks 75.4, a mask 77.6 -- and the
+    difference between the cheapest and the dearest is larger than most of the
+    tuning available anywhere else in this stage.
+
+    Nesting is ``[batch][object][...]``, which is why every value here looks
+    over-bracketed: one batch, one object, then the prompt itself.
+    """
+    if form == "mask":
+        # The band IS a mask, already at the video's resolution, so the
+        # strongest prompt form costs nothing extra to produce.
+        return {"input_masks": [seed.band.astype(bool)]}
+    if form == "box":
+        return {"input_boxes": [[[float(v) for v in seed.box]]]}
+    if form == "points":
+        points = [[float(x), float(y)] for x, y in seed.points]
+        points += [[float(x), float(y)] for x, y in seed.negatives]
+        labels = [1] * len(seed.points) + [0] * len(seed.negatives)
+        return {"input_points": [[points]], "input_labels": [[labels]]}
+    raise ValueError(
+        f"unknown bucket prompt form {form!r}; expected one of {BUCKET_PROMPT_FORMS}"
+    )
+
+
+def register_prompts(
+    processor, session, frame_idx: int, prompts: dict[int, dict[str, Any]]
+) -> None:
+    """Attach every object's prompt to one frame, before any forward pass runs.
+
+    Two properties of the SAM 2 video processor make this worth its own function
+    rather than two inline calls.
+
+    **``obj_with_new_inputs`` is assigned, not appended.** Every call to
+    ``add_inputs_to_inference_session`` ends with
+    ``inference_session.obj_with_new_inputs = obj_ids``, so registering the
+    bucket erases the excavator's pending flag. The forward pass then finds the
+    excavator "without new inputs", skips its prompt entirely and tracks it from
+    a memory bank it never built. Restoring the union here is the fix. The two
+    prompts cannot simply be registered in one call instead: a single call
+    carrying points for two objects requires both to have the same number of
+    points, and these do not.
+
+    **Both objects must name the same frame.** ``forward`` treats any object
+    flagged as having new inputs as being on its conditioning frame, and then
+    looks up that object's prompt *for the frame being processed*. An object
+    prompted elsewhere finds nothing there and is conditioned on nothing at all,
+    silently. One frame for both objects is the only arrangement this API gets
+    right.
+    """
+    for obj_id, prompt in prompts.items():
+        processor.add_inputs_to_inference_session(
+            inference_session=session, frame_idx=frame_idx, obj_ids=obj_id, **prompt
+        )
+    session.obj_with_new_inputs = [int(obj_id) for obj_id in prompts]
+
+
+def split_objects(
+    object_ids,
+    processed_masks,
+    object_score_logits,
+    min_fractions: dict[int, float],
+) -> dict[int, tuple[np.ndarray, float]]:
+    """Route one multi-object SAM 2 output into a mask and a confidence per object.
+
+    The rows of ``processed_masks`` are in the order of ``object_ids``, not in
+    the order of the ids themselves. With a single object the two coincide,
+    which is why reading row 0 and calling it "the excavator" worked right up
+    until a second object was added -- at which point the bucket would have been
+    dropped without a word. Indexing by the reported ids removes the coincidence.
+
+    Each object gets its own speck threshold: the same relative cut means very
+    different absolute sizes on a 9,000-pixel machine and a 1,100-pixel bucket.
+    """
+    masks = _to_numpy(processed_masks)
+    logits = (
+        None if object_score_logits is None else _to_numpy(object_score_logits).reshape(-1)
+    )
+
+    out: dict[int, tuple[np.ndarray, float]] = {}
+    for row, obj_id in enumerate(object_ids):
+        obj_id = int(obj_id)
+        mask = np.asarray(masks[row, 0]) > 0
+        cleaned = drop_small_components(mask, min_fractions.get(obj_id, 0.0))
+        # `object_score_logits` is how sure the model is that the object is
+        # present at all -- not mask quality. It drops under occlusion, which is
+        # exactly when a sample should count as MISSING rather than as evidence.
+        confidence = float("nan") if logits is None else _sigmoid(float(logits[row]))
+        out[obj_id] = (cleaned, confidence)
+    return out
+
+
+def _to_numpy(value) -> np.ndarray:
+    """Torch tensor or array -> array, without importing torch.
+
+    Torch is an optional dependency here (the `models` extra), so the parts of
+    this module that only shuffle numbers must not reach for it.
+    """
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _sigmoid(x: float) -> float:
+    """Logit -> probability, written so a large negative logit cannot overflow."""
+    return float(0.5 * (1.0 + np.tanh(0.5 * x)))
+
+
+# --------------------------------------------------------------------------
 # The stage itself
 # --------------------------------------------------------------------------
 
@@ -256,6 +483,13 @@ def track(
     from transformers import Sam2VideoModel, Sam2VideoProcessor
 
     set_seeds()
+    # Checked before anything expensive happens: a typo here would otherwise
+    # surface after the detector pass and a model download.
+    if config.track.bucket_prompt not in BUCKET_PROMPT_FORMS:
+        raise ValueError(
+            f"track.bucket_prompt is {config.track.bucket_prompt!r}; "
+            f"expected one of {BUCKET_PROMPT_FORMS}"
+        )
     video_path = Path(video_path)
     output_dir = Path(output_dir)
     info = probe(video_path, verify=True)
@@ -291,52 +525,122 @@ def track(
         )
 
         frames_rgb = [cv2.cvtColor(s.image, cv2.COLOR_BGR2RGB) for s in samples]
-        # Frames stay on the CPU; only the model's working tensors go to the
-        # accelerator. Pushing the whole decoded video onto the device costs
-        # memory the machine may not have, and a swapping run is indistinguishable
-        # from a hung one until you check CPU time.
-        session = processor.init_video_session(
-            video=frames_rgb,
-            inference_device=resolved_device,
-            video_storage_device="cpu",
-            dtype=torch.float32,
-        )
-
-        prompt: dict[str, Any] = {"input_boxes": [[seed_box.tolist()]]}
-        if negatives:
-            prompt["input_points"] = [[negatives]]
-            prompt["input_labels"] = [[[0] * len(negatives)]]
-        processor.add_inputs_to_inference_session(
-            inference_session=session, frame_idx=seed_position, obj_ids=1, **prompt
-        )
-
         height, width = samples[0].image.shape[:2]
+
+        def new_session():
+            # Frames stay on the CPU; only the model's working tensors go to the
+            # accelerator. Pushing the whole decoded video onto the device costs
+            # memory the machine may not have, and a swapping run is
+            # indistinguishable from a hung one until you check CPU time.
+            return processor.init_video_session(
+                video=frames_rgb,
+                inference_device=resolved_device,
+                video_storage_device="cpu",
+                dtype=torch.float32,
+            )
+
+        excavator_prompt: dict[str, Any] = {"input_boxes": [[seed_box.tolist()]]}
+        if negatives:
+            excavator_prompt["input_points"] = [[negatives]]
+            excavator_prompt["input_labels"] = [[[0] * len(negatives)]]
+
+        min_fractions = {
+            EXCAVATOR_OBJECT_ID: config.track.min_component_fraction,
+            BUCKET_OBJECT_ID: config.track.bucket_min_component_fraction,
+        }
+
+        def unpack(output) -> dict[int, tuple[np.ndarray, float]]:
+            # Masks are left overlapping on purpose: the bucket is *part of* the
+            # excavator, so the non-overlapping constraint SAM 2 can apply would
+            # carve one out of the other.
+            processed = processor.post_process_masks(
+                [output.pred_masks], [[height, width]], binarize=True
+            )[0]
+            return split_objects(
+                output.object_ids,
+                processed,
+                getattr(output, "object_score_logits", None),
+                min_fractions,
+            )
+
+        # --- phase 1: a throwaway session, only to learn where the bucket is --
+        window = round(config.track.bucket_seed_window_seconds * config.sampling.rate_hz)
+        scratch = new_session()
+        register_prompts(
+            processor, scratch, seed_position, {EXCAVATOR_OBJECT_ID: excavator_prompt}
+        )
+        seed_masks: dict[int, np.ndarray] = {}
+        log.info("seeding pass: %d sample(s) from sample %d", window + 1, seed_position)
+        with torch.inference_mode():
+            first = model(inference_session=scratch, frame_idx=seed_position)
+            seed_masks[first.frame_idx] = unpack(first)[EXCAVATOR_OBJECT_ID][0]
+            if window > 0:
+                for output in model.propagate_in_video_iterator(
+                    inference_session=scratch,
+                    start_frame_idx=seed_position,
+                    max_frame_num_to_track=window,
+                ):
+                    seed_masks[output.frame_idx] = unpack(output)[EXCAVATOR_OBJECT_ID][0]
+                # The seed is chosen for detector confidence, not for where it
+                # falls in the clip, so it can sit near the end with too little
+                # video ahead of it for the arm to move. Take the rest from
+                # behind it rather than settling for a body core that is mostly
+                # arm.
+                short_by = window + 1 - len(seed_masks)
+                if short_by > 0 and seed_position > 0:
+                    for output in model.propagate_in_video_iterator(
+                        inference_session=scratch,
+                        start_frame_idx=seed_position,
+                        max_frame_num_to_track=short_by,
+                        reverse=True,
+                    ):
+                        seed_masks[output.frame_idx] = unpack(output)[EXCAVATOR_OBJECT_ID][0]
+        log.info("seeding pass produced %d excavator mask(s)", len(seed_masks))
+        del scratch  # its memory bank is conditioned on one object; do not reuse it
+
+        bucket_seed = derive_bucket_seed(
+            seed_masks, len(samples), seed_position, truck_box, config
+        )
+
+        # --- phase 2: a fresh session carrying both prompts -------------------
+        session = new_session()
+        prompts = {EXCAVATOR_OBJECT_ID: excavator_prompt}
+        if bucket_seed is not None:
+            prompts[BUCKET_OBJECT_ID] = bucket_prompt_payload(
+                bucket_seed, config.track.bucket_prompt
+            )
+            log.info(
+                "tracking the bucket as object %d, prompted by %s at sample %d",
+                BUCKET_OBJECT_ID,
+                config.track.bucket_prompt,
+                bucket_seed.sample,
+            )
+        else:
+            log.warning("no bucket seed; tracking the excavator alone")
+        register_prompts(processor, session, seed_position, prompts)
+
         masks: dict[int, np.ndarray] = {}
         confidences: dict[int, float] = {}
+        bucket_masks: dict[int, np.ndarray] = {}
+        bucket_confidences: dict[int, float] = {}
 
         progress_every = max(1, len(samples) // 10)
 
         def store(output) -> None:
-            processed = processor.post_process_masks(
-                [output.pred_masks], [[height, width]], binarize=True
-            )[0]
-            mask = processed[0, 0].cpu().numpy() > 0
-            masks[output.frame_idx] = drop_small_components(
-                mask, config.track.min_component_fraction
-            )
+            for obj_id, (mask, confidence) in unpack(output).items():
+                if obj_id == BUCKET_OBJECT_ID:
+                    bucket_confidences[output.frame_idx] = confidence
+                    # Only a mask with pixels in it is a mask. SAM returns a
+                    # prediction on every frame whether or not it still believes
+                    # the object is there, so storing the empty ones would make
+                    # bucket coverage 100% by construction and say nothing.
+                    if mask.any():
+                        bucket_masks[output.frame_idx] = mask
+                else:
+                    masks[output.frame_idx] = mask
+                    confidences[output.frame_idx] = confidence
             if len(masks) % progress_every == 0:
                 log.info("  %d/%d masks", len(masks), len(samples))
-            # The video model reports `object_score_logits` -- how confident it is
-            # that the tracked object is present at all -- rather than the image
-            # model's mask-quality score. That is the more useful signal here:
-            # it drops when the machine is occluded, which is exactly when a
-            # sample should count as MISSING rather than as evidence.
-            logits = getattr(output, "object_score_logits", None)
-            confidences[output.frame_idx] = (
-                float(torch.sigmoid(logits.flatten()[0]))
-                if logits is not None
-                else float("nan")
-            )
 
         with torch.inference_mode():
             store(model(inference_session=session, frame_idx=seed_position))
@@ -353,9 +657,18 @@ def track(
                     store(output)
 
         records = _build_records(
-            samples, masks, confidences, detections, truck_box, height, width
+            samples,
+            masks,
+            confidences,
+            bucket_masks,
+            bucket_confidences,
+            detections,
+            truck_box,
+            height,
+            width,
         )
         qa = evaluate_quality(records, config)
+        qa["bucket"] = evaluate_bucket_quality(masks, bucket_masks, len(samples), config)
 
         result = TrackResult(
             video=str(video_path),
@@ -376,15 +689,48 @@ def track(
             },
             frames=records,
             qa=qa,
+            bucket_seed=(
+                None if bucket_seed is None else _seed_record(bucket_seed, samples, config)
+            ),
         )
 
-        mask_io.save(output_dir / "masks.npz", masks, (height, width))
+        mask_io.save_objects(
+            output_dir / "masks.npz",
+            {"excavator": masks, "bucket": bucket_masks},
+            (height, width),
+        )
         (output_dir / "track.json").write_text(json.dumps(result.to_dict(), indent=2))
         record.outputs.extend(["masks.npz", "track.json"])
-        record.metrics = {"qa_status": qa["status"], "masked_samples": len(masks)}
+        record.metrics = {
+            "qa_status": qa["status"],
+            "masked_samples": len(masks),
+            "bucket_masked_samples": len(bucket_masks),
+        }
 
-    log.info("tracking complete: %d masks, QA %s", len(masks), qa["status"])
+    log.info(
+        "tracking complete: %d masks, %d bucket masks, QA %s",
+        len(masks),
+        len(bucket_masks),
+        qa["status"],
+    )
     return result
+
+
+def _seed_record(seed: BucketSeed, samples: list[Sample], config: Config) -> dict[str, Any]:
+    """The bucket seed as plain JSON, so a run can be audited without rerunning it."""
+    sample = samples[seed.sample]
+    return {
+        "sample_position": seed.sample,
+        "frame_index": sample.frame_index,
+        "time_seconds": sample.time_seconds,
+        "prompt": config.track.bucket_prompt,
+        "points": [[float(x), float(y)] for x, y in seed.points],
+        "negative_points": [[float(x), float(y)] for x, y in seed.negatives],
+        "box": [float(v) for v in seed.box],
+        "band_pixels": int(seed.band.sum()),
+        "score": float(seed.score),
+        "reach": float(seed.reach),
+    }
 
 
 def drop_small_components(mask: np.ndarray, min_fraction: float) -> np.ndarray:
@@ -413,18 +759,39 @@ def drop_small_components(mask: np.ndarray, min_fraction: float) -> np.ndarray:
     return keep if keep.any() else mask
 
 
-def _build_records(samples, masks, confidences, detections, truck_box, height, width):
-    """Per-sample facts, including the detector's independent opinion where it ran."""
+def _build_records(
+    samples,
+    masks,
+    confidences,
+    bucket_masks,
+    bucket_confidences,
+    detections,
+    truck_box,
+    height,
+    width,
+):
+    """Per-sample facts, including the detector's independent opinion where it ran.
+
+    Both mask dictionaries are keyed by **sample ordinal**, which is what
+    ``position`` is here -- never by the source frame index, which is a
+    different number stored alongside it.
+    """
     frame_area = float(height * width)
     records: list[FrameRecord] = []
     for position, sample in enumerate(samples):
         mask = masks.get(position)
+        bucket = bucket_masks.get(position)
         record = FrameRecord(
             frame_index=sample.frame_index,
             time_seconds=sample.time_seconds,
             has_mask=mask is not None,
             mask_area_fraction=float(mask.sum() / frame_area) if mask is not None else 0.0,
             sam_confidence=confidences.get(position, 0.0),
+            has_bucket_mask=bucket is not None,
+            bucket_area_fraction=(
+                float(bucket.sum() / frame_area) if bucket is not None else 0.0
+            ),
+            bucket_confidence=bucket_confidences.get(position, 0.0),
         )
         detection = detections.excavator.get(position)
         if detection is not None:
@@ -514,6 +881,74 @@ def evaluate_quality(records: list[FrameRecord], config: Config) -> dict[str, An
     }
 
 
+def evaluate_bucket_quality(
+    masks: dict[int, np.ndarray],
+    bucket_masks: dict[int, np.ndarray],
+    sample_count: int,
+    config: Config,
+) -> dict[str, Any]:
+    """Judge the bucket masks on their own terms, with no ground truth.
+
+    Three numbers, none of which needs a label and none of which is a pixel
+    count:
+
+    * **coverage** -- the share of samples that got a bucket mask at all. The
+      open question this whole stage turns on is whether SAM 2.1-tiny can hold a
+      ~25 px object for hundreds of samples, and this is where losing it shows.
+    * **containment** -- the median share of bucket pixels that lie inside the
+      excavator mask. The bucket *is* part of the machine, so a bucket that has
+      slid onto the truck bed or the spoil pile is visible here and nowhere
+      else: its area would still look reasonable and its confidence high.
+    * **area stability** -- p90 over p10 of the bucket's area across the clip. A
+      tracker letting the bucket creep up the arm swells; one losing it
+      collapses. A ratio rather than a level, so it carries nothing about this
+      video's scale. Some variation is real -- the bucket foreshortens as the
+      machine slews -- so this flags, it does not condemn.
+
+    These are reported, **not** folded into the excavator's pass/fail. The
+    excavator gate is calibrated against measurements; nothing about the bucket
+    has been measured yet, and a gate invented before its first measurement
+    would only be a guess with a threshold attached.
+    """
+    coverage = float(len(bucket_masks) / sample_count) if sample_count else 0.0
+
+    containments = [
+        float(np.logical_and(bucket, masks[position]).sum() / bucket.sum())
+        for position, bucket in bucket_masks.items()
+        if position in masks and bucket.any()
+    ]
+    containment = float(np.median(containments)) if containments else None
+
+    areas = np.array([float(mask.sum()) for mask in bucket_masks.values()])
+    spread = None
+    if areas.size:
+        low = float(np.percentile(areas, 10))
+        spread = float(np.percentile(areas, 90) / low) if low > 0 else float("inf")
+
+    notes: list[str] = []
+    if coverage < config.qa.min_bucket_coverage:
+        notes.append(f"only {coverage:.1%} of samples have a bucket mask")
+    if containment is not None and containment < config.qa.min_bucket_containment:
+        notes.append(
+            f"median {1 - containment:.1%} of the bucket mask lies outside the machine "
+            "(the bucket may have drifted onto another object)"
+        )
+    if spread is not None and spread > config.qa.max_bucket_area_ratio:
+        notes.append(
+            f"bucket area varies by {spread:.1f}x across the clip "
+            "(p90/p10), which is more than foreshortening explains"
+        )
+
+    return {
+        "coverage": round(coverage, 4),
+        "samples_with_mask": len(bucket_masks),
+        "containment_median": None if containment is None else round(containment, 4),
+        "area_p90_over_p10": None if spread is None else round(spread, 3),
+        "area_median_pixels": round(float(np.median(areas)), 1) if areas.size else None,
+        "notes": notes,
+    }
+
+
 def load_result(output_dir: str | Path) -> tuple[TrackResult, dict[int, np.ndarray]]:
     """Read a completed tracking run back from disk.
 
@@ -526,3 +961,15 @@ def load_result(output_dir: str | Path) -> tuple[TrackResult, dict[int, np.ndarr
     result = TrackResult(**data)
     loaded, _ = mask_io.load(output_dir / "masks.npz")
     return result, loaded
+
+
+def load_bucket_masks(output_dir: str | Path) -> dict[int, np.ndarray]:
+    """The bucket masks from a completed run, keyed by sample ordinal.
+
+    Separate from ``load_result`` rather than bolted onto its return value,
+    because every stage downstream already unpacks that two-tuple and only the
+    stages that need the bucket should pay to decode it. Returns an empty
+    mapping for a run made before the bucket was tracked.
+    """
+    objects, _ = mask_io.load_objects(Path(output_dir) / "masks.npz")
+    return objects.get("bucket", {})

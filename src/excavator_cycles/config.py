@@ -170,6 +170,41 @@ class TrackConfig:
     min_area_ratio: float = 0.4
     max_bad_area_fraction: float = 0.10  # share of samples allowed to be off
 
+    # --- the second tracked object: the bucket ----------------------------
+    # Which of the three prompt forms the bucket seed is handed to SAM 2 as.
+    # The model's own ablation (paper Table 4, zero-shot VOS over 17 datasets)
+    # prices them 64.3 J&F for one click, 72.9 for a box, 75.4 for five clicks
+    # and 77.6 for a mask -- and the seed already computes the mask, so the
+    # strongest form is also the free one. "points" and "box" are kept because
+    # the same ablation says a box is the robust choice when the mask itself is
+    # suspect, and because a prompt form is the first thing worth sweeping if
+    # the bucket cannot be held.
+    bucket_prompt: str = "mask"
+
+    # The speck cut is a fraction of the MASK's own area, not the frame's, so it
+    # is scale-free in principle. In practice it is not: SAM's strays are a few
+    # dozen pixels whatever the object's size, and the bucket's mask is an order
+    # of magnitude smaller than the machine's (~1,100 px against ~9,000 on the
+    # development footage). At 0.05 the cut would erase a genuinely detached
+    # 50-pixel fragment of bucket while leaving a 50-pixel speck untouched, so
+    # the bucket gets a much smaller fraction of its own.
+    bucket_min_component_fraction: float = 0.01
+
+    # How much video the throwaway first pass propagates through, in seconds.
+    # Its masks are used only to separate the machine's persistent body from its
+    # sweeping arm, which is what makes the geodesic seed measure distance along
+    # the metal rather than through the body. One frame cannot do that -- the
+    # body core of a single mask IS that mask -- so a few seconds of arm motion
+    # are bought at a few seconds of extra tracking. 0.0 means one forward pass
+    # and no window.
+    bucket_seed_window_seconds: float = 4.0
+
+    # Prompt sizes when `bucket_prompt` is "points": five positives is the knee
+    # of the ablation curve above, and the negatives sit on the stick to stop
+    # SAM claiming the whole arm as "the bucket".
+    bucket_point_count: int = 5
+    bucket_negative_count: int = 3
+
 
 @dataclass(frozen=True)
 class GeometryConfig:
@@ -344,6 +379,14 @@ class QAConfig:
     max_tip_jump_frac: float = 0.35  # tip jump per sample, in units of L
     min_frame_iou: float = 0.80  # frame-to-frame mask overlap
     min_cyclicity: float = 0.30  # strength of the dominant bearing period
+
+    # The bucket's own bands. These are ADVISORY: they produce notes in the
+    # report, not a pass/fail, because whether a ~25 px object can be held for a
+    # whole clip is still an open question and a gate calibrated before the
+    # first measurement would be a guess dressed as a standard.
+    min_bucket_coverage: float = 0.90  # samples that got a bucket mask at all
+    min_bucket_containment: float = 0.80  # bucket pixels inside the machine's mask
+    max_bucket_area_ratio: float = 4.0  # p90/p10 of bucket area across the clip
 
 
 @dataclass(frozen=True)

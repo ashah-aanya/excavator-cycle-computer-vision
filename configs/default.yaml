@@ -47,6 +47,11 @@ track:
   max_area_ratio: 1.8         # mask this far above the video's median = absorbed something
   min_area_ratio: 0.4         # this far below = lost the machine
   max_bad_area_fraction: 0.10
+  bucket_prompt: "mask"            # mask | points | box; SAM 2 prices them 77.6 / 75.4 / 72.9 J&F
+  bucket_min_component_fraction: 0.01  # the bucket mask is ~8x smaller, so 0.05 would cut real fragments
+  bucket_seed_window_seconds: 4.0  # throwaway first pass; enough arm motion to find the body
+  bucket_point_count: 5            # positives, when bucket_prompt is "points"
+  bucket_negative_count: 3         # negatives on the stick, so SAM does not claim the arm
 
 geometry:
   occupancy_quantile: 0.90   # what counts as the machine's persistent core
@@ -89,3 +94,6 @@ qa:
   max_tip_jump_frac: 0.35
   min_frame_iou: 0.80
   min_cyclicity: 0.30
+  min_bucket_coverage: 0.90      # advisory only: reported, never folded into status
+  min_bucket_containment: 0.80   # bucket pixels that must lie inside the machine's mask
+  max_bucket_area_ratio: 4.0     # p90/p10 of bucket area across the clip
