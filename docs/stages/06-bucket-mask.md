@@ -150,6 +150,39 @@ The box still clips a little of the stick at its top-right corner. SAM segments
 the dominant object inside a box, and the pivot is available as a negative point
 if object 2 over-reaches up the arm.
 
+## What was wired, and two things the API does that the plan did not say
+
+The rule that shipped is the **fallback below, not `farthest_point`**: geodesic
+banding (`seeding.choose_seed`), because it does not collapse when the arm folds
+and it hands SAM all three prompt forms instead of only a box. The stage sends
+the band as a **mask** by default — the strongest form in the ablation, and free,
+since the band had to be computed anyway. `track.bucket_prompt` switches it to
+`points` or `box` without touching code.
+
+Reading `transformers/models/sam2_video` while wiring it turned up two things
+that would each have failed silently on the GPU:
+
+1. **Both objects must be prompted on the *same* frame.** `forward` treats any
+   object flagged as having new inputs as being on its conditioning frame, then
+   looks up that object's prompt *for the frame it is processing*. An object
+   prompted on a different frame finds nothing, and is conditioned on nothing —
+   no error. So the bucket is seeded on the excavator's own seed sample, and the
+   throwaway pass exists to produce that one mask.
+
+2. **Registering the second object erases the first's prompt.**
+   `obj_with_new_inputs = obj_ids` is an assignment, so two registration calls
+   before the first forward pass leave only the second object pending; the
+   excavator would then be tracked from a memory bank it never built. Both calls
+   are still needed — points for two objects in one call must have equal point
+   counts — so `track.register_prompts` restores the union afterwards.
+
+The throwaway pass propagates `track.bucket_seed_window_seconds` (4 s) rather
+than a single frame, because the geodesic rule subtracts the machine's
+persistent body before tracing the arm, and the persistent body of *one* mask is
+that whole mask. With one frame the subtraction removes everything, the pivot
+lands part way up the boom, and the band is empty — reproduced in
+`tests/test_bucket_track.py`. Set it to 0.0 for a literal single forward pass.
+
 ## Still open
 
 * **Whether SAM 2.1-tiny can hold a ~25 px object for 296 samples.** This is the
