@@ -17,3 +17,6 @@ data/
 
 # OS
 .DS_Store
+
+# copilot workspaces: personal working state, not project source
+.claude/workspaces/
