@@ -107,11 +107,9 @@ is safe precisely because it happens **once**, unlike the arm-chain fit, which h
 to be re-derived every frame and did flip.
 
 That choice carries a cost. Because the bucket seed is derived from the excavator
-*mask*, it cannot be known before the first SAM forward pass, and the processor
-assigns rather than appends `obj_with_new_inputs` — so both objects must be
-registered before any object has produced a conditioning output. Hence a
-two-phase session: a throwaway pass to get the excavator mask, then a fresh
-session carrying both prompts.
+*mask*, it cannot be known before SAM has run. The stage is therefore two passes:
+the excavator first, over the whole clip, and then the bucket — each in its own
+session, carrying one object. Why one object each and not two in one is below.
 
 ## The geometric seed, drawn and checked
 
@@ -165,23 +163,63 @@ that would each have failed silently on the GPU:
 1. **Both objects must be prompted on the *same* frame.** `forward` treats any
    object flagged as having new inputs as being on its conditioning frame, then
    looks up that object's prompt *for the frame it is processing*. An object
-   prompted on a different frame finds nothing, and is conditioned on nothing —
-   no error. So the bucket is seeded on the excavator's own seed sample, and the
-   throwaway pass exists to produce that one mask.
+   prompted on a different frame finds `point_inputs=None, mask_inputs=None`
+   there, runs as an initial conditioning frame anyway and stores a memory built
+   from nothing — no error.
 
 2. **Registering the second object erases the first's prompt.**
    `obj_with_new_inputs = obj_ids` is an assignment, so two registration calls
    before the first forward pass leave only the second object pending; the
    excavator would then be tracked from a memory bank it never built. Both calls
-   are still needed — points for two objects in one call must have equal point
-   counts — so `track.register_prompts` restores the union afterwards.
+   were needed — points for two objects in one call must have equal point counts
+   — so `track.register_prompts` restored the union afterwards.
 
-The throwaway pass propagates `track.bucket_seed_window_seconds` (4 s) rather
-than a single frame, because the geodesic rule subtracts the machine's
-persistent body before tracing the arm, and the persistent body of *one* mask is
-that whole mask. With one frame the subtraction removes everything, the pivot
-lands part way up the boom, and the band is empty — reproduced in
-`tests/test_bucket_track.py`. Set it to 0.0 for a literal single forward pass.
+### Why the stage now runs two sessions, one object each
+
+Both of the above are properties of *sharing* a session, and (1) is the
+expensive one. It forced the bucket to be seeded wherever the **detector** put
+the excavator's seed: sample 290 of 296 on the development video, six frames
+from the end, chosen for detection confidence and nothing else. The whole
+ranking in `seeding.choose_seed` — reach × compactness × truck-clearance ×
+mid-clip-ness, the thing that exists because "maximum reach" picked the last
+frame of the clip — was bypassed. It also forced `body_core` to be computed from
+a short window around that frame (`track.bucket_seed_window_seconds`, 4 s),
+because the persistent body of a *single* mask is that whole mask.
+
+Splitting into two sessions removes all three problems at once:
+
+| shared session | two sessions |
+|---|---|
+| bucket seeded on the detector's frame | bucket seeded on its own best frame |
+| `body_core` from ~40 masks in a 4 s window | `body_core` from all 296 |
+| `obj_with_new_inputs` union workaround | nothing to clobber; one registration |
+
+**The `obj_with_new_inputs` trap is recorded here rather than only fixed.** It
+does not apply today because no session ever receives a second registration, and
+`track.register_prompt` is singular for that reason. Anyone who merges the two
+sessions back into one — to halve the SAM time — walks straight back into it,
+along with the same-frame constraint and the windowed body core. The row-order
+guard in `track.split_objects` and its tests are kept for the same reason: with
+one object per session, `processed[0, 0]` happens to be right, and it stops being
+right the moment a second object is added back.
+
+**What two sessions cost.** The video processor encodes every frame twice, so
+SAM time roughly doubles; DINO is unchanged at ~5% of the total. This cannot be
+recovered by resetting one session instead of building a second.
+`Sam2VideoInferenceSession.reset_inference_session()` ends with
+`self.cache.clear_all()`, so it clears the vision-feature cache; its sibling
+`reset_tracking_data()` keeps the cache, but that cache holds
+`max_vision_features_cache_size` frames and the default — which
+`Sam2VideoProcessor.init_video_session` passes through — is **1**. There is no
+whole-video encoding sitting in the session to preserve. Raising that limit is
+not a way out either: at 1024×1024 the cached FPN features and position
+embeddings run to roughly a hundred megabytes per frame, which is tens of
+gigabytes over a 296-sample clip. What both resets *do* keep is
+`processed_frames`, the decoded and normalised video, so reusing a session would
+save the CPU-side preprocessing and nothing of the GPU work. The stage builds a
+fresh session per object because that is the arrangement whose independence is
+obvious, and deletes each one before the next so only one copy of the frames is
+resident at a time.
 
 ## Still open
 
