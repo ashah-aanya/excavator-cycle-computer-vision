@@ -22,24 +22,34 @@ docs/stages/02-tracking-findings.md:
    seed does not have to be the first frame -- it is the best-scoring frame that
    is not merged.
 
-Two objects, two phases
------------------------
+Two objects, two sessions
+-------------------------
 Three of the four phase onsets need the bucket separated from the rest of the
 machine, and no detector can box it -- measured across 19 detector x prompt
 combinations on two architectures (docs/stages/06-bucket-mask.md). The bucket is
-therefore found by geometry (``seeding.py``) and tracked as SAM 2's **second
-object**, which forces this stage into two passes over the same video:
+therefore found by geometry (``seeding.py``), which needs the excavator's masks
+to exist first. So the stage runs **two sessions, one object each**:
 
-1. a throwaway session carrying only the excavator, run far enough to know what
-   part of the machine is its body and what part is its arm;
-2. a fresh session carrying **both** prompts, registered before any forward
-   pass, which is the one that produces the masks we keep.
+1. the excavator: seeded from the detector's best box at ``choose_seed``'s
+   frame, propagated forward and backward over the whole clip;
+2. the bucket: seeded from *all* of those masks by ``seeding.choose_seed``, on
+   whichever frame that ranking picks, and propagated both ways from there.
 
-The split is not a style choice. The bucket seed is derived from the excavator
-*mask*, so it cannot exist before a forward pass; and the processor assigns
-rather than appends its "these objects have new inputs" list, so an object
-registered after another has already been conditioned is either clobbered or
-conditioned on nothing. See ``register_prompts``.
+One object per session rather than two objects in one, because SAM 2's forward
+loop couples objects to a shared frame cursor. An object flagged as having new
+inputs is treated as being on its conditioning frame, and its prompt is then
+looked up *for the frame being processed*; an object prompted elsewhere finds
+``point_inputs=None, mask_inputs=None`` there and stores a memory built from
+nothing, silently (``modeling_sam2_video.py``, the ``has_new_inputs`` branch).
+Sharing a session would therefore force both prompts onto the same frame -- the
+detector's frame, chosen for detection confidence, which on the development
+video was sample 290 of 296 and bypassed the bucket ranking entirely.
+
+The price is that the video is encoded twice: roughly 2x the SAM time, with the
+detector unchanged at ~5% of the total. It cannot be avoided by resetting one
+session instead, because the session caches vision features for
+``max_vision_features_cache_size`` frames and that is **1** by default -- there
+is no whole-video encoding to keep. See docs/stages/06-bucket-mask.md.
 
 Nothing here is specific to a particular video: every threshold is either a
 dimensionless constant from the config or a statistic of the video being
@@ -285,13 +295,12 @@ def choose_seed(detections: DetectionPass, config: Config) -> tuple[int, np.ndar
 
 
 def derive_bucket_seed(
-    seed_masks: dict[int, np.ndarray],
+    excavator_masks: dict[int, np.ndarray],
     sample_count: int,
-    seed_position: int,
     truck_box: np.ndarray | None,
     config: Config,
 ) -> BucketSeed | None:
-    """Turn the throwaway pass's excavator masks into a prompt for the bucket.
+    """Turn the excavator's *whole* mask set into a prompt for the bucket.
 
     The geodesic rule in ``seeding.py`` needs three things the masks themselves
     supply, and nothing else:
@@ -307,39 +316,46 @@ def derive_bucket_seed(
     * the **scale** -- how far the arm reaches in this video's pixels, used only
       to compare candidate frames.
 
-    The bucket is seeded on the excavator's own seed sample and no other. Both
-    objects must be conditioned on the *same* frame (see ``register_prompts``),
-    so the candidate list holds one real mask and is padded with ``None``
-    elsewhere -- which keeps ``BucketSeed.sample`` a true sample ordinal.
+    All three are computed from every mask the excavator's session produced, and
+    every one of those masks is then a candidate frame. That is the whole reason
+    the bucket gets a session of its own: sharing one would pin it to the
+    detector's frame, the core would have to come from a short window around it,
+    and ``seeding.choose_seed``'s ranking -- reach, compactness, clearance from
+    the truck, mid-clip-ness -- would never get to choose anything.
+
+    ``excavator_masks`` is keyed by **sample ordinal**, so the candidate list is
+    rebuilt at full length with ``None`` in the gaps. ``choose_seed`` skips
+    those, which keeps ``BucketSeed.sample`` a true sample ordinal rather than
+    an index into whichever frames happened to be masked.
 
     Returns ``None`` when no band can be derived; the caller then tracks the
     excavator alone rather than prompting SAM 2 with a guess.
     """
-    window = [mask for mask in seed_masks.values() if mask.any()]
-    if not window or seed_position not in seed_masks:
-        log.warning("the seeding pass produced no usable excavator mask")
+    usable = [mask for mask in excavator_masks.values() if mask.any()]
+    if not usable:
+        log.warning("the excavator pass produced no usable mask; cannot seed the bucket")
         return None
 
-    core = body_core(window, config.geometry.occupancy_quantile)
+    core = body_core(usable, config.geometry.occupancy_quantile)
     if not core.any():
-        log.warning("no persistent body core in the seeding pass; cannot place a pivot")
+        log.warning("no persistent body core in the excavator masks; cannot place a pivot")
         return None
-    if len(window) == 1:
+    if len(usable) == 1:
         log.warning(
             "body core taken from a single mask: the persistent body of one "
             "mask is that whole mask, so the band will be empty or will include "
-            "the undercarriage (raise track.bucket_seed_window_seconds)"
+            "the undercarriage"
         )
 
     pivot = boom_base(core)
-    centre = rotation_centre(window, config.geometry.occupancy_quantile)
-    tips = [farthest_point(mask, centre) for mask in window]
+    centre = rotation_centre(usable, config.geometry.occupancy_quantile)
+    tips = [farthest_point(mask, centre) for mask in usable]
     scale = arm_reach(tips, centre, config.geometry.reach_percentile)
 
-    # `None` entries are skipped by `seeding.choose_seed`, so this is a
-    # full-length candidate list with exactly one candidate in it.
     candidates: list[np.ndarray | None] = [None] * sample_count
-    candidates[seed_position] = seed_masks[seed_position]
+    for position, mask in excavator_masks.items():
+        if 0 <= position < sample_count:
+            candidates[position] = mask
 
     return seeding.choose_seed(
         candidates,
@@ -379,36 +395,89 @@ def bucket_prompt_payload(seed: BucketSeed, form: str) -> dict[str, Any]:
     )
 
 
-def register_prompts(
-    processor, session, frame_idx: int, prompts: dict[int, dict[str, Any]]
+def register_prompt(
+    processor, session, frame_idx: int, obj_id: int, prompt: dict[str, Any]
 ) -> None:
-    """Attach every object's prompt to one frame, before any forward pass runs.
+    """Attach one object's prompt to one frame of one session.
 
-    Two properties of the SAM 2 video processor make this worth its own function
-    rather than two inline calls.
-
-    **``obj_with_new_inputs`` is assigned, not appended.** Every call to
-    ``add_inputs_to_inference_session`` ends with
-    ``inference_session.obj_with_new_inputs = obj_ids``, so registering the
-    bucket erases the excavator's pending flag. The forward pass then finds the
-    excavator "without new inputs", skips its prompt entirely and tracks it from
-    a memory bank it never built. Restoring the union here is the fix. The two
-    prompts cannot simply be registered in one call instead: a single call
-    carrying points for two objects requires both to have the same number of
-    points, and these do not.
-
-    **Both objects must name the same frame.** ``forward`` treats any object
-    flagged as having new inputs as being on its conditioning frame, and then
-    looks up that object's prompt *for the frame being processed*. An object
-    prompted elsewhere finds nothing there and is conditioned on nothing at all,
-    silently. One frame for both objects is the only arrangement this API gets
-    right.
+    Deliberately singular. When two objects shared a session this had to restore
+    the union of ``session.obj_with_new_inputs`` afterwards, because
+    ``add_inputs_to_inference_session`` *assigns* that list rather than appending
+    to it, so registering the second object cleared the first's pending flag and
+    the first was then tracked from a memory bank it never built. With one object
+    per session there is no second registration and nothing to clobber -- the
+    workaround is gone, and the reason it existed is recorded in
+    docs/stages/06-bucket-mask.md so it is not rediscovered the hard way.
     """
-    for obj_id, prompt in prompts.items():
-        processor.add_inputs_to_inference_session(
-            inference_session=session, frame_idx=frame_idx, obj_ids=obj_id, **prompt
-        )
-    session.obj_with_new_inputs = [int(obj_id) for obj_id in prompts]
+    processor.add_inputs_to_inference_session(
+        inference_session=session, frame_idx=frame_idx, obj_ids=obj_id, **prompt
+    )
+
+
+def track_object(
+    model,
+    processor,
+    session,
+    obj_id: int,
+    frame_idx: int,
+    prompt: dict[str, Any],
+    unpack,
+    keep_empty: bool = True,
+    label: str = "object",
+) -> tuple[dict[int, np.ndarray], dict[int, float]]:
+    """Prompt a session with a single object and propagate it over the whole clip.
+
+    One seed, both directions. SAM 2 propagates in reverse as well as forward, so
+    the conditioning frame does not have to be the first one -- it can be the
+    best one, which is the entire reason the bucket gets its own session.
+
+    ``unpack`` turns one model output into ``{object id: (mask, confidence)}``;
+    it is injected rather than built here so that the post-processing work
+    (which needs the processor and the frame size) stays in one place and so
+    that this loop can be exercised without a model. The session is expected to
+    report exactly ``obj_id`` and nothing else: anything else means the caller
+    has reused a session that still remembers a previous object, which is the
+    failure this two-session arrangement exists to make impossible.
+
+    ``keep_empty`` distinguishes the two objects. The excavator's masks are kept
+    whatever they contain, because a sample with no machine in it is still a
+    sample the QA gate must see. The bucket's are not: SAM returns a prediction
+    on every frame whether or not it still believes the object is there, so
+    storing the empty ones would make bucket coverage 100% by construction and
+    say nothing. Confidences are recorded for every frame either way.
+    """
+    register_prompt(processor, session, frame_idx, obj_id, prompt)
+
+    masks: dict[int, np.ndarray] = {}
+    confidences: dict[int, float] = {}
+
+    def store(output) -> None:
+        found = unpack(output)
+        if sorted(found) != [obj_id]:
+            raise RuntimeError(
+                f"the session reported objects {sorted(found)} while tracking "
+                f"{obj_id} alone; each session must carry exactly one object"
+            )
+        mask, confidence = found[obj_id]
+        confidences[output.frame_idx] = confidence
+        if keep_empty or mask.any():
+            masks[output.frame_idx] = mask
+
+    store(model(inference_session=session, frame_idx=frame_idx))
+    log.info("%s: propagating forward from sample %d", label, frame_idx)
+    for output in model.propagate_in_video_iterator(
+        inference_session=session, start_frame_idx=frame_idx
+    ):
+        store(output)
+    if frame_idx > 0:
+        log.info("%s: propagating backward from sample %d", label, frame_idx)
+        for output in model.propagate_in_video_iterator(
+            inference_session=session, start_frame_idx=frame_idx, reverse=True
+        ):
+            store(output)
+
+    log.info("%s: %d mask(s) over %d sample(s)", label, len(masks), len(confidences))
+    return masks, confidences
 
 
 def split_objects(
@@ -424,6 +493,12 @@ def split_objects(
     which is why reading row 0 and calling it "the excavator" worked right up
     until a second object was added -- at which point the bucket would have been
     dropped without a word. Indexing by the reported ids removes the coincidence.
+
+    Each session now carries one object, so this routing has one row to route.
+    It is kept, and kept tested, because ``processed[0, 0]`` is exactly the kind
+    of indexing that looks correct forever and then is not: anyone who merges
+    the two sessions back into one lands on the bug again, and this is the guard
+    that stops them.
 
     Each object gets its own speck threshold: the same relative cut means very
     different absolute sizes on a 9,000-pixel machine and a 1,100-pixel bucket.
@@ -563,98 +638,57 @@ def track(
                 min_fractions,
             )
 
-        # --- phase 1: a throwaway session, only to learn where the bucket is --
-        window = round(config.track.bucket_seed_window_seconds * config.sampling.rate_hz)
-        scratch = new_session()
-        register_prompts(
-            processor, scratch, seed_position, {EXCAVATOR_OBJECT_ID: excavator_prompt}
-        )
-        seed_masks: dict[int, np.ndarray] = {}
-        log.info("seeding pass: %d sample(s) from sample %d", window + 1, seed_position)
+        # --- session A: the excavator, alone ---------------------------------
+        log.info("tracking the excavator from sample %d of %d", seed_position, len(samples))
+        excavator_session = new_session()
         with torch.inference_mode():
-            first = model(inference_session=scratch, frame_idx=seed_position)
-            seed_masks[first.frame_idx] = unpack(first)[EXCAVATOR_OBJECT_ID][0]
-            if window > 0:
-                for output in model.propagate_in_video_iterator(
-                    inference_session=scratch,
-                    start_frame_idx=seed_position,
-                    max_frame_num_to_track=window,
-                ):
-                    seed_masks[output.frame_idx] = unpack(output)[EXCAVATOR_OBJECT_ID][0]
-                # The seed is chosen for detector confidence, not for where it
-                # falls in the clip, so it can sit near the end with too little
-                # video ahead of it for the arm to move. Take the rest from
-                # behind it rather than settling for a body core that is mostly
-                # arm.
-                short_by = window + 1 - len(seed_masks)
-                if short_by > 0 and seed_position > 0:
-                    for output in model.propagate_in_video_iterator(
-                        inference_session=scratch,
-                        start_frame_idx=seed_position,
-                        max_frame_num_to_track=short_by,
-                        reverse=True,
-                    ):
-                        seed_masks[output.frame_idx] = unpack(output)[EXCAVATOR_OBJECT_ID][0]
-        log.info("seeding pass produced %d excavator mask(s)", len(seed_masks))
-        del scratch  # its memory bank is conditioned on one object; do not reuse it
-
-        bucket_seed = derive_bucket_seed(
-            seed_masks, len(samples), seed_position, truck_box, config
-        )
-
-        # --- phase 2: a fresh session carrying both prompts -------------------
-        session = new_session()
-        prompts = {EXCAVATOR_OBJECT_ID: excavator_prompt}
-        if bucket_seed is not None:
-            prompts[BUCKET_OBJECT_ID] = bucket_prompt_payload(
-                bucket_seed, config.track.bucket_prompt
+            masks, confidences = track_object(
+                model,
+                processor,
+                excavator_session,
+                EXCAVATOR_OBJECT_ID,
+                seed_position,
+                excavator_prompt,
+                unpack,
+                keep_empty=True,
+                label="excavator",
             )
+        # A session remembers its object in its memory bank, so the bucket gets
+        # a new one rather than this one reset: `reset_inference_session` clears
+        # the vision-feature cache anyway, and that cache holds one frame, so
+        # there is nothing to save by reusing it.
+        del excavator_session
+
+        # --- session B: the bucket, alone, on its own best frame --------------
+        bucket_masks: dict[int, np.ndarray] = {}
+        bucket_confidences: dict[int, float] = {}
+        bucket_seed = derive_bucket_seed(masks, len(samples), truck_box, config)
+
+        if bucket_seed is None:
+            log.warning("no bucket seed; the run carries excavator masks only")
+        else:
             log.info(
-                "tracking the bucket as object %d, prompted by %s at sample %d",
+                "tracking the bucket as object %d, prompted by %s at sample %d "
+                "(the excavator was seeded at %d)",
                 BUCKET_OBJECT_ID,
                 config.track.bucket_prompt,
                 bucket_seed.sample,
+                seed_position,
             )
-        else:
-            log.warning("no bucket seed; tracking the excavator alone")
-        register_prompts(processor, session, seed_position, prompts)
-
-        masks: dict[int, np.ndarray] = {}
-        confidences: dict[int, float] = {}
-        bucket_masks: dict[int, np.ndarray] = {}
-        bucket_confidences: dict[int, float] = {}
-
-        progress_every = max(1, len(samples) // 10)
-
-        def store(output) -> None:
-            for obj_id, (mask, confidence) in unpack(output).items():
-                if obj_id == BUCKET_OBJECT_ID:
-                    bucket_confidences[output.frame_idx] = confidence
-                    # Only a mask with pixels in it is a mask. SAM returns a
-                    # prediction on every frame whether or not it still believes
-                    # the object is there, so storing the empty ones would make
-                    # bucket coverage 100% by construction and say nothing.
-                    if mask.any():
-                        bucket_masks[output.frame_idx] = mask
-                else:
-                    masks[output.frame_idx] = mask
-                    confidences[output.frame_idx] = confidence
-            if len(masks) % progress_every == 0:
-                log.info("  %d/%d masks", len(masks), len(samples))
-
-        with torch.inference_mode():
-            store(model(inference_session=session, frame_idx=seed_position))
-            log.info("propagating forward from sample %d", seed_position)
-            for output in model.propagate_in_video_iterator(
-                inference_session=session, start_frame_idx=seed_position
-            ):
-                store(output)
-            if seed_position > 0:
-                log.info("propagating backward from sample %d", seed_position)
-                for output in model.propagate_in_video_iterator(
-                    inference_session=session, start_frame_idx=seed_position, reverse=True
-                ):
-                    store(output)
+            bucket_session = new_session()
+            with torch.inference_mode():
+                bucket_masks, bucket_confidences = track_object(
+                    model,
+                    processor,
+                    bucket_session,
+                    BUCKET_OBJECT_ID,
+                    bucket_seed.sample,
+                    bucket_prompt_payload(bucket_seed, config.track.bucket_prompt),
+                    unpack,
+                    keep_empty=False,
+                    label="bucket",
+                )
+            del bucket_session
 
         records = _build_records(
             samples,

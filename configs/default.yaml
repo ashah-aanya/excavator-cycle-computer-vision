@@ -49,7 +49,6 @@ track:
   max_bad_area_fraction: 0.10
   bucket_prompt: "mask"            # mask | points | box; SAM 2 prices them 77.6 / 75.4 / 72.9 J&F
   bucket_min_component_fraction: 0.01  # the bucket mask is ~8x smaller, so 0.05 would cut real fragments
-  bucket_seed_window_seconds: 4.0  # throwaway first pass; enough arm motion to find the body
   bucket_point_count: 5            # positives, when bucket_prompt is "points"
   bucket_negative_count: 3         # negatives on the stick, so SAM does not claim the arm
 

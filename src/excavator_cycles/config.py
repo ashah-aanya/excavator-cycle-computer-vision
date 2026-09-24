@@ -190,15 +190,6 @@ class TrackConfig:
     # the bucket gets a much smaller fraction of its own.
     bucket_min_component_fraction: float = 0.01
 
-    # How much video the throwaway first pass propagates through, in seconds.
-    # Its masks are used only to separate the machine's persistent body from its
-    # sweeping arm, which is what makes the geodesic seed measure distance along
-    # the metal rather than through the body. One frame cannot do that -- the
-    # body core of a single mask IS that mask -- so a few seconds of arm motion
-    # are bought at a few seconds of extra tracking. 0.0 means one forward pass
-    # and no window.
-    bucket_seed_window_seconds: float = 4.0
-
     # Prompt sizes when `bucket_prompt` is "points": five positives is the knee
     # of the ablation curve above, and the negatives sit on the stick to stop
     # SAM claiming the whole arm as "the bucket".

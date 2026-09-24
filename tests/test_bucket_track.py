@@ -1,16 +1,29 @@
-"""Tests for tracking the bucket as SAM 2's second object.
+"""Tests for tracking the bucket in a session of its own.
+
+The bucket used to be SAM 2's second object inside one shared session. It is now
+a second **session** carrying one object, because the model's forward loop
+couples objects to a shared frame cursor: an object flagged as pending on a
+frame where it has no prompt is run as a conditioning frame with no prompt at
+all, and stores a memory built from nothing. Sharing a session therefore forced
+both prompts onto the detector's frame -- sample 290 of 296 on the development
+video -- and that frame is chosen for detection confidence, not for where the
+bucket is.
 
 No model runs here. What is tested is everything around the model, which is
-where a second object goes wrong *silently*:
+where this goes wrong *silently*:
 
+* the bucket's seed frame, which comes from ``seeding.choose_seed``'s ranking
+  over the whole clip and must be free to differ from the excavator's;
+* the body core, which must be computed from every mask in the run rather than
+  from a window around someone else's seed;
+* one object per session -- a session that reports two has been reused, and the
+  masks it returns belong to a memory bank built for something else;
 * a mask file that holds two mask sets, and still reads the several
   single-object files already sitting in ``outputs/`` and ``CACHE/``;
 * the output split -- a two-object prediction is ``(2, 1, H, W)`` and the old
-  code read row 0 and called it the answer, so the bucket would have vanished
-  without an error;
-* prompt registration -- the processor *assigns* its "has new inputs" list, so
-  registering the second object erases the first's prompt and the excavator is
-  then tracked from a memory bank it never built;
+  code read row 0 and called it the answer. One object per session makes that
+  unreachable today; the guard stays so that re-merging the sessions cannot
+  reintroduce it unnoticed;
 * prompt form -- SAM 2's own ablation prices a mask at 77.6 J&F against 72.9 for
   a box, so which form is sent is a real decision and its payload shape is
   exactly the sort of thing that fails only on a GPU an hour in;
@@ -30,6 +43,7 @@ import numpy as np
 import pytest
 
 from excavator_cycles import masks as mask_io
+from excavator_cycles import track as track_stage
 from excavator_cycles.config import Config
 from excavator_cycles.kinematics import body_core
 from excavator_cycles.seeding import BucketSeed
@@ -41,8 +55,9 @@ from excavator_cycles.track import (
     evaluate_bucket_quality,
     load_bucket_masks,
     load_result,
-    register_prompts,
+    register_prompt,
     split_objects,
+    track_object,
 )
 
 SHAPE = (240, 320)
@@ -200,15 +215,16 @@ def test_a_missing_presence_logit_reads_as_unknown_not_as_zero():
     assert np.isnan(found[EXCAVATOR_OBJECT_ID][1])
 
 
-# --- registering both prompts ------------------------------------------------
+# --- one object per session --------------------------------------------------
 
 
 def stub_processor():
-    """A processor that reproduces the one behaviour under test: assignment.
+    """A processor that records registrations and assigns, as the real one does.
 
     ``add_inputs_to_inference_session`` ends with
     ``inference_session.obj_with_new_inputs = obj_ids`` -- not an append. That
-    single line is why the second object silently cancels the first.
+    single line is why two objects in one session needed the pending list
+    restoring afterwards, and why one object per session needs nothing.
     """
 
     def add_inputs_to_inference_session(inference_session, frame_idx, obj_ids, **prompt):
@@ -219,45 +235,148 @@ def stub_processor():
     return SimpleNamespace(add_inputs_to_inference_session=add_inputs_to_inference_session)
 
 
-def test_registering_the_bucket_does_not_erase_the_excavators_pending_prompt():
-    """Both objects must still be pending when the first forward pass runs.
+def stub_session():
+    return SimpleNamespace(obj_with_new_inputs=[], calls=[])
 
-    An object missing from this list is treated as having no new inputs, so its
-    prompt is never read and it is tracked from an empty memory bank.
+
+def stub_model(sample_count: int):
+    """A model that walks the clip and reports which sample it is on.
+
+    It reproduces the only two calls ``track_object`` makes -- a single forward
+    on the conditioning frame, then an iterator in either direction -- so the
+    propagation logic can be checked without weights.
     """
-    session = SimpleNamespace(obj_with_new_inputs=[], calls=[])
-    register_prompts(
+
+    def model(inference_session, frame_idx):
+        return SimpleNamespace(frame_idx=frame_idx)
+
+    def propagate_in_video_iterator(inference_session, start_frame_idx, reverse=False):
+        order = (
+            range(start_frame_idx - 1, -1, -1)
+            if reverse
+            else range(start_frame_idx + 1, sample_count)
+        )
+        for frame_idx in order:
+            yield SimpleNamespace(frame_idx=frame_idx)
+
+    model.propagate_in_video_iterator = propagate_in_video_iterator
+    return model
+
+
+def one_object(obj_id: int, mask=None, empty_at=()):
+    """An ``unpack`` that reports a single object, as a real session must."""
+    band = machine() if mask is None else mask
+
+    def unpack(output):
+        found = np.zeros(SHAPE, bool) if output.frame_idx in empty_at else band
+        return {obj_id: (found, 0.9)}
+
+    return unpack
+
+
+def test_a_session_is_prompted_for_exactly_one_object_on_one_frame():
+    """The registration a shared session could not make: one call, one id.
+
+    Two objects in one session had to name the same frame, because ``forward``
+    looks up an object's prompt for the frame it is processing and finds nothing
+    when the object was prompted elsewhere. One object per session removes the
+    constraint entirely, so there is exactly one call to check.
+    """
+    session = stub_session()
+    register_prompt(
+        stub_processor(), session, 53, BUCKET_OBJECT_ID, {"input_masks": [machine()]}
+    )
+
+    assert len(session.calls) == 1
+    frame_idx, ids, prompt = session.calls[0]
+    assert frame_idx == 53
+    assert ids == [BUCKET_OBJECT_ID]
+    assert list(prompt) == ["input_masks"]
+    assert session.obj_with_new_inputs == [BUCKET_OBJECT_ID]
+
+
+def test_tracking_an_object_registers_it_alone_and_propagates_both_ways():
+    """One seed, both directions -- which is what lets the seed be the best frame."""
+    session = stub_session()
+    masks, confidences = track_object(
+        stub_model(8),
         stub_processor(),
         session,
-        53,
-        {
-            EXCAVATOR_OBJECT_ID: {"input_boxes": [[[1.0, 2.0, 3.0, 4.0]]]},
-            BUCKET_OBJECT_ID: {"input_masks": [np.zeros(SHAPE, bool)]},
-        },
+        EXCAVATOR_OBJECT_ID,
+        3,
+        {"input_boxes": [[[1.0, 2.0, 3.0, 4.0]]]},
+        one_object(EXCAVATOR_OBJECT_ID),
     )
-    assert sorted(session.obj_with_new_inputs) == [EXCAVATOR_OBJECT_ID, BUCKET_OBJECT_ID]
+
+    assert [ids for _, ids, _ in session.calls] == [[EXCAVATOR_OBJECT_ID]]
+    assert sorted(masks) == list(range(8)), "forward and backward must both run"
+    assert sorted(confidences) == list(range(8))
 
 
-def test_each_object_is_registered_in_its_own_call_on_the_same_frame():
-    """Separate calls dodge the padding rule; the same frame is what forward needs.
-
-    Points for two objects in one call must have equal point counts, and these
-    do not. Different conditioning frames are worse: the object whose prompt is
-    elsewhere is conditioned on nothing at all.
-    """
-    session = SimpleNamespace(obj_with_new_inputs=[], calls=[])
-    register_prompts(
+def test_the_bucket_session_is_conditioned_on_the_bucket_seeds_own_frame():
+    """The point of the second session: a frame the bucket ranking chose."""
+    session = stub_session()
+    track_object(
+        stub_model(12),
         stub_processor(),
         session,
-        53,
-        {
-            EXCAVATOR_OBJECT_ID: {"input_boxes": [[[1.0, 2.0, 3.0, 4.0]]]},
-            BUCKET_OBJECT_ID: {"input_masks": [np.zeros(SHAPE, bool)]},
-        },
+        BUCKET_OBJECT_ID,
+        5,
+        {"input_masks": [machine()]},
+        one_object(BUCKET_OBJECT_ID),
     )
-    assert len(session.calls) == 2
-    assert [frame for frame, _, _ in session.calls] == [53, 53]
-    assert [ids for _, ids, _ in session.calls] == [[EXCAVATOR_OBJECT_ID], [BUCKET_OBJECT_ID]]
+    assert [frame_idx for frame_idx, _, _ in session.calls] == [5]
+
+
+def test_a_session_that_reports_a_second_object_is_refused():
+    """A session carrying two objects has been reused, and its memory bank is
+    conditioned on something the caller did not ask for. Failing loudly here is
+    the difference between a wrong answer and no answer."""
+
+    def two_objects(output):
+        return {EXCAVATOR_OBJECT_ID: (machine(), 0.9), BUCKET_OBJECT_ID: (machine(), 0.5)}
+
+    with pytest.raises(RuntimeError, match="exactly one object"):
+        track_object(
+            stub_model(4),
+            stub_processor(),
+            stub_session(),
+            EXCAVATOR_OBJECT_ID,
+            0,
+            {"input_boxes": [[[1.0, 2.0, 3.0, 4.0]]]},
+            two_objects,
+        )
+
+
+def test_an_empty_bucket_prediction_is_not_stored_but_is_still_scored():
+    """SAM predicts on every frame whether or not it still believes the object is
+    there, so keeping the empty masks would make bucket coverage 100% by
+    construction. The excavator keeps its empty frames: the QA gate has to see
+    them."""
+    bucket, _ = track_object(
+        stub_model(6),
+        stub_processor(),
+        stub_session(),
+        BUCKET_OBJECT_ID,
+        0,
+        {"input_masks": [machine()]},
+        one_object(BUCKET_OBJECT_ID, empty_at=(2, 4)),
+        keep_empty=False,
+    )
+    assert sorted(bucket) == [0, 1, 3, 5]
+
+    excavator, confidences = track_object(
+        stub_model(6),
+        stub_processor(),
+        stub_session(),
+        EXCAVATOR_OBJECT_ID,
+        0,
+        {"input_boxes": [[[1.0, 2.0, 3.0, 4.0]]]},
+        one_object(EXCAVATOR_OBJECT_ID, empty_at=(2, 4)),
+        keep_empty=True,
+    )
+    assert sorted(excavator) == list(range(6))
+    assert sorted(confidences) == list(range(6)), "confidence is recorded either way"
 
 
 # --- the three prompt forms --------------------------------------------------
@@ -308,54 +427,135 @@ def test_an_unknown_prompt_form_is_refused():
         bucket_prompt_payload(a_seed(), "scribble")
 
 
-# --- deriving the seed from the first pass -----------------------------------
+# --- deriving the seed from the excavator's whole mask set -------------------
+
+
+# (elbow, bucket) through one working cycle. Deliberately spread rather than
+# nudged frame by frame: a set in which the arm barely moves is one whose
+# "persistent body" still contains most of the arm, and the pivot then lands
+# part way up the boom -- the real failure mode the full mask set exists to
+# avoid, not a fixture detail.
+POSES = [
+    ((150, 90), (240, 150)),
+    ((120, 30), (200, 60)),
+    ((100, 120), (150, 220)),
+    ((140, 60), (260, 110)),
+    ((110, 150), (120, 230)),
+    ((160, 100), (280, 170)),
+    ((130, 40), (230, 40)),
+    ((105, 160), (100, 235)),
+]
 
 
 def sweep(start: int = 40) -> dict[int, np.ndarray]:
-    """A window of masks in which the arm actually moves, keyed by sample ordinal.
+    """Masks in which the arm actually moves, keyed by sample ordinal."""
+    return {start + i: machine(elbow=e, bucket=b) for i, (e, b) in enumerate(POSES)}
 
-    The poses are deliberately spread across a working cycle rather than nudged
-    frame by frame. A window in which the arm barely moves is a window whose
-    "persistent body" still contains most of the arm, and the pivot then lands
-    part way up the boom -- which is the real failure mode this window exists to
-    avoid, not a fixture detail.
+
+def clip(length: int = 13) -> dict[int, np.ndarray]:
+    """A whole clip of excavator masks, with the arm at full stretch mid-way.
+
+    The cycle repeats, so several frames carry a usable band and the ranking has
+    something to choose between. Ordinal ``length // 2`` is the one the arm is
+    fully extended on, which is what ``score_frame`` rewards -- reach, a compact
+    band and mid-clip-ness all at once.
     """
-    poses = [
-        ((150, 90), (240, 150)),
-        ((120, 30), (200, 60)),
-        ((100, 120), (150, 220)),
-        ((140, 60), (260, 110)),
-        ((110, 150), (120, 230)),
-        ((160, 100), (280, 170)),
-        ((130, 40), (230, 40)),
-        ((105, 160), (100, 235)),
-    ]
-    return {start + i: machine(elbow=e, bucket=b) for i, (e, b) in enumerate(poses)}
+    poses = list(sweep().values())
+    masks = {i: poses[i % len(poses)] for i in range(length)}
+    masks[length // 2] = machine(elbow=(160, 110), bucket=(300, 175))
+    return masks
 
 
-def test_the_bucket_seed_is_taken_on_the_excavator_seed_sample():
-    """Both objects have to be conditioned on the same frame, so the bucket is
-    seeded there and nowhere else -- and its `sample` is a sample ordinal."""
+def test_the_bucket_seed_frame_is_ranked_not_inherited_from_the_excavator():
+    """The whole reason the bucket gets a session of its own.
+
+    Sharing one forced the bucket onto the detector's frame -- sample 290 of 296
+    on the development video, six frames from the end and chosen for detection
+    confidence. Here the excavator is seeded on the last ordinal and the bucket
+    must still land on the frame the ranking prefers.
+    """
     config = Config.load()
-    seed = derive_bucket_seed(sweep(40), 300, 40, None, config)
+    masks = clip()
+    excavator_seed = max(masks)  # what the detector picked: the end of the clip
+
+    seed = derive_bucket_seed(masks, len(masks), None, config)
 
     assert seed is not None
-    assert seed.sample == 40, "the seed must carry the ordinal, not a list index"
+    assert seed.sample != excavator_seed, "the bucket must not inherit that frame"
+    assert seed.sample == len(masks) // 2, "the extended, mid-clip frame wins"
+
+
+def test_every_masked_sample_is_scored_not_only_the_excavators_seed_frame():
+    """A shared session left one real candidate and a list padded with None, so
+    `choose_seed`'s ranking had nothing to rank and the answer could not depend
+    on any other frame. Rearranging which ordinal carries which pose must now
+    change which ordinal is chosen."""
+    config = Config.load()
+    masks = clip()
+
+    first = derive_bucket_seed(masks, len(masks), None, config)
+
+    moved = dict(masks)
+    moved[2], moved[len(masks) // 2] = moved[len(masks) // 2], moved[2]
+    second = derive_bucket_seed(moved, len(moved), None, config)
+
+    assert first is not None and second is not None
+    assert second.sample != first.sample
+
+
+def test_the_seed_sample_is_an_ordinal_into_the_clip_not_a_list_index():
+    """Masks are keyed by sample ordinal and the run may be missing some, so the
+    candidate list is rebuilt at full length rather than packed."""
+    config = Config.load()
+    seed = derive_bucket_seed(sweep(40), 300, None, config)
+
+    assert seed is not None
+    assert seed.sample >= 40, "a packed list would put the seed near 0"
+    assert seed.sample in sweep(40)
+
+
+def test_the_band_lands_on_the_bucket_of_the_frame_it_chose():
+    config = Config.load()
+    masks = sweep(0)
+    seed = derive_bucket_seed(masks, len(masks), None, config)
+
+    assert seed is not None
+    bucket_x, bucket_y = POSES[seed.sample][1]
     ys, xs = np.nonzero(seed.band)
-    offset = np.hypot(xs.mean() - 240, ys.mean() - 150)
+    offset = np.hypot(xs.mean() - bucket_x, ys.mean() - bucket_y)
     assert offset < 30, f"band centre is {offset:.0f}px from the bucket"
+
+
+def test_the_body_core_is_computed_from_every_mask_in_the_run(monkeypatch):
+    """Not from a window around the excavator's seed, which is what a shared
+    session forced: `body_core` of one mask is that mask, so a short window
+    leaves the arm in the core and the pivot lands part way up the boom."""
+    config = Config.load()
+    masks = clip()
+    seen: list[int] = []
+    real = track_stage.body_core
+
+    def spy(mask_list, quantile):
+        seen.append(len(mask_list))
+        return real(mask_list, quantile)
+
+    monkeypatch.setattr(track_stage, "body_core", spy)
+    seed = derive_bucket_seed(masks, len(masks), None, config)
+
+    assert seed is not None
+    assert seen == [len(masks)], f"body_core saw {seen} masks, not all {len(masks)}"
 
 
 def test_no_usable_excavator_mask_yields_no_bucket_seed():
     """The stage then tracks the excavator alone rather than guessing."""
     config = Config.load()
     empty = np.zeros(SHAPE, bool)
-    assert derive_bucket_seed({7: empty}, 300, 7, None, config) is None
-    assert derive_bucket_seed({}, 300, 7, None, config) is None
+    assert derive_bucket_seed({7: empty}, 300, None, config) is None
+    assert derive_bucket_seed({}, 300, None, config) is None
 
 
 def test_the_body_core_needs_several_frames_to_separate_the_arm():
-    """Why the first pass propagates a window instead of one forward pass.
+    """Why the seed is derived after a full pass rather than during one.
 
     The geodesic seed works by removing the persistent body before tracing the
     arm. Over one frame "persistent" means everything, so the subtraction
