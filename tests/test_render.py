@@ -169,3 +169,141 @@ def test_phase_at_ignores_onsets_that_were_not_found():
 
     assert phase_at({"digging": 4.0, "hauling": None}, 20.0) == "digging"
     assert phase_at({"digging": None}, 20.0) is None
+
+
+# --- the physics overlay ------------------------------------------------------
+#
+# This whole branch was untested. It is the branch where `render(reference=...)`
+# was accepted, threaded down two levels and never drawn -- caught by measuring
+# pixels in the output video, not by the suite. A test that counts pixels is
+# therefore exactly the right shape for it.
+
+
+@pytest.fixture
+def cache_with_features(fake_cache: Path) -> Path:
+    """The same cache, plus a stage-3 feature table so `physics=True` has input."""
+    from excavator_cycles.features import FeatureTable, Scene, save
+
+    result, _masks = load_result(fake_cache)
+    n = len(result.frames)
+    times = np.array([f.time_seconds for f in result.frames], dtype=float)
+    ramp = np.linspace(-0.3, 0.6, n)
+    boxes = np.stack(
+        [np.full(n, 20.0), np.full(n, 40.0), np.full(n, 60.0), np.full(n, 80.0)], 1
+    )
+    table = FeatureTable(
+        time_seconds=times,
+        bucket_x=np.linspace(0.1, 0.9, n),
+        bucket_y=ramp,
+        height=ramp,
+        dh_dt=np.gradient(ramp, times),
+        d2h_dt2=np.zeros(n),
+        dx_dt=np.full(n, 0.2),
+        speed_x=np.full(n, 0.2),
+        rel_cabin_x=np.full(n, 0.3),
+        rel_cabin_y=np.full(n, 0.2),
+        rel_truck_x=np.full(n, 0.4),
+        rel_truck_y=np.full(n, 0.1),
+        truck_overlap=np.linspace(0.0, 0.5, n),
+        aspect_ratio=np.full(n, 1.2),
+        radius=np.full(n, 0.5),
+        bucket_box=boxes,
+        cabin_box=boxes,
+        found=np.ones(n, bool),
+    )
+    scene = Scene(pivot=(80.0, 60.0), scale=40.0, truck_box=(120.0, 30.0, 150.0, 60.0))
+    save(table, scene, fake_cache)
+    return fake_cache
+
+
+def _video_size(path: Path) -> tuple[int, int]:
+    """Measured from the written file, not from what the renderer reported."""
+    capture = cv2.VideoCapture(str(path))
+    try:
+        return (
+            int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        )
+    finally:
+        capture.release()
+
+
+def _first_frame(path: Path) -> np.ndarray:
+    capture = cv2.VideoCapture(str(path))
+    try:
+        ok, frame = capture.read()
+        assert ok, f"could not read {path}"
+        return frame
+    finally:
+        capture.release()
+
+
+def test_the_physics_overlay_widens_the_canvas(cache_with_features: Path):
+    """The graph column only exists when stage 3 has run, so its presence is the
+    observable difference -- and it is what `_signal_strip` used to gate, through a
+    function that returned its own first argument unchanged."""
+    a, b = cache_with_features / "a.mp4", cache_with_features / "b.mp4"
+    with_graphs = render(cache_with_features, out_path=a, scale=1.0)
+    plain = render(cache_with_features, out_path=b, scale=1.0, physics=False)
+    assert _video_size(a)[0] > _video_size(b)[0], (
+        f"physics on gave {_video_size(a)}, off gave {_video_size(b)}"
+    )
+    assert with_graphs.frames_written == plain.frames_written
+
+
+def test_the_physics_overlay_still_writes_every_frame(cache_with_features: Path):
+    """The contract the whole module is built on must survive the extra drawing."""
+    stats = render(cache_with_features, out_path=cache_with_features / "p.mp4", scale=1.0)
+    assert stats.frames_written == 60
+
+
+def test_the_reference_onsets_are_actually_drawn(cache_with_features: Path):
+    """The precedent defect, pinned by counting pixels.
+
+    `reference=` was accepted, threaded through two functions and never drawn. The
+    ground truth was simply absent from the video while the caller believed it was
+    there -- and the author described the prediction lines to the user as her own
+    labels. Nothing in a signature or a docstring can catch that; only the output
+    can.
+    """
+    without = cache_with_features / "no_ref.mp4"
+    with_ref = cache_with_features / "ref.mp4"
+    render(cache_with_features, out_path=without, scale=1.0)
+    render(
+        cache_with_features,
+        out_path=with_ref,
+        scale=1.0,
+        reference={"digging": 0.3, "hauling": 0.9, "dumping": 1.2, "swinging": 1.5},
+    )
+
+    plain, marked = _first_frame(without), _first_frame(with_ref)
+    assert plain.shape == marked.shape
+    changed = int((plain != marked).any(axis=2).sum())
+    assert changed > 0, "passing `reference=` changed nothing in the output at all"
+
+
+def test_the_predicted_onsets_are_drawn_too(cache_with_features: Path):
+    """Same check for `onsets=`, so the pair cannot silently diverge."""
+    bare = cache_with_features / "bare.mp4"
+    drawn = cache_with_features / "drawn.mp4"
+    render(cache_with_features, out_path=bare, scale=1.0)
+    render(
+        cache_with_features, out_path=drawn, scale=1.0, onsets={"digging": 0.3, "hauling": 1.0}
+    )
+
+    assert int((_first_frame(bare) != _first_frame(drawn)).any(axis=2).sum()) > 0
+
+
+def test_the_windows_are_shaded(cache_with_features: Path):
+    """The shaded span is how a reader sees where pass 1 searched."""
+    bare = cache_with_features / "nw.mp4"
+    shaded = cache_with_features / "w.mp4"
+    render(cache_with_features, out_path=bare, scale=1.0)
+    render(
+        cache_with_features,
+        out_path=shaded,
+        scale=1.0,
+        windows=[("digging", 0.2, 0.5), ("hauling", 0.8, 1.1)],
+    )
+
+    assert int((_first_frame(bare) != _first_frame(shaded)).any(axis=2).sum()) > 0
