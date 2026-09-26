@@ -148,3 +148,24 @@ def test_render_scale_changes_output_size(fake_cache: Path):
 def test_render_without_boxes(fake_cache: Path):
     stats = render(fake_cache, out_path=fake_cache / "mask_only.mp4", draw_boxes=False)
     assert stats.frames_written == 60
+
+
+# --- phase banner ---------------------------------------------------------
+
+
+def test_phase_at_returns_the_latest_onset_that_has_passed():
+    from excavator_cycles.render import phase_at
+
+    onsets = {"digging": 4.0, "hauling": 10.0, "dumping": 18.0, "swinging": 23.0}
+    assert phase_at(onsets, 0.0) is None, "before the first onset, no phase is running"
+    assert phase_at(onsets, 4.0) == "digging", "a phase starts AT its onset"
+    assert phase_at(onsets, 9.9) == "digging"
+    assert phase_at(onsets, 10.0) == "hauling"
+    assert phase_at(onsets, 99.0) == "swinging"
+
+
+def test_phase_at_ignores_onsets_that_were_not_found():
+    from excavator_cycles.render import phase_at
+
+    assert phase_at({"digging": 4.0, "hauling": None}, 20.0) == "digging"
+    assert phase_at({"digging": None}, 20.0) is None

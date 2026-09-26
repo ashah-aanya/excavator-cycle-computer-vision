@@ -66,6 +66,7 @@ def render(
     scale: float = 1.0,
     draw_boxes: bool = True,
     physics: bool = True,
+    onsets: dict[str, float] | None = None,
 ) -> RenderStats:
     """Write an annotated copy of the source video.
 
@@ -75,6 +76,12 @@ def render(
         scale: resize factor. Small sources benefit from >1 so the overlays and
             text are legible; the underlying data is unchanged either way.
         draw_boxes: include the detector's boxes as well as the mask.
+        onsets: phase name -> onset time in seconds. Drawn as a marker on every
+            signal panel and as a phase banner on the frame. This function does
+            not know or care where they came from: the state machine will supply
+            predictions, and `eval/annotate_solution.py` supplies the hand labels
+            to make a reference video. Nothing under `src/` may read the labels
+            itself, so they arrive as an argument or not at all.
     """
     output_dir = Path(output_dir)
     result, masks = load_result(output_dir)
@@ -145,6 +152,8 @@ def render(
             canvas = _draw_frame(frame, mask, record, result, scale, draw_boxes)
             if table is not None and sample_position is not None:
                 canvas = _draw_physics(canvas, mask, table, scene, sample_position, scale)
+            if onsets:
+                _draw_phase_banner(canvas, onsets, frame_index / info.fps)
             left = np.vstack(
                 [
                     canvas,
@@ -162,7 +171,12 @@ def render(
             )
             if graph_width:
                 canvas = np.hstack(
-                    [left, _graph_column(table, sample_position, graph_width, canvas_height)]
+                    [
+                        left,
+                        _graph_column(
+                            table, sample_position, graph_width, canvas_height, onsets
+                        ),
+                    ]
                 )
             else:
                 canvas = left
@@ -304,7 +318,45 @@ def _signal_strip(table, scene, height: int = 0):
     return table
 
 
-def _graph_column(table, position: int | None, width: int, height: int):
+_PHASE_COLOUR = {
+    "digging": (240, 180, 90),
+    "hauling": (120, 220, 120),
+    "dumping": (70, 170, 240),
+    "swinging": (240, 130, 220),
+}
+
+
+def phase_at(onsets: dict[str, float], now: float) -> str | None:
+    """Which phase is running at ``now``: the latest onset that has passed."""
+    passed = [
+        (when, name) for name, when in onsets.items() if when is not None and now >= when
+    ]
+    return max(passed)[1] if passed else None
+
+
+def _draw_phase_banner(canvas, onsets: dict[str, float], now: float) -> None:
+    """The current phase, and how long it has been running."""
+    name = phase_at(onsets, now)
+    if name is None:
+        return
+    started = onsets[name]
+    colour = _PHASE_COLOUR.get(name, _TEXT)
+    text = f"{name.upper()}   {now - started:.1f}s"
+    font = max(0.5, canvas.shape[1] / 1400)
+    (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, 2)
+    cv2.rectangle(canvas, (8, 8), (8 + tw + 16, 8 + th + base + 12), (18, 18, 18), cv2.FILLED)
+    cv2.rectangle(canvas, (8, 8), (8 + tw + 16, 8 + th + base + 12), colour, 2)
+    cv2.putText(canvas, text, (16, 12 + th), cv2.FONT_HERSHEY_SIMPLEX, font, colour, 2,
+                cv2.LINE_AA)
+
+
+def _graph_column(
+    table,
+    position: int | None,
+    width: int,
+    height: int,
+    onsets: dict[str, float] | None = None,
+):
     """The signals, stacked down the right-hand side, with a shared playhead.
 
     Drawn fresh each frame rather than blitted from a pre-rendered strip,
@@ -345,6 +397,20 @@ def _graph_column(table, position: int | None, width: int, height: int):
         if position is not None and np.isfinite(values[position]):
             cv2.putText(column, f"{values[position]:+.3f}", (6, top + 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.30, _TEXT, 1, cv2.LINE_AA)
+
+    # Onset markers span every panel, so a boundary can be read against all six
+    # signals at once -- which is the point of stacking them.
+    times = np.asarray(table.time_seconds, dtype=float)
+    for name, when in (onsets or {}).items():
+        if when is None:
+            continue
+        index = int(np.argmin(np.abs(times - when)))
+        x = left + round(span * index / total)
+        colour = _PHASE_COLOUR.get(name, _TEXT)
+        for y in range(4, height - 4, 6):  # dashed, so it reads under the traces
+            cv2.line(column, (x, y), (x, min(y + 3, height - 4)), colour, 1)
+        cv2.putText(column, name[:4], (x + 3, height - 6), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.3, colour, 1, cv2.LINE_AA)
 
     if position is not None:
         x = left + round(span * position / total)
