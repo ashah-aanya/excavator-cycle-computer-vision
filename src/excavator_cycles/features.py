@@ -70,7 +70,6 @@ class FeatureTable:
     joint2_y: np.ndarray
     tip_x: np.ndarray
     tip_y: np.ndarray
-    falling: np.ndarray  # downward pixel motion below the bucket -- INDEPENDENT of the mask
     in_dig_zone: np.ndarray  # bool
     in_dump_zone: np.ndarray  # bool
     confidence: np.ndarray  # from the tracker; low means MISSING, not "no"
@@ -210,7 +209,6 @@ def build_features(
         zone_separation=separation,
     )
 
-    falling = falling_material(result, tips, scale, config)
 
     table = FeatureTable(
         time_seconds=times,
@@ -233,7 +231,6 @@ def build_features(
         joint2_y=keypoints[:, 2, 1],
         tip_x=keypoints[:, 3, 0],
         tip_y=keypoints[:, 3, 1],
-        falling=falling,
         in_dig_zone=in_dig,
         in_dump_zone=in_dump,
         confidence=confidence,
@@ -245,74 +242,6 @@ def build_features(
     )
     return table, scene
 
-
-def falling_material(
-    result: TrackResult, tips: list[tuple[float, float] | None], scale: float, config: Config
-) -> np.ndarray:
-    """Downward pixel motion just below the bucket: material being released.
-
-    This is the only cue in the pipeline that touches no mask. Every other
-    signal is derived from SAM's output, so they share a failure mode -- if the
-    mask is wrong they are wrong together, and their agreement proves nothing.
-    Optical flow measures the image directly, which is what makes it worth the
-    extra decode pass.
-
-    It is corroboration, not a clock: material takes time to fall, so its onset
-    lags the tipping that causes it. Using it to time the boundary would bias
-    dumping late by however long that lag is.
-    """
-    import cv2
-
-    from .video import iter_samples
-
-    frames = [
-        cv2.cvtColor(s.image, cv2.COLOR_BGR2GRAY)
-        for s in iter_samples(result.video, rate_hz=result.rate_hz)
-    ]
-    if len(frames) != len(tips):
-        log.warning(
-            "decoded %d frames but have %d samples; skipping the falling-material cue",
-            len(frames),
-            len(tips),
-        )
-        return np.full(len(tips), np.nan)
-
-    box = config.geometry.bucket_radius_frac * scale  # flow patch size
-    signal = np.full(len(tips), np.nan)
-    for index in range(1, len(frames)):
-        tip = tips[index]
-        if tip is None:
-            continue
-        # A patch directly beneath the bucket, where released material falls.
-        x0 = int(max(0, tip[0] - box))
-        x1 = int(min(frames[index].shape[1], tip[0] + box))
-        y0 = int(max(0, tip[1]))
-        y1 = int(min(frames[index].shape[0], tip[1] + 2 * box))
-        if x1 - x0 < 8 or y1 - y0 < 8:
-            continue
-
-        flow = cv2.calcOpticalFlowFarneback(
-            frames[index - 1][y0:y1, x0:x1],
-            frames[index][y0:y1, x0:x1],
-            None,
-            0.5,
-            2,
-            9,
-            2,
-            5,
-            1.1,
-            0,
-        )
-        # Subtract the bucket's own vertical motion before calling anything
-        # "falling". A descending bucket drags its whole neighbourhood downward
-        # in the flow field, and without this correction the cue fires hardest
-        # while the machine is lowering the bucket to dig -- the opposite of
-        # dumping. What is left is motion that outruns the bucket: material.
-        previous = tips[index - 1]
-        bucket_dy = (tip[1] - previous[1]) if previous is not None else 0.0
-        relative = flow[..., 1] - bucket_dy
-        signal[index] = float(np.clip(relative, 0, None).mean() / scale)
-    return signal
 
 
 def _signed_angle(vector: np.ndarray, reference: np.ndarray) -> float:
