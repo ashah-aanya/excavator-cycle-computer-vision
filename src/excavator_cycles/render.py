@@ -67,6 +67,7 @@ def render(
     draw_boxes: bool = True,
     physics: bool = True,
     onsets: dict[str, float] | None = None,
+    windows: list[tuple[str, float, float]] | None = None,
 ) -> RenderStats:
     """Write an annotated copy of the source video.
 
@@ -82,6 +83,10 @@ def render(
             predictions, and `eval/annotate_solution.py` supplies the hand labels
             to make a reference video. Nothing under `src/` may read the labels
             itself, so they arrive as an argument or not at all.
+        windows: (phase, start, end) spans in seconds, shaded on every signal
+            panel. Meant for the state machine's pass-1 output, where the
+            question being asked of a picture is "does this window even contain
+            the transition?" -- which a marker cannot answer and a span can.
     """
     output_dir = Path(output_dir)
     result, masks = load_result(output_dir)
@@ -174,7 +179,12 @@ def render(
                     [
                         left,
                         _graph_column(
-                            table, sample_position, graph_width, canvas_height, onsets
+                            table,
+                            sample_position,
+                            graph_width,
+                            canvas_height,
+                            onsets,
+                            windows,
                         ),
                     ]
                 )
@@ -358,6 +368,7 @@ def _graph_column(
     width: int,
     height: int,
     onsets: dict[str, float] | None = None,
+    windows: list[tuple[str, float, float]] | None = None,
 ):
     """The signals, stacked down the right-hand side, with a shared playhead.
 
@@ -416,9 +427,21 @@ def _graph_column(
                 cv2.LINE_AA,
             )
 
+    times = np.asarray(table.time_seconds, dtype=float)
+
+    # Windows first, so the markers and traces draw on top of them.
+    for name, start, end in windows or ():
+        colour = _PHASE_COLOUR.get(name, _TEXT)
+        x0 = left + round(span * int(np.argmin(np.abs(times - start))) / total)
+        x1 = left + round(span * int(np.argmin(np.abs(times - end))) / total)
+        shade = np.full((height - 8, max(1, x1 - x0), 3), colour, dtype=np.uint8)
+        region = column[4 : height - 4, x0 : x0 + shade.shape[1]]
+        column[4 : height - 4, x0 : x0 + shade.shape[1]] = cv2.addWeighted(
+            shade[: region.shape[0], : region.shape[1]], 0.22, region, 0.78, 0
+        )
+
     # Onset markers span every panel, so a boundary can be read against all six
     # signals at once -- which is the point of stacking them.
-    times = np.asarray(table.time_seconds, dtype=float)
     for name, when in (onsets or {}).items():
         if when is None:
             continue
