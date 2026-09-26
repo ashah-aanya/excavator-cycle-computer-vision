@@ -214,3 +214,32 @@ def test_cycle_is_still_constructible_directly_for_callers_that_have_onsets():
     assert cycle.complete and cycle.measurable
     assert cycle.durations()["swinging"] == pytest.approx(1.0)
     assert np.isclose(cycle.duration, 4.0)
+
+
+def test_an_interrupted_cycle_is_not_counted_as_a_complete_one():
+    """An out-of-sequence dig abandons the cycle being built. Its already-emitted
+    detections stay in the list, unmarked, so the guard has to be downstream.
+
+    It is: the interrupting dig is itself a cycle boundary, so the abandoned span
+    is bounded by two digs like any other and judged on its own evidence. A span
+    that never dumped is not a complete cycle, whatever was detected inside it.
+    That is why the evidence check has to be per-span -- a global set would have
+    called this complete.
+    """
+    onsets = [
+        Onset("digging", 0.0, 0.0),
+        Onset("hauling", 1.0, 1.0),
+        # the machine went back to the pile instead of dumping
+        Onset("digging", 4.0, 4.0, out_of_sequence=True),
+        *cycle_of(10.0)[1:],
+        Onset("digging", 20.0, 20.0),
+    ]
+    cycles = assemble(
+        onsets,
+        evidence=lambda start, end: {"digging", "hauling"} if end <= 4.0 else set(PHASES),
+    )
+    assert len(cycles) == 2
+    assert not cycles[0].complete, "no dumping happened in the abandoned span"
+    assert "no dumping, swinging in this span" in cycles[0].reason
+    assert cycles[1].complete
+    assert summarise(cycles).cycle_count == 1

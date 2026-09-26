@@ -174,7 +174,15 @@ def test_calibrate_survives_a_video_with_no_truck():
     table = _table()
     table.truck_overlap = np.full(len(table.height), np.nan)
     levels = calibrate(table)
-    assert levels.over_truck is None or not levels.over_truck.trustworthy
+    # `is None or not trustworthy` was weaker than the docstring: mutating
+    # `calibrate` to return `Split(0.123, 0.5, 50, 50)` instead of None kept it
+    # green, although the docstring says the gate is UNAVAILABLE. It must be None,
+    # because that is the one value `trigger_dumping` actually checks.
+    assert levels.over_truck is None
+    # And the required levels must still be there: an absent truck is not a
+    # reason to give up on the rest of the video.
+    assert isinstance(levels.low_height, Split)
+    assert isinstance(levels.moving, Split)
 
 
 def test_separability_tells_one_population_from_two():
@@ -615,6 +623,10 @@ def test_an_already_running_phase_cannot_interrupt_itself():
         fires=_scripted({"digging": set(range(10, 100))}),
         hold_samples=3,
     )
+    # Non-vacuity first: `not any(...)` over an empty list is True, so a walk that
+    # fired nothing at all used to pass this. Mutating `walk` to never fire left it
+    # green, which made it evidence of nothing.
+    assert [d.phase for d in found] == ["digging"], f"expected one dig, got {found}"
     assert not any(d.out_of_sequence for d in found)
 
 
@@ -645,6 +657,11 @@ def test_consecutive_windows_never_overlap():
         fires=_scripted(schedule),
         hold_samples=hold,
         lookback_samples=20,  # far wider than the gaps between triggers
+    )
+    # Non-vacuity first: `pairwise` of a list with fewer than two elements yields
+    # nothing, so a walk that fired nothing used to satisfy this invariant trivially.
+    assert [d.phase for d in found] == ["digging", "hauling", "dumping", "swinging"], (
+        f"all four must fire or the invariant is untested; got {[d.phase for d in found]}"
     )
     for earlier, later in pairwise(found):
         # Non-overlap means the next window starts at or after the previous one
