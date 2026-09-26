@@ -49,6 +49,7 @@ from typing import Literal
 
 import numpy as np
 
+from .config import FSMConfig
 from .geometry import otsu_threshold
 from .logging_setup import get_logger
 
@@ -324,14 +325,27 @@ def walk(
         fires = default_fires
 
     times = np.asarray(table.time_seconds, dtype=float)
-    if config is not None:
-        hold_samples = hold_samples or samples_for(config.fsm.hold_seconds, times)
-        strict_hold_samples = strict_hold_samples or samples_for(
-            config.fsm.strict_hold_seconds, times
-        )
-        lookback_samples = lookback_samples or samples_for(config.fsm.lookback_seconds, times)
-    hold_samples = hold_samples if hold_samples is not None else 3
-    lookback_samples = lookback_samples if lookback_samples is not None else 8
+
+    # There is no sample count in this function's defaults, on purpose. A bare `3`
+    # would mean 0.30 s on this clip and 0.12 s on a 25 fps clip sampled every
+    # frame -- exactly the seconds-versus-indices mixing `Window`'s docstring
+    # forbids, tuned to one video's sample spacing. So the durations come from
+    # `FSMConfig`, and `samples_for` does the conversion once, here at the boundary.
+    #
+    # The explicit sample counts remain for tests that need to pin an exact number,
+    # and they are read before config so they win. `strict` keeps its documented
+    # RATIO to `hold` rather than a duration of its own: "unexpected evidence costs
+    # twice as much" is dimensionless and travels between videos.
+    # Resolved lazily so a caller that pins every count need not supply a config
+    # at all -- and so a test injecting its own trigger is not forced to build one.
+    def duration(name: str) -> float:
+        source = config.fsm if config is not None else FSMConfig()
+        return float(getattr(source, name))
+
+    if hold_samples is None:
+        hold_samples = samples_for(duration("hold_seconds"), times)
+    if lookback_samples is None:
+        lookback_samples = samples_for(duration("lookback_seconds"), times)
     strict = strict_hold_samples if strict_hold_samples is not None else hold_samples * 2
 
     count = len(times)
@@ -342,8 +356,8 @@ def walk(
     # so consecutive windows cannot overlap.
     previous = None
 
-    def sustained(phase: str, start: int, needed: int) -> bool:
-        """Did the trigger RISE here and then hold for `needed` samples?
+    def sustained(phase: str, start: int, needed: int, *, require_edge: bool = True) -> int:
+        """How many samples the trigger held for here, or 0 if this is no transition.
 
         A rising edge, not a level. The triggers are written as conditions --
         "the bucket is down and still" -- and such a condition is true for the
@@ -354,24 +368,58 @@ def walk(
 
         The edge is the whole difference between "digging is happening" and
         "digging just started", and only the second is a transition.
+
+        ``require_edge=False`` is the one exemption, and it exists because phases
+        are CONTIGUOUS. Hauling's condition becomes true at or immediately after
+        digging's onset is confirmed -- so at the very first sample the walk looks
+        for hauling, "already true" is the expected state of affairs and not
+        evidence against a transition. Demanding an edge there lost the transition
+        permanently, because the condition never goes false again. The exemption
+        applies only at that first sample, and only to the phase the walk is
+        EXPECTING: an out-of-sequence dig always needs a genuine edge, since
+        unexpected evidence should stay expensive.
+
+        Returns a COUNT rather than a bool so the caller can size the window to
+        the evidence that actually exists. At the end of the clip fewer than
+        ``needed`` samples remain, and all of them holding is all the evidence
+        there can be -- refusing it silently discarded any transition rising in
+        the last ``needed - 1`` samples. The labelled cycle-closing dig sits at
+        sample 293 of 296, which cleared the old bar by exactly zero margin.
         """
-        if start + needed > count:
-            return False
-        if start > 0 and fires(phase, table, start - 1, levels, config):
-            return False  # already true before this sample: not an edge
-        return all(fires(phase, table, i, levels, None) for i in range(start, start + needed))
+        available = count - start
+        if available <= 0:
+            return 0
+        held = min(needed, available)
+        if require_edge and start > 0 and fires(phase, table, start - 1, levels, config):
+            return 0  # already true before this sample: not an edge
+        if not all(fires(phase, table, i, levels, config) for i in range(start, start + held)):
+            return 0
+        if held < needed:
+            log.info(
+                "%s at sample %d held for %d of %d samples -- the clip ends. Accepted: "
+                "every sample that exists supports it.",
+                phase,
+                start,
+                held,
+                needed,
+            )
+        return held
+
+    # The sample from which the walk started looking for the CURRENT target. The
+    # edge rule is relaxed at exactly this sample; see `sustained`.
+    looking_since = 0
 
     while index < count:
         target = state.looking_for
 
         # The transition we are expecting.
-        if sustained(target, index, hold_samples):
-            detected = _detect(
-                state, target, index, hold_samples, lookback_samples, times, previous
-            )
+        held = sustained(target, index, hold_samples, require_edge=index > looking_since)
+        if held:
+            detected = _detect(state, target, index, held, lookback_samples, times, previous)
             found.append(detected)
             previous = detected.window.hi
-            index += hold_samples
+            index += held
+            looking_since = index
             continue
 
         # Digging, always, at a higher bar -- it is the only transition that
@@ -382,7 +430,8 @@ def walk(
         # for as long as that dig lasts, so it cannot rise again until the bucket
         # has actually come back up. A `curr_stage != "digging"` guard here would
         # be redundant AND wrong -- it would also block a genuine second dig.
-        if target != "digging" and sustained("digging", index, strict):
+        strict_held = sustained("digging", index, strict)
+        if target != "digging" and strict_held:
             log.info(
                 "digging at sample %d interrupted %s; the cycle being built is abandoned",
                 index,
@@ -393,13 +442,14 @@ def walk(
             state.occurred.clear()
             state.since = None
             detection = _detect(
-                state, "digging", index, strict, lookback_samples, times, previous
+                state, "digging", index, strict_held, lookback_samples, times, previous
             )
             found.append(
                 Detection(detection.phase, detection.window, detection.fired_at, True)
             )
             previous = detection.window.hi
-            index += strict
+            index += strict_held
+            looking_since = index
             continue
 
         index += 1

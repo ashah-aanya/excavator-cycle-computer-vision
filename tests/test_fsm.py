@@ -1004,3 +1004,147 @@ def test_the_rest_band_needs_something_to_measure():
     from excavator_cycles.fsm import _rest_band
 
     assert _rest_band(np.array([1.0, 2.0]), sigma=3.0) == 0.0
+
+
+# --- the two silent losses ----------------------------------------------------
+#
+# Both make `walk` return FEWER detections than the data supports, with no error
+# and no log line. A lost transition costs a graded field; a lost DIGGING
+# transition costs a cycle boundary and so costs `cycle_count` too.
+
+
+def test_the_next_phase_is_not_lost_when_it_begins_where_the_last_was_confirmed():
+    """The common case, and it was broken.
+
+    `walk` skipped `hold_samples` forward after a detection, and `sustained`
+    tested for a rising edge at `start - 1`. If the next phase's condition rose
+    anywhere inside that skipped span and then held, the edge check landed INSIDE
+    the span, saw True, and refused forever -- the condition never goes false
+    again, so the transition is lost permanently.
+
+    This is not a corner case. Phases are contiguous: hauling's condition becomes
+    true at or immediately after digging's onset is confirmed, every cycle. That
+    is precisely the losing window.
+    """
+    from excavator_cycles.fsm import walk
+
+    for rise in (10, 11, 12, 13):
+        schedule = {"digging": set(range(10, 13)), "hauling": set(range(rise, 60))}
+        found = walk(
+            _walk_table(60),
+            _levels(),
+            fires=_scripted(schedule),
+            hold_samples=3,
+            lookback_samples=2,
+        )
+        phases = [d.phase for d in found]
+        assert phases == ["digging", "hauling"], f"hauling rising at {rise} gave {phases}"
+
+
+def test_a_phase_still_cannot_fire_twice_inside_itself():
+    """The guard the edge rule exists for, which the fix above must not weaken.
+
+    A trigger written as a condition -- "the bucket is down and still" -- is true
+    for the WHOLE of the phase it describes. Accepting a level rather than an edge
+    once produced sixteen digging detections inside one digging phase.
+    """
+    from excavator_cycles.fsm import walk
+
+    schedule = {"digging": set(range(10, 90))}  # true for eighty samples
+    found = walk(
+        _walk_table(100),
+        _levels(),
+        fires=_scripted(schedule),
+        hold_samples=3,
+        lookback_samples=2,
+    )
+    assert [d.phase for d in found] == ["digging"], "one phase, one detection"
+
+
+def test_an_out_of_sequence_dig_still_needs_a_real_rising_edge():
+    """Unexpected evidence stays expensive.
+
+    The leniency that fixes the contiguous-phase loss applies only to the phase
+    the walk is EXPECTING. If it applied to the out-of-sequence digging check too,
+    then digging's condition still being true just after digging was detected
+    would immediately fire a spurious dig and abandon the cycle.
+    """
+    from excavator_cycles.fsm import walk
+
+    schedule = {"digging": set(range(10, 90)), "hauling": set(range(20, 90))}
+    found = walk(
+        _walk_table(100),
+        _levels(),
+        fires=_scripted(schedule),
+        hold_samples=3,
+        lookback_samples=2,
+    )
+    assert [d.phase for d in found] == ["digging", "hauling"]
+    assert not any(d.out_of_sequence for d in found), "digging held; it never re-rose"
+
+
+def test_a_transition_at_the_very_end_of_the_clip_is_not_discarded():
+    """`start + needed > count` dropped any trigger rising in the last hold-1
+    samples, silently.
+
+    Not hypothetical: the labelled cycle-closing dig is at sample 293 of 296.
+    With hold=3, 293 + 3 == 296 passes by EXACTLY zero margin -- one fewer decoded
+    frame and the final cycle boundary vanishes, taking `cycle_count` with it.
+    The evidence that exists is all the evidence there can be, so a run reaching
+    the end of the data counts.
+    """
+    from excavator_cycles.fsm import walk
+
+    for rise in (56, 57, 58, 59):
+        schedule = {"digging": set(range(rise, 60))}
+        found = walk(
+            _walk_table(60),
+            _levels(),
+            fires=_scripted(schedule),
+            hold_samples=3,
+            lookback_samples=2,
+        )
+        assert [d.phase for d in found] == ["digging"], f"rising at {rise} of 60 gave {found}"
+
+
+def test_a_truncated_hold_is_only_allowed_at_the_clip_edge():
+    """Mid-clip, three samples still means three. Otherwise the hold is no bar."""
+    from excavator_cycles.fsm import walk
+
+    schedule = {"digging": {20, 21}}  # two samples, then false again, mid-clip
+    found = walk(
+        _walk_table(60),
+        _levels(),
+        fires=_scripted(schedule),
+        hold_samples=3,
+        lookback_samples=2,
+    )
+    assert found == [], "a two-sample blip in the middle of the clip is not a transition"
+
+
+def test_the_injected_trigger_sees_the_same_config_on_every_call():
+    """It did not. The edge check passed `config` and the hold loop passed `None`,
+    so an injected trigger that read config behaved differently on the two calls
+    -- a difference that would show up as an intermittent missed transition."""
+    from excavator_cycles.fsm import walk
+
+    seen = []
+
+    def fires(phase, table, index, levels, config):
+        seen.append(config)
+        return phase == "digging" and 10 <= index < 20
+
+    sentinel = object()
+    walk(
+        _walk_table(40),
+        _levels(),
+        fires=fires,
+        config=sentinel,
+        hold_samples=3,
+        strict_hold_samples=6,
+        lookback_samples=2,
+    )
+    assert seen, "the trigger must actually have been called"
+    assert all(c is sentinel for c in seen), (
+        f"mixed configs reached the trigger: {set(map(id, seen))}"
+    )
