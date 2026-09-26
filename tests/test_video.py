@@ -118,3 +118,78 @@ def test_probe_verify_matches_what_iteration_yields(clip_30fps: Path):
     assert len(list(iter_samples(clip_30fps, rate_hz=30.0))) == pytest.approx(
         info.frame_count, abs=1
     )
+
+
+# --- which clock do we trust? ---------------------------------------------
+
+
+def test_a_constant_rate_file_is_classified_constant(tmp_path):
+    """And therefore timed by index/fps, not by the decoder.
+
+    CAP_PROP_POS_MSEC is often computed from a ROUNDED rate rather than read
+    from the container: on the task video it returns exactly n/30 while the true
+    rate is 29.97396912, so every timestamp is 0.1% short. That is 0.022 s over
+    one work cycle -- small against a 0.6 s tolerance, but systematic, and it
+    offsets every prediction against ground truth converted at the true rate.
+    """
+    from excavator_cycles.video import classify_timeline
+
+    path = _write_video(tmp_path / "cfr.mp4", fps=25.0, n_frames=40)
+    assert classify_timeline(path) == "constant"
+
+
+def test_constant_rate_timestamps_come_from_the_frame_rate(tmp_path):
+    from excavator_cycles.video import probe
+
+    info = probe(_write_video(tmp_path / "cfr.mp4", fps=25.0, n_frames=40))
+    assert info.timeline == "constant"
+    assert "index / fps" in info.summary()
+
+
+def test_constant_rate_timing_is_exact_arithmetic_not_the_decoder(tmp_path):
+    """On "constant" the helper must compute index/fps and never consult the
+    decoder -- that is the whole point, since the decoder may be quantised."""
+    import cv2
+
+    from excavator_cycles.video import _timestamp_seconds
+
+    path = _write_video(tmp_path / "cfr.mp4", fps=30.0, n_frames=10)
+    capture = cv2.VideoCapture(str(path))
+    try:
+        for index in (0, 3, 7):
+            got = _timestamp_seconds(capture, index, 29.97396912419384, "constant")
+            assert got == pytest.approx(index / 29.97396912419384), (
+                "constant-rate timing must be exact index/fps"
+            )
+    finally:
+        capture.release()
+
+
+def test_the_two_clocks_disagree_on_the_task_video():
+    """The bug this fixes, pinned against the real file when it is present.
+
+    The container reports 29.97396912 fps; OpenCV's POS_MSEC returns exactly
+    n/30. Over one 755-frame work cycle that is 0.022 s -- 3.6% of the budget,
+    in the same direction every time.
+    """
+    import cv2
+
+    video = (
+        Path(__file__).resolve().parent.parent / "construction_excavator_cycle_duration_1.mp4"
+    )
+    if not video.exists():
+        pytest.skip("task video not present")
+    capture = cv2.VideoCapture(str(video))
+    try:
+        fps = capture.get(cv2.CAP_PROP_FPS)
+        stamps = []
+        for _ in range(60):
+            if not capture.grab():
+                break
+            stamps.append(capture.get(cv2.CAP_PROP_POS_MSEC))
+    finally:
+        capture.release()
+    implied = 1000 * (len(stamps) - 1) / (stamps[-1] - stamps[0])
+    assert implied == pytest.approx(30.0, abs=0.01), "POS_MSEC is on a round 30 fps timeline"
+    assert fps == pytest.approx(29.97396912, abs=1e-6), "the container knows better"
+    assert abs(755 / 30 - 755 / fps) == pytest.approx(0.022, abs=0.002)

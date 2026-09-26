@@ -41,6 +41,9 @@ class VideoInfo:
     fps: float
     frame_count: int
     duration_seconds: float
+    # "constant" | "variable" | "absent" -- which clock to trust. See
+    # `classify_timeline` for why neither source is right for both cases.
+    timeline: str = "constant"
 
     @property
     def resolution(self) -> str:
@@ -58,12 +61,18 @@ class VideoInfo:
         return max(1, round(self.fps / rate_hz))
 
     def summary(self) -> str:
+        source = {
+            "constant": "index / fps  (constant frame rate)",
+            "variable": "decoder timestamps  (VARIABLE frame rate)",
+            "absent": "index / fps  (decoder reports no timestamps)",
+        }[self.timeline]
         return (
             f"{self.path.name}\n"
             f"  resolution : {self.resolution}\n"
-            f"  frame rate : {self.fps:.3f} fps\n"
+            f"  frame rate : {self.fps:.6f} fps\n"
             f"  frames     : {self.frame_count}\n"
-            f"  duration   : {self.duration_seconds:.2f} s"
+            f"  duration   : {self.duration_seconds:.2f} s\n"
+            f"  time from  : {source}"
         )
 
 
@@ -78,6 +87,53 @@ class Sample:
     frame_index: int
     time_seconds: float
     image: np.ndarray  # BGR, as OpenCV decodes it
+
+
+def classify_timeline(path: Path, samples: int = 240, tolerance: float = 0.002) -> str:
+    """Decide which clock to trust: the frame index, or the decoder.
+
+    Neither source is right for both cases, and picking the wrong one is a
+    systematic bias in the only number this project reports.
+
+    **Constant frame rate.** ``CAP_PROP_POS_MSEC`` is often computed from a
+    *rounded* rate rather than read from the container. On the development clip
+    it returns exactly ``n / 30`` while the true rate is 29.97396912 -- so every
+    timestamp is 0.1% short, which is 0.022 s over one work cycle. Small against
+    a 0.6 s tolerance, but systematic: it never averages out, and it offsets
+    every prediction against ground truth that was converted at the true rate.
+    Here ``index / fps`` is exact and the decoder is not.
+
+    **Variable frame rate.** Phone and web footage genuinely has uneven frame
+    intervals. There is no single fps, so ``index / fps`` is meaningless and the
+    decoder's timestamps are the only truth.
+
+    The test: are the reported intervals constant? A round-rate timeline is
+    perfectly even and gets classified constant, which is what we want -- we
+    then ignore it in favour of the more precise arithmetic.
+
+    Returns "constant", "variable", or "absent" (the decoder gave nothing).
+    """
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        raise RuntimeError(f"could not open video: {path}")
+    stamps = []
+    try:
+        for _ in range(samples):
+            if not capture.grab():
+                break
+            stamps.append(float(capture.get(cv2.CAP_PROP_POS_MSEC)))
+    finally:
+        capture.release()
+
+    usable = [t for t in stamps[1:] if t > 0]
+    if len(usable) < 3:
+        return "absent"
+
+    gaps = np.diff(np.asarray(stamps[: len(usable) + 1], dtype=float))
+    median = float(np.median(gaps))
+    if median <= 0:
+        return "absent"
+    return "constant" if float(np.ptp(gaps)) / median <= tolerance else "variable"
 
 
 def probe(path: str | Path, verify: bool = False) -> VideoInfo:
@@ -110,6 +166,20 @@ def probe(path: str | Path, verify: bool = False) -> VideoInfo:
     if fps <= 0 or not np.isfinite(fps):
         raise RuntimeError(
             f"video reports an unusable frame rate ({fps}); cannot convert to seconds"
+        )
+
+    timeline = classify_timeline(path)
+    if timeline == "variable":
+        log.warning(
+            "%s: VARIABLE frame rate -- using the decoder's timestamps. Rates "
+            "assume one sample spacing, so they will be biased by the local ratio.",
+            path.name,
+        )
+    elif timeline == "absent":
+        log.warning(
+            "%s: the decoder reports no timestamps; falling back to index / fps. "
+            "If this file is variable-rate, every duration is wrong.",
+            path.name,
         )
 
     if verify:
@@ -175,7 +245,7 @@ def iter_samples(
                 break
 
             if index % stride == 0:
-                time_seconds = _timestamp_seconds(capture, index, info.fps)
+                time_seconds = _timestamp_seconds(capture, index, info.fps, info.timeline)
 
                 if time_seconds < start_seconds:
                     index += 1
@@ -214,16 +284,19 @@ def _count_frames(path: Path) -> int:
     return count
 
 
-def _timestamp_seconds(capture: cv2.VideoCapture, index: int, fps: float) -> float:
-    """The frame's real position in time, falling back to index/fps.
+def _timestamp_seconds(
+    capture: cv2.VideoCapture, index: int, fps: float, timeline: str = "constant"
+) -> float:
+    """Where this frame sits in time, from whichever clock is trustworthy here.
 
-    Some containers do not report per-frame timestamps. The fallback keeps the
-    pipeline running, but it is worth knowing which one you got, because only
-    the first is immune to a 29.97-vs-30 mismatch.
+    See `classify_timeline`. On a constant-rate file ``index / fps`` is exact
+    and the decoder's timestamps may be quantised to a round rate; on a
+    variable-rate file the decoder is the only source that means anything.
     """
-    milliseconds = capture.get(cv2.CAP_PROP_POS_MSEC)
-    if milliseconds and milliseconds > 0:
-        return float(milliseconds) / 1000.0
+    if timeline == "variable":
+        milliseconds = capture.get(cv2.CAP_PROP_POS_MSEC)
+        if milliseconds and milliseconds > 0:
+            return float(milliseconds) / 1000.0
     return index / fps
 
 
@@ -259,7 +332,7 @@ def read_frames_at(path: str | Path, times_seconds: list[float]) -> list[Sample]
             if not ok:
                 continue
             index = int(capture.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-            actual = _timestamp_seconds(capture, max(index, 0), info.fps)
+            actual = _timestamp_seconds(capture, max(index, 0), info.fps, info.timeline)
             samples.append(Sample(frame_index=index, time_seconds=actual, image=image))
     finally:
         capture.release()
