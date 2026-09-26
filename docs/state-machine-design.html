@@ -196,7 +196,7 @@
           <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
         </div>
       </div>
-      <p class="subtitle">Two passes, four swappable cues, one loop · <strong>not yet built</strong> — this is the design</p>
+      <p class="subtitle">Calibrate globally, search locally · always watching for digging · <strong>design only — not yet built</strong></p>
     </div>
 
     <!-- Main Diagram -->
@@ -209,211 +209,190 @@
             <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
         </defs>
         <rect width="1280" height="1150" fill="url(#grid)"/>
-        <line x1="340" y1="205" x2="340" y2="290" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
-<text x="340.0" y="240.5" fill="#64748b" font-size="7.5" text-anchor="middle">arrays</text>
-        <line x1="1090" y1="205" x2="1090" y2="290" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
-<text x="1090.0" y="240.5" fill="#64748b" font-size="7.5" text-anchor="middle">min durations</text>
-        <line x1="340" y1="375" x2="340" y2="470" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
-<text x="340.0" y="415.5" fill="#64748b" font-size="7.5" text-anchor="middle">list[Interval]  (seconds)</text>
-        <line x1="380" y1="565" x2="440" y2="565" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
-<text x="410.0" y="558.0" fill="#64748b" font-size="7.5" text-anchor="middle">looking_for</text>
-        <line x1="800" y1="565" x2="860" y2="565" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
-<text x="830.0" y="558.0" fill="#64748b" font-size="7.5" text-anchor="middle">Window</text>
-        <polyline points="1040,680 1040,745 220,745 220,680" fill="none" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
-<text x="630" y="740" fill="#64748b" font-size="7.5" text-anchor="middle">state.advance(phase, when)   ->  loop</text>
-        <line x1="220" y1="690" x2="220" y2="925" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
-<text x="220.0" y="800.5" fill="#64748b" font-size="7.5" text-anchor="middle">on the 4th onset: close_cycle()</text>
-        <line x1="380" y1="990" x2="440" y2="990" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
-<text x="410.0" y="983.0" fill="#64748b" font-size="7.5" text-anchor="middle">list[Cycle]</text>
-        <line x1="800" y1="990" x2="860" y2="990" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
-<text x="830.0" y="983.0" fill="#64748b" font-size="7.5" text-anchor="middle">Answer</text>
-        <rect x="40" y="60" width="1200" height="160" rx="12" fill="none" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
-<text x="56" y="80" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="1">INPUT  ·  everything is a numpy array of length n</text>
-<text x="56" y="94" fill="#64748b" font-size="8">one row per sample  ·  n = 296 on the development clip, 10 Hz</text>
-        <rect x="60" y="100" width="560" height="105" rx="6" fill="#0f172a"/>
-<rect x="60" y="100" width="560" height="105" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
-<text x="340.0" y="119" fill="white" font-size="12" font-weight="600" text-anchor="middle">FeatureTable</text>
-<text x="340.0" y="133" fill="#94a3b8" font-size="8" text-anchor="middle">features.npz  ·  13 columns, all length n</text>
-<text x="72" y="150" fill="#fbbf24" font-size="7.5">time_seconds[n]  float64   decoder seconds, NOT index/fps</text>
-<text x="72" y="162" fill="#fbbf24" font-size="7.5">height[n] dh_dt[n] d2h_dt2[n]   L and L/s, UP-positive</text>
-<text x="72" y="174" fill="#fbbf24" font-size="7.5">speed_x[n] = |dx_dt|            L/s</text>
-<text x="72" y="186" fill="#fbbf24" font-size="7.5">truck_overlap[n]  aspect_ratio[n]  rel_cabin_*[n]</text>
-<text x="72" y="198" fill="#fbbf24" font-size="7.5">found[n]  bool   was there a mask BEFORE smoothing</text>
-        <rect x="660" y="100" width="250" height="105" rx="6" fill="#0f172a"/>
-<rect x="660" y="100" width="250" height="105" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
-<text x="785.0" y="119" fill="white" font-size="12" font-weight="600" text-anchor="middle">Scene</text>
-<text x="785.0" y="133" fill="#94a3b8" font-size="8" text-anchor="middle">derived per video</text>
-<text x="672" y="150" fill="#fbbf24" font-size="7.5">pivot   (x, y) px</text>
-<text x="672" y="162" fill="#fbbf24" font-size="7.5">scale   L, px</text>
-<text x="672" y="174" fill="#fbbf24" font-size="7.5">truck_box  or None</text>
-        <rect x="950" y="100" width="290" height="105" rx="6" fill="#0f172a"/>
-<rect x="950" y="100" width="290" height="105" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
-<text x="1095.0" y="119" fill="white" font-size="12" font-weight="600" text-anchor="middle">Config</text>
-<text x="1095.0" y="133" fill="#94a3b8" font-size="8" text-anchor="middle">configs/default.yaml</text>
-<text x="962" y="150" fill="#fbbf24" font-size="7.5">min episode durations (s)</text>
-<text x="962" y="162" fill="#fbbf24" font-size="7.5">lookback margin (s)</text>
-<text x="962" y="174" fill="#fbbf24" font-size="7.5">cue parameters</text>
-        <rect x="40" y="250" width="1200" height="140" rx="12" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
-<text x="56" y="270" fill="#34d399" font-size="11" font-weight="700" letter-spacing="1">PASS 1a  ·  BRACKET THE WHOLE VIDEO, ONCE</text>
-<text x="56" y="284" fill="#64748b" font-size="8">Otsu on this video's own distribution  ·  no tuned threshold anywhere</text>
-        <rect x="60" y="288" width="280" height="92" rx="6" fill="#0f172a"/>
-<rect x="60" y="288" width="280" height="92" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
-<text x="200.0" y="307" fill="white" font-size="12" font-weight="600" text-anchor="middle">episodes()</text>
-<text x="200.0" y="321" fill="#94a3b8" font-size="8" text-anchor="middle">generic: flag -> intervals</text>
-<text x="72" y="338" fill="#34d399" font-size="7.5">(flag[n], times[n], min_s)</text>
-<text x="72" y="349" fill="#34d399" font-size="7.5">  -> list[Interval]</text>
-<text x="72" y="360" fill="#34d399" font-size="7.5">runs of True, long enough</text>
-        <rect x="380" y="288" width="270" height="92" rx="6" fill="#0f172a"/>
-<rect x="380" y="288" width="270" height="92" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
-<text x="515.0" y="307" fill="white" font-size="12" font-weight="600" text-anchor="middle">dig_episodes</text>
-<text x="515.0" y="321" fill="#94a3b8" font-size="8" text-anchor="middle">height < otsu(height)</text>
-<text x="392" y="338" fill="#34d399" font-size="7.5">the bucket is down</text>
-<text x="392" y="349" fill="#34d399" font-size="7.5">in the material</text>
-<text x="392" y="360" fill="#34d399" font-size="7.5">-> cycle boundaries</text>
-        <rect x="690" y="288" width="270" height="92" rx="6" fill="#0f172a"/>
-<rect x="690" y="288" width="270" height="92" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
-<text x="825.0" y="307" fill="white" font-size="12" font-weight="600" text-anchor="middle">truck_episodes</text>
-<text x="825.0" y="321" fill="#94a3b8" font-size="8" text-anchor="middle">overlap > otsu(overlap)</text>
-<text x="702" y="338" fill="#34d399" font-size="7.5">the bucket is over</text>
-<text x="702" y="349" fill="#34d399" font-size="7.5">the bed</text>
-<text x="702" y="360" fill="#34d399" font-size="7.5">-> gates dumping</text>
-        <rect x="1000" y="288" width="240" height="92" rx="6" fill="#0f172a"/>
-<rect x="1000" y="288" width="240" height="92" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
-<text x="1120.0" y="307" fill="white" font-size="12" font-weight="600" text-anchor="middle">move_episodes</text>
-<text x="1120.0" y="321" fill="#94a3b8" font-size="8" text-anchor="middle">|dx/dt| > otsu(|dx/dt|)</text>
-<text x="1012" y="338" fill="#34d399" font-size="7.5">the machine is</text>
-<text x="1012" y="349" fill="#34d399" font-size="7.5">traversing</text>
-<text x="1012" y="360" fill="#34d399" font-size="7.5">-> gates swinging</text>
-        <rect x="40" y="420" width="1200" height="340" rx="12" fill="none" stroke="#22d3ee" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
-<text x="56" y="440" fill="#22d3ee" font-size="11" font-weight="700" letter-spacing="1">THE MACHINE  ·  one transition at a time</text>
-<text x="56" y="454" fill="#64748b" font-size="8">it only ever looks for the ONE transition that can legally come next</text>
-        <rect x="60" y="470" width="320" height="210" rx="6" fill="#0f172a"/>
-<rect x="60" y="470" width="320" height="210" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
-<text x="220.0" y="489" fill="white" font-size="12" font-weight="600" text-anchor="middle">MachineState</text>
-<text x="220.0" y="503" fill="#94a3b8" font-size="8" text-anchor="middle">what it remembers</text>
-<text x="72" y="520" fill="#22d3ee" font-size="7.2">current: str | None      the phase we are in</text>
-<text x="72" y="532.5" fill="#22d3ee" font-size="7.2">since: float            when it started</text>
-<text x="72" y="545.0" fill="#22d3ee" font-size="7.2">pending: dict[str,float]  this cycle's onsets</text>
-<text x="72" y="557.5" fill="#22d3ee" font-size="7.2">cycles: list[Cycle]     closed, complete</text>
-<text x="72" y="570.0" fill="#22d3ee" font-size="7.2">rejected: list[Cycle]   closed, with a reason</text>
-<text x="72" y="582.5" fill="#22d3ee" font-size="7.2"></text>
-<text x="72" y="595.0" fill="#22d3ee" font-size="7.2">@property looking_for -> str</text>
-<text x="72" y="607.5" fill="#22d3ee" font-size="7.2">  PHASES[(i + 1) % 4]</text>
-<text x="72" y="620.0" fill="#22d3ee" font-size="7.2">  dig -> haul -> dump -> swing -> dig</text>
-<text x="72" y="632.5" fill="#22d3ee" font-size="7.2"></text>
-<text x="72" y="645.0" fill="#22d3ee" font-size="7.2">cold start: scan for the first digging onset;</text>
-<text x="72" y="657.5" fill="#22d3ee" font-size="7.2">everything before it is the ignored partial</text>
-        <rect x="440" y="470" width="360" height="210" rx="6" fill="#0f172a"/>
-<rect x="440" y="470" width="360" height="210" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
-<text x="620.0" y="489" fill="white" font-size="12" font-weight="600" text-anchor="middle">PASS 1b  ·  window_for()</text>
-<text x="620.0" y="503" fill="#94a3b8" font-size="8" text-anchor="middle">WHERE did it happen?</text>
-<text x="452" y="520" fill="#22d3ee" font-size="7.2">window_for(transition, state, table,</text>
-<text x="452" y="531.6" fill="#22d3ee" font-size="7.2">           brackets, config) -> Window | None</text>
-<text x="452" y="543.2" fill="#22d3ee" font-size="7.2"></text>
-<text x="452" y="554.8000000000001" fill="#22d3ee" font-size="7.2">Window = (lo: int, hi: int)   SAMPLE INDICES</text>
-<text x="452" y="566.4000000000001" fill="#22d3ee" font-size="7.2">  lo = searchsorted(times, t_lo)</text>
-<text x="452" y="578.0000000000001" fill="#22d3ee" font-size="7.2"></text>
-<text x="452" y="589.6000000000001" fill="#22d3ee" font-size="7.2">bounds come from the brackets, then:</text>
-<text x="452" y="601.2000000000002" fill="#22d3ee" font-size="7.2">  lo = max(lo, index(state.since) - lookback)</text>
-<text x="452" y="612.8000000000002" fill="#22d3ee" font-size="7.2">  hi = min(hi, start of the next bracket)</text>
-<text x="452" y="624.4000000000002" fill="#22d3ee" font-size="7.2"></text>
-<text x="452" y="636.0000000000002" fill="#22d3ee" font-size="7.2">DELIBERATELY WIDE. Missing the truth is</text>
-<text x="452" y="647.6000000000003" fill="#22d3ee" font-size="7.2">fatal; a loose window only costs pass 2</text>
-<text x="452" y="659.2000000000003" fill="#22d3ee" font-size="7.2">a little more to search.</text>
-<text x="452" y="670.8000000000003" fill="#22d3ee" font-size="7.2"></text>
-<text x="452" y="682.4000000000003" fill="#22d3ee" font-size="7.2">lookback lets it see BEFORE the current</text>
-<text x="452" y="694.0000000000003" fill="#22d3ee" font-size="7.2">phase began -- a departure has to be</text>
-<text x="452" y="705.6000000000004" fill="#22d3ee" font-size="7.2">walked back to.</text>
-        <rect x="860" y="470" width="380" height="210" rx="6" fill="#0f172a"/>
-<rect x="860" y="470" width="380" height="210" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
-<text x="1050.0" y="489" fill="white" font-size="12" font-weight="600" text-anchor="middle">PASS 2  ·  frame_for()</text>
-<text x="1050.0" y="503" fill="#94a3b8" font-size="8" text-anchor="middle">exactly WHEN, inside that window</text>
-<text x="872" y="520" fill="#22d3ee" font-size="7.2">frame_for(transition, window, table,</text>
-<text x="872" y="531.6" fill="#22d3ee" font-size="7.2">          config) -> float | None</text>
-<text x="872" y="543.2" fill="#22d3ee" font-size="7.2"></text>
-<text x="872" y="554.8000000000001" fill="#22d3ee" font-size="7.2">slices the arrays:  table.dh_dt[lo:hi]</text>
-<text x="872" y="566.4000000000001" fill="#22d3ee" font-size="7.2"></text>
-<text x="872" y="578.0000000000001" fill="#22d3ee" font-size="7.2">the four cues, swappable, one signature:</text>
-<text x="872" y="589.6000000000001" fill="#22d3ee" font-size="7.2">  digging   dh_dt ARRIVES at 0</text>
-<text x="872" y="601.2000000000002" fill="#22d3ee" font-size="7.2">  hauling   d2h_dt2 ARRIVES at 0</text>
-<text x="872" y="612.8000000000002" fill="#22d3ee" font-size="7.2">  dumping   argmax(aspect_ratio)</text>
-<text x="872" y="624.4000000000002" fill="#22d3ee" font-size="7.2">  swinging  speed_x DEPARTS 0</text>
-<text x="872" y="636.0000000000002" fill="#22d3ee" font-size="7.2"></text>
-<text x="872" y="647.6000000000003" fill="#22d3ee" font-size="7.2">arrives/departs walk BACKWARD from the</text>
-<text x="872" y="659.2000000000003" fill="#22d3ee" font-size="7.2">excursion to where the signal left rest</text>
-<text x="872" y="670.8000000000003" fill="#22d3ee" font-size="7.2">  -> onsets.motion_boundary()</text>
-<text x="872" y="682.4000000000003" fill="#22d3ee" font-size="7.2"></text>
-<text x="872" y="694.0000000000003" fill="#22d3ee" font-size="7.2">None = the cue never fired. Information,</text>
-<text x="872" y="705.6000000000004" fill="#22d3ee" font-size="7.2">not a crash.</text>
-        <rect x="40" y="880" width="1200" height="180" rx="12" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
-<text x="56" y="900" fill="#a78bfa" font-size="11" font-weight="700" letter-spacing="1">STORAGE  ·  what comes out</text>
-<text x="56" y="914" fill="#64748b" font-size="8">averaged over COMPLETE cycles only</text>
-        <rect x="60" y="915" width="320" height="130" rx="6" fill="#0f172a"/>
-<rect x="60" y="915" width="320" height="130" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-<text x="220.0" y="934" fill="white" font-size="12" font-weight="600" text-anchor="middle">Cycle</text>
-<text x="220.0" y="948" fill="#94a3b8" font-size="8" text-anchor="middle">one per dig-onset -> dig-onset span</text>
-<text x="72" y="965" fill="#a78bfa" font-size="7.2">onsets: dict[str, float]   the four</text>
-<text x="72" y="976.5" fill="#a78bfa" font-size="7.2">ends: float                next digging onset</text>
-<text x="72" y="988.0" fill="#a78bfa" font-size="7.2">complete: bool</text>
-<text x="72" y="999.5" fill="#a78bfa" font-size="7.2">reason: str | None</text>
-<text x="72" y="1011.0" fill="#a78bfa" font-size="7.2">  "no dumping onset"  "T3 before T2"</text>
-<text x="72" y="1022.5" fill="#a78bfa" font-size="7.2">incomplete -> excluded from BOTH the</text>
-<text x="72" y="1034.0" fill="#a78bfa" font-size="7.2">count and every average</text>
-        <rect x="440" y="915" width="360" height="130" rx="6" fill="#0f172a"/>
-<rect x="440" y="915" width="360" height="130" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-<text x="620.0" y="934" fill="white" font-size="12" font-weight="600" text-anchor="middle">Answer</text>
-<text x="620.0" y="948" fill="#94a3b8" font-size="8" text-anchor="middle">the required schema, exactly</text>
-<text x="452" y="965" fill="#a78bfa" font-size="7.2">cycle_count: int</text>
-<text x="452" y="976.5" fill="#a78bfa" font-size="7.2">average_cycle_duration_seconds: float</text>
-<text x="452" y="988.0" fill="#a78bfa" font-size="7.2">average_phase_duration_seconds: dict</text>
-<text x="452" y="999.5" fill="#a78bfa" font-size="7.2">  digging = mean(T2 - T1)</text>
-<text x="452" y="1011.0" fill="#a78bfa" font-size="7.2">  hauling = mean(T3 - T2)</text>
-<text x="452" y="1022.5" fill="#a78bfa" font-size="7.2">  dumping = mean(T4 - T3)</text>
-<text x="452" y="1034.0" fill="#a78bfa" font-size="7.2">  swinging = mean(next T1 - T4)</text>
-        <rect x="860" y="915" width="380" height="130" rx="6" fill="#0f172a"/>
-<rect x="860" y="915" width="380" height="130" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-<text x="1050.0" y="934" fill="white" font-size="12" font-weight="600" text-anchor="middle">artifacts</text>
-<text x="872" y="965" fill="#a78bfa" font-size="7.2">answer.json              the deliverable</text>
-<text x="872" y="976.5" fill="#a78bfa" font-size="7.2">annotated.mp4            render(onsets=...)</text>
-<text x="872" y="988.0" fill="#a78bfa" font-size="7.2">                         -> phase banner + markers</text>
-<text x="872" y="999.5" fill="#a78bfa" font-size="7.2">features.png             the 13 panels</text>
-<text x="872" y="1011.0" fill="#a78bfa" font-size="7.2"></text>
-<text x="872" y="1022.5" fill="#a78bfa" font-size="7.2">eval/annotate_solution.py renders the SAME</text>
-<text x="872" y="1034.0" fill="#a78bfa" font-size="7.2">video from the hand labels -- the difference</text>
-<text x="872" y="1045.5" fill="#a78bfa" font-size="7.2">between the two IS the error, visibly</text>
-        <text x="640" y="1100" fill="#64748b" font-size="8" text-anchor="middle">ordering is enforced by construction: window_for is bounded by state.since, so dumping cannot be found before hauling  ·  multi-cycle falls out of the loop  ·  head and tail partials are in no cycle at all</text>
+        <line x1="930" y1="200" x2="930" y2="300" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="930.0" y="243.0" fill="#64748b" font-size="7.4" text-anchor="middle">levels</text>
+        <line x1="230" y1="200" x2="230" y2="300" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="230.0" y="243.0" fill="#64748b" font-size="7.4" text-anchor="middle">arrays</text>
+        <line x1="400" y1="375" x2="440" y2="375" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="420.0" y="368.0" fill="#64748b" font-size="7.4" text-anchor="middle">curr_stage</text>
+        <line x1="620" y1="450" x2="620" y2="500" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="620.0" y="471.0" fill="#64748b" font-size="7.4" text-anchor="middle">window</text>
+        <line x1="800" y1="570" x2="840" y2="570" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="820.0" y="563.0" fill="#64748b" font-size="7.4" text-anchor="middle">fired</text>
+        <polyline points="1040,620 1040,655 230,655 230,300" fill="none" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="635" y="650" fill="#64748b" font-size="7.4" text-anchor="middle">not validated  ->  slide on</text>
+        <line x1="1040" y1="620" x2="1040" y2="740" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="1040.0" y="673.0" fill="#a78bfa" font-size="7.4" text-anchor="middle">validated: coarse window</text>
+        <polyline points="840,810 200,810 200,300" fill="none" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="520" y="805" fill="#a78bfa" font-size="7.4" text-anchor="middle">advance curr_stage, loop</text>
+        <line x1="660" y1="880" x2="660" y2="965" stroke="#fb7185" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="660.0" y="915.5" fill="#fb7185" font-size="7.4" text-anchor="middle">4 onsets, or a mismatch</text>
+        <rect x="40" y="60" width="1200" height="150" rx="12" fill="none" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="80" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="1">CALIBRATE ONCE  ·  levels, not segments</text>
+<text x="56" y="94" fill="#64748b" font-size="8">global statistics tell us what 'low' MEANS here; they never decide WHEN anything happened</text>
+        <rect x="60" y="98" width="520" height="100" rx="6" fill="#0f172a"/>
+<rect x="60" y="98" width="520" height="100" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="320.0" y="117" fill="white" font-size="12" font-weight="600" text-anchor="middle">FeatureTable</text>
+<text x="320.0" y="131" fill="#94a3b8" font-size="8" text-anchor="middle">13 numpy arrays, length n</text>
+<text x="72" y="148" fill="#fbbf24" font-size="7.4">time_seconds[n]   real seconds  ·  index/fps on a CFR file</text>
+<text x="72" y="160" fill="#fbbf24" font-size="7.4">height[n] dh_dt[n] d2h_dt2[n] speed_x[n]</text>
+<text x="72" y="172" fill="#fbbf24" font-size="7.4">truck_overlap[n] aspect_ratio[n] rel_cabin_*[n] found[n]</text>
+        <rect x="620" y="98" width="620" height="100" rx="6" fill="#0f172a"/>
+<rect x="620" y="98" width="620" height="100" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="930.0" y="117" fill="white" font-size="12" font-weight="600" text-anchor="middle">calibrate(table) -> Levels</text>
+<text x="930.0" y="131" fill="#94a3b8" font-size="8" text-anchor="middle">one pass, zero tuned constants</text>
+<text x="632" y="148" fill="#fbbf24" font-size="7.4">low_height   = otsu(height)        what 'in the material' means</text>
+<text x="632" y="160" fill="#fbbf24" font-size="7.4">over_truck   = otsu(truck_overlap) what 'at the bed' means</text>
+<text x="632" y="172" fill="#fbbf24" font-size="7.4">moving       = otsu(|dx/dt|)       what 'traversing' means</text>
+<text x="632" y="184" fill="#94a3b8" font-size="7.4">these are LEVELS. Nothing here cuts the video into pieces --</text>
+<text x="632" y="196" fill="#94a3b8" font-size="7.4">that was the old design, and it made digging a special case.</text>
+        <rect x="40" y="250" width="1200" height="380" rx="12" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="270" fill="#34d399" font-size="11" font-weight="700" letter-spacing="1">THE WALK  ·  slide a window, test the triggers, validate</text>
+<text x="56" y="284" fill="#64748b" font-size="8">curr_stage starts at SWINGING, so the first thing it seeks is digging</text>
+        <rect x="60" y="300" width="340" height="310" rx="6" fill="#0f172a"/>
+<rect x="60" y="300" width="340" height="310" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="230.0" y="319" fill="white" font-size="12" font-weight="600" text-anchor="middle">MachineState</text>
+<text x="230.0" y="333" fill="#94a3b8" font-size="8" text-anchor="middle">everything it remembers</text>
+<text x="72" y="350" fill="#34d399" font-size="7.2">curr_stage: str          starts 'swinging'</text>
+<text x="72" y="362.4" fill="#34d399" font-size="7.2">since: float             when it started</text>
+<text x="72" y="374.79999999999995" fill="#34d399" font-size="7.2"></text>
+<text x="72" y="387.19999999999993" fill="#34d399" font-size="7.2">pending:  dict[str,float]  this cycle's onsets</text>
+<text x="72" y="399.5999999999999" fill="#34d399" font-size="7.2">occurred: set[str]         weak evidence: which</text>
+<text x="72" y="411.9999999999999" fill="#34d399" font-size="7.2">                           phases happened AT ALL</text>
+<text x="72" y="424.39999999999986" fill="#34d399" font-size="7.2"></text>
+<text x="72" y="436.79999999999984" fill="#34d399" font-size="7.2">cycles:   list[Cycle]    counted</text>
+<text x="72" y="449.1999999999998" fill="#34d399" font-size="7.2">measured: list[Cycle]    counted AND averageable</text>
+<text x="72" y="461.5999999999998" fill="#34d399" font-size="7.2">rejected: list[Cycle]    with a reason</text>
+<text x="72" y="473.9999999999998" fill="#34d399" font-size="7.2"></text>
+<text x="72" y="486.39999999999975" fill="#34d399" font-size="7.2">looking_for -> PHASES[(i+1) % 4]</text>
+<text x="72" y="498.7999999999997" fill="#34d399" font-size="7.2">  swing -> dig -> haul -> dump -> swing</text>
+<text x="72" y="511.1999999999997" fill="#34d399" font-size="7.2"></text>
+<text x="72" y="523.5999999999997" fill="#34d399" font-size="7.2">cycle_count = len(cycles)</text>
+<text x="72" y="535.9999999999997" fill="#34d399" font-size="7.2">averages    = over measured</text>
+<text x="72" y="548.3999999999996" fill="#94a3b8" font-size="7.2">two populations, on purpose: a cycle the machine</text>
+<text x="72" y="560.7999999999996" fill="#94a3b8" font-size="7.2">performed is complete whether or not we could</text>
+<text x="72" y="573.1999999999996" fill="#94a3b8" font-size="7.2">pin all four of its onsets.</text>
+        <rect x="440" y="300" width="360" height="145" rx="6" fill="#0f172a"/>
+<rect x="440" y="300" width="360" height="145" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="620.0" y="319" fill="white" font-size="12" font-weight="600" text-anchor="middle">the sliding window</text>
+<text x="620.0" y="333" fill="#94a3b8" font-size="8" text-anchor="middle">x seconds of samples</text>
+<text x="452" y="350" fill="#34d399" font-size="7.2">w = table[i : i + round(x / dt)]</text>
+<text x="452" y="362" fill="#34d399" font-size="7.2"></text>
+<text x="452" y="374" fill="#34d399" font-size="7.2">x long enough to contain the pattern,</text>
+<text x="452" y="386" fill="#34d399" font-size="7.2">short enough not to span two</text>
+<text x="452" y="398" fill="#34d399" font-size="7.2">transitions. Shortest phase ~2-4 s,</text>
+<text x="452" y="410" fill="#34d399" font-size="7.2">so start around 0.5-1.0 s and sweep.</text>
+        <rect x="440" y="500" width="360" height="110" rx="6" fill="#0f172a"/>
+<rect x="440" y="500" width="360" height="110" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="620.0" y="519" fill="white" font-size="12" font-weight="600" text-anchor="middle">TWO checks, every window</text>
+<text x="452" y="550" fill="#34d399" font-size="7.2">1. the trigger for looking_for</text>
+<text x="452" y="561.5" fill="#34d399" font-size="7.2">2. DIGGING, always, at a HIGHER bar</text>
+<text x="452" y="573.0" fill="#94a3b8" font-size="7.2">   digging is the cycle boundary, so it is</text>
+<text x="452" y="584.5" fill="#94a3b8" font-size="7.2">   the only way back from confusion -- but a</text>
+<text x="452" y="596.0" fill="#94a3b8" font-size="7.2">   spurious dig would truncate a good cycle.</text>
+        <rect x="840" y="300" width="400" height="145" rx="6" fill="#0f172a"/>
+<rect x="840" y="300" width="400" height="145" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="1040.0" y="319" fill="white" font-size="12" font-weight="600" text-anchor="middle">validate()</text>
+<text x="1040.0" y="333" fill="#94a3b8" font-size="8" text-anchor="middle">a trigger is not a transition</text>
+<text x="852" y="350" fill="#34d399" font-size="7.2">hold the evidence over the next k samples</text>
+<text x="852" y="362" fill="#34d399" font-size="7.2">before believing it</text>
+<text x="852" y="374" fill="#34d399" font-size="7.2"></text>
+<text x="852" y="386" fill="#34d399" font-size="7.2">one noisy sample cannot advance the state;</text>
+<text x="852" y="398" fill="#34d399" font-size="7.2">the cost is detecting slightly late, which</text>
+<text x="852" y="410" fill="#34d399" font-size="7.2">pass 2 undoes by going back and finding the</text>
+<text x="852" y="422" fill="#34d399" font-size="7.2">precise instant inside the stored window.</text>
+        <rect x="840" y="500" width="400" height="110" rx="6" fill="#0f172a"/>
+<rect x="840" y="500" width="400" height="110" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="1040.0" y="519" fill="white" font-size="12" font-weight="600" text-anchor="middle">coarse window</text>
+<text x="1040.0" y="533" fill="#94a3b8" font-size="8" text-anchor="middle">what gets stored, not a time yet</text>
+<text x="852" y="550" fill="#34d399" font-size="7.2">Window(lo, hi)   SAMPLE INDICES</text>
+<text x="852" y="562" fill="#34d399" font-size="7.2">  plus a lookback margin, because an</text>
+<text x="852" y="574" fill="#34d399" font-size="7.2">  onset is where a signal LEFT rest and</text>
+<text x="852" y="586" fill="#34d399" font-size="7.2">  you find that by walking BACKWARD</text>
+        <rect x="40" y="670" width="1200" height="170" rx="12" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="690" fill="#a78bfa" font-size="11" font-weight="700" letter-spacing="1">PASS 2  ·  only once all four coarse windows exist</text>
+<text x="56" y="704" fill="#64748b" font-size="8">the expensive, precise work, done four times per cycle rather than every frame</text>
+        <rect x="60" y="708" width="580" height="120" rx="6" fill="#0f172a"/>
+<rect x="60" y="708" width="580" height="120" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="350.0" y="727" fill="white" font-size="12" font-weight="600" text-anchor="middle">refine(window, table) -> float</text>
+<text x="350.0" y="741" fill="#94a3b8" font-size="8" text-anchor="middle">the exact instant</text>
+<text x="72" y="758" fill="#a78bfa" font-size="7.4">slices the arrays:  table.dh_dt[lo:hi]</text>
+<text x="72" y="770.5" fill="#a78bfa" font-size="7.4">searches FORWARD or BACKWARD, whichever the cue needs</text>
+<text x="72" y="783.0" fill="#a78bfa" font-size="7.4">  arrives/departs -> onsets.motion_boundary()</text>
+<text x="72" y="795.5" fill="#a78bfa" font-size="7.4">interpolates BETWEEN samples using time_seconds[],</text>
+<text x="72" y="808.0" fill="#a78bfa" font-size="7.4">  never t0 + i*dt -- that is wrong on a VFR file</text>
+        <rect x="680" y="708" width="560" height="120" rx="6" fill="#0f172a"/>
+<rect x="680" y="708" width="560" height="120" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="960.0" y="727" fill="white" font-size="12" font-weight="600" text-anchor="middle">the four cues</text>
+<text x="960.0" y="741" fill="#94a3b8" font-size="8" text-anchor="middle">one signature, swappable</text>
+<text x="692" y="758" fill="#a78bfa" font-size="7.4">digging    dh_dt      arrives at 0</text>
+<text x="692" y="770.5" fill="#a78bfa" font-size="7.4">hauling    d2h_dt2    arrives at 0</text>
+<text x="692" y="783.0" fill="#a78bfa" font-size="7.4">dumping    argmax(aspect_ratio)      <- weakest, no margin</text>
+<text x="692" y="795.5" fill="#a78bfa" font-size="7.4">swinging   speed_x    departs 0</text>
+<text x="692" y="808.0" fill="#94a3b8" font-size="7.4">this is the seam. Changing a cue changes nothing else.</text>
+        <rect x="40" y="880" width="1200" height="230" rx="12" fill="none" stroke="#fb7185" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="900" fill="#fb7185" font-size="11" font-weight="700" letter-spacing="1">CLOSING A CYCLE  ·  did it happen, and could we measure it?</text>
+<text x="56" y="914" fill="#64748b" font-size="8">two different questions, and conflating them is how cycle_count goes wrong</text>
+        <rect x="60" y="930" width="700" height="165" rx="6" fill="#0f172a"/>
+<rect x="60" y="930" width="700" height="165" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+<text x="410.0" y="949" fill="white" font-size="12" font-weight="600" text-anchor="middle">the three cases</text>
+<text x="410.0" y="963" fill="#94a3b8" font-size="8" text-anchor="middle">weak evidence separates 2 from 3</text>
+<text x="72" y="980" fill="#fb7185" font-size="7.4">1  all four onsets found</text>
+<text x="72" y="992.8" fill="#fb7185" font-size="7.4">     -> cycles + measured        counted and averaged</text>
+<text x="72" y="1005.5999999999999" fill="#fb7185" font-size="7.4"></text>
+<text x="72" y="1018.3999999999999" fill="#fb7185" font-size="7.4">2  an onset missing, BUT the phase left evidence</text>
+<text x="72" y="1031.1999999999998" fill="#fb7185" font-size="7.4">     e.g. truck_overlap rose somewhere in the span</text>
+<text x="72" y="1043.9999999999998" fill="#fb7185" font-size="7.4">     -> cycles only              counted, not averaged</text>
+<text x="72" y="1056.7999999999997" fill="#fb7185" font-size="7.4"></text>
+<text x="72" y="1069.5999999999997" fill="#fb7185" font-size="7.4">3  an onset missing AND no evidence it ever happened</text>
+<text x="72" y="1082.3999999999996" fill="#fb7185" font-size="7.4">     the bucket never went near the truck: a re-dig</text>
+<text x="72" y="1095.1999999999996" fill="#fb7185" font-size="7.4">     -> rejected                 neither</text>
+        <rect x="800" y="930" width="440" height="165" rx="6" fill="#0f172a"/>
+<rect x="800" y="930" width="440" height="165" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+<text x="1020.0" y="949" fill="white" font-size="12" font-weight="600" text-anchor="middle">timeout, derived not fixed</text>
+<text x="812" y="980" fill="#fb7185" font-size="7.2">too long in a phase -> abandon, re-seek digging</text>
+<text x="812" y="992.4" fill="#fb7185" font-size="7.2"></text>
+<text x="812" y="1004.8" fill="#fb7185" font-size="7.2">limit = k x median gap between digging onsets</text>
+<text x="812" y="1017.1999999999999" fill="#fb7185" font-size="7.2">        SEEN SO FAR</text>
+<text x="812" y="1029.6" fill="#fb7185" font-size="7.2"></text>
+<text x="812" y="1042.0" fill="#94a3b8" font-size="7.2">a constant here would be tuned to one video.</text>
+<text x="812" y="1054.4" fill="#94a3b8" font-size="7.2">On cycle 1 there is no history, so there is no</text>
+<text x="812" y="1066.8000000000002" fill="#94a3b8" font-size="7.2">timeout -- better to run long once than to cut a</text>
+<text x="812" y="1079.2000000000003" fill="#94a3b8" font-size="7.2">real cycle short on a guess.</text>
+<text x="812" y="1091.6000000000004" fill="#fb7185" font-size="7.2"></text>
+<text x="812" y="1104.0000000000005" fill="#fb7185" font-size="7.2">head and tail partials need no rule: a cycle is</text>
+<text x="812" y="1116.4000000000005" fill="#fb7185" font-size="7.2">dig-onset to dig-onset, so they are in no cycle</text>
       </svg>
     </div>
 
     <!-- Info Cards -->
     <div class="cards">
       <div class="card">
-        <div class="card-header"><div class="card-dot cyan"></div><h3>Why two passes</h3></div>
+        <div class="card-header"><div class="card-dot amber"></div><h3>What changed from the first design</h3></div>
         <ul>
-          <li>• A cue that fails on the whole video can work inside a window. The prior session's <code>d&sup2;h/dt&sup2;</code> cue landed <strong>6.14 s early</strong> searching a 14-second bracket &mdash; it found a louder event elsewhere.</li>
-          <li>• Pass 1 is <strong>deliberately generous</strong>: missing the truth is fatal, a loose window just costs pass 2 more searching.</li>
-          <li>• Pass 2 is <strong>precise and local</strong>: it only finds the best instant in a region it was told contains one.</li>
+          <li>• The old version cut the video into <strong>dig episodes</strong> with a global Otsu and walked those. That made digging a <em>different mechanism</em> from the other three &mdash; found globally and non-causally while everything else was found locally and in sequence.</li>
+          <li>• Now Otsu only sets <strong>levels</strong>. What "low" means comes from the whole video; <em>when</em> it happened comes from the walk. All four transitions are found the same way.</li>
+          <li>• It also degrades better: a single global split assumes the whole clip is bimodal. A sliding window doesn't care what happened 40 seconds ago.</li>
         </ul>
       </div>
       <div class="card">
-        <div class="card-header"><div class="card-dot emerald"></div><h3>Forward and backward</h3></div>
+        <div class="card-header"><div class="card-dot emerald"></div><h3>Always watching for digging</h3></div>
         <ul>
-          <li>• The search is <strong>not forward-only</strong>. An onset is where a signal left rest, which you find by spotting the excursion and <strong>walking back</strong> to its start.</li>
-          <li>• So <code>window_for</code> extends a configurable <strong>lookback</strong> before the current phase began, and <code>frame_for</code> searches whichever direction the cue needs.</li>
-          <li>• <code>onsets.motion_boundary(mode="arrives"|"departs")</code> already does this walk and is tested &mdash; it just has no caller yet.</li>
+          <li>• Digging is the <strong>cycle boundary</strong>, so it is the only transition that re-establishes where we are. Watch it only in sequence and one missed onset loses every later cycle.</li>
+          <li>• But at a <strong>higher bar</strong> than the in-sequence check: expected evidence is cheap, unexpected evidence should be expensive. A spurious dig mid-haul would silently truncate a good cycle.</li>
+          <li>• Paired with a <strong>derived timeout</strong> &mdash; k &times; the median gap between digging onsets seen so far. A constant would be tuned to one video. No timeout on cycle 1, since there is no history yet.</li>
         </ul>
       </div>
       <div class="card">
-        <div class="card-header"><div class="card-dot rose"></div><h3>Three properties that are free</h3></div>
+        <div class="card-header"><div class="card-dot rose"></div><h3>Two counters, on purpose</h3></div>
         <ul>
-          <li>• <strong>Ordering</strong> &mdash; <code>window_for</code> is lower-bounded by <code>state.since</code>, so dumping cannot be found before hauling. Not a check; an impossibility.</li>
-          <li>• <strong>Multi-cycle</strong> &mdash; the loop simply keeps going. Nothing is written per-cycle.</li>
-          <li>• <strong>Head and tail partials</strong> &mdash; a cycle is dig-onset to dig-onset, so footage outside that is in no cycle.</li>
-          <li>• Not free: a mid-video <strong>re-dig</strong>. The machine sits in hauling looking for dumping, never finds it, and abandons with a reason.</li>
+          <li>• <code>cycle_count</code> counts what the machine <strong>did</strong>. The averages come from what we could <strong>measure</strong>. A cycle is complete whether or not we pinned all four of its onsets.</li>
+          <li>• Telling "we missed a cue" from "no cycle happened" needs a <strong>weaker second check</strong>: did the phase leave any evidence at all? Truck overlap rose somewhere &rarr; dumping happened, the cue failed.</li>
+          <li>• Consequence worth knowing: <code>cycle_count</code> and the averages come from different populations, so their product will not equal the elapsed time. That is correct, and it will look like a bug later.</li>
         </ul>
       </div>
     </div>
-    <p class="footer">design only · fsm.py and cycles.py do not exist yet · the pass-2 primitives (motion_boundary, otsu_threshold) are built and tested</p>
+    <p class="footer">design only · fsm.py and cycles.py do not exist · the pass-2 primitives (motion_boundary, otsu_threshold) are built and tested</p>
   </div>
 
   <script>
