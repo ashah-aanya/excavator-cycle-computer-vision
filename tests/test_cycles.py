@@ -316,19 +316,36 @@ def test_a_clip_too_short_for_a_cycle_reports_zero_rather_than_raising():
 
 
 def test_what_is_frame_rate_invariant_and_what_is_not():
-    """Cycle COUNT is invariant -- it comes from the phase structure. Whether a
-    cycle is MEASURABLE is not: a denser clip puts more samples in each window,
-    so refinement has more chance of finding the event inside one.
+    """The count is stable across realistic sampling rates. Below a floor it is not.
 
-    On the synthetic fixture the same three cycles give 0 measurable at 10 Hz
-    and 1 at 25 Hz. That is not a bug in the seconds-vs-samples rule -- the
-    windows are the same DURATION either way -- it is the cues being marginal
-    enough that sample density tips them. Pinned so that improving the cues can
-    be seen to close the gap.
+    This test previously asserted "denser sampling should never make FEWER cycles
+    measurable" from a single pair of rates, and that claim is FALSE -- sweeping the
+    same fixture showed 1 measurable at 12.5 Hz and 0 at 15 Hz. It passed only for
+    the pair it happened to sample. Both of its assertions later became vacuous too:
+    `measurable` is 0 at every rate on this fixture, so `0 >= 0` proved nothing.
+
+    What is actually true, measured across 10-30 Hz: the same three-cycle fixture
+    yields the same cycle count, because the windows are the same DURATION at every
+    rate. At 5 Hz it differs -- one extra closing dig is detected -- and the reason is
+    a genuine sampling floor rather than a seconds-versus-samples slip: a 0.30 s hold
+    is only 2 samples there, so the tail of the clip clears a bar it cannot clear once
+    the same duration spans 3 or more samples. That floor is worth recording; it is
+    not worth asserting as desirable.
     """
-    slow, _ = _run(_SyntheticTable(cycles=3, rate_hz=10.0))
-    fast, _ = _run(_SyntheticTable(cycles=3, rate_hz=25.0))
-    assert len(slow) == len(fast), "the count must not depend on sampling"
-    assert sum(c.measurable for c in fast) >= sum(c.measurable for c in slow), (
-        "denser sampling should never make FEWER cycles measurable"
+    counts = {
+        rate: len(_run(_SyntheticTable(cycles=3, rate_hz=rate))[0])
+        for rate in (10.0, 12.5, 15.0, 20.0, 25.0, 30.0)
+    }
+    assert len(set(counts.values())) == 1, (
+        f"the cycle count must not depend on sampling rate above the floor: {counts}"
+    )
+    stable = next(iter(counts.values()))
+    assert stable > 0, "and it must actually find cycles, or the above proves nothing"
+
+    # The floor itself, recorded so a cue fix that removes it is visible as a change.
+    coarse = len(_run(_SyntheticTable(cycles=3, rate_hz=5.0))[0])
+    assert coarse != stable, (
+        f"documented: at 5 Hz a 0.30 s hold is 2 samples and the clip tail clears a "
+        f"bar it cannot clear at 3+, so the count differs ({coarse} vs {stable}). "
+        "If a cue fix makes these agree, delete this assertion."
     )
