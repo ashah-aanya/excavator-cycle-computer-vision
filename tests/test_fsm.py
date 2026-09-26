@@ -1662,3 +1662,99 @@ def test_a_condition_that_genuinely_rises_is_still_exempted():
         assert [d.phase for d in found] == ["digging", "hauling"], (
             f"hauling rising at {rise} must still be found"
         )
+
+
+# --- refine("arrives") --------------------------------------------------------
+#
+# `arrives` was documented as the mirror image of `departs` -- "find where quiet
+# BEGINS and stays" -- and implemented as `flatnonzero(quiet)[0]`, the FIRST quiet
+# sample in the window. No "stays" check and no excursion-first step, so it was not
+# a mirror of anything. Whenever the window's first sample was already quiet it
+# returned the window's LEFT EDGE, a number set by the non-overlap clipping rule
+# rather than measured from the signal -- and one that looks exactly as precise as a
+# real measurement.
+
+
+def test_arrives_finds_where_the_signal_settles_not_the_first_quiet_sample():
+    """A signal that is quiet, moves, then settles. The answer is the SECOND rest."""
+    from excavator_cycles.fsm import Window, refine
+
+    times = np.arange(30) * 0.1
+    signal = np.r_[np.linspace(0.0, 1.0, 20), np.zeros(10)]
+    assert refine(signal, times, Window(0, 30), "arrives") == pytest.approx(2.0, abs=0.15), (
+        "the ramp ends at t=2.0; returning t=0.0 is the window edge, not an arrival"
+    )
+
+
+def test_arrives_is_the_mirror_of_departs():
+    """Stated as a property rather than two examples: reversing the signal in time
+    must swap the two answers.
+
+    This is the claim the docstring makes, and it is the one the old implementation
+    failed. A tolerance of one sample absorbs the band being estimated from a
+    different neighbourhood in each direction.
+    """
+    from excavator_cycles.fsm import Window, refine
+
+    times = np.arange(40) * 0.1
+    # quiet, then a burst, then quiet again -- symmetric about the middle.
+    signal = np.r_[
+        np.zeros(12), np.linspace(0.0, 1.0, 8), np.linspace(1.0, 0.0, 8), np.zeros(12)
+    ]
+    forward = refine(signal, times, Window(0, 40), "departs")
+    backward = refine(signal[::-1], times, Window(0, 40), "departs")
+    arrives = refine(signal, times, Window(0, 40), "arrives")
+    assert forward is not None and backward is not None and arrives is not None
+    # `arrives` on the signal should mirror `departs` on the reversed signal.
+    assert arrives == pytest.approx(float(times[-1]) - backward, abs=0.15), (
+        f"departs(reversed)={backward:.2f} does not mirror arrives={arrives:.2f}"
+    )
+
+
+def test_arrives_returns_nothing_when_the_signal_never_moved():
+    """No excursion means nothing arrived. Returning the first sample -- which is
+    what the old code did -- invents an onset out of a flat signal."""
+    from excavator_cycles.fsm import Window, refine
+
+    times = np.arange(30) * 0.1
+    assert refine(np.zeros(30), times, Window(0, 30), "arrives") is None
+
+
+def test_arrives_returns_nothing_when_the_signal_is_still_moving_at_the_window_end():
+    """The dev clip's digging case: `dh_dt` runs from -0.159 to -0.125 across the
+    whole window and never comes near zero, so there is no arrival to find. Reporting
+    one would be worse than reporting none."""
+    from excavator_cycles.fsm import Window, refine
+
+    times = np.arange(30) * 0.1
+    assert refine(np.linspace(-0.2, -0.1, 30), times, Window(0, 30), "arrives") is None
+
+
+def test_arrives_does_not_return_the_window_edge_on_the_real_clip():
+    """The measured symptom, pinned against the fixture.
+
+    Hauling's refined onset was 11.9103, exactly `times[window.lo]` for the window
+    [119, 130) -- an artifact of clipping against dumping's window. It scored better
+    by coincidence (+1.17 s against +1.97 s) and would not have travelled.
+    """
+    from pathlib import Path
+
+    from excavator_cycles.config import Config
+    from excavator_cycles.features import load as load_features
+    from excavator_cycles.fsm import calibrate, locate, walk
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "dev_clip"
+    table, _scene = load_features(fixture)
+    config = Config()
+    detections = walk(table, calibrate(table, config), config=config)
+    onsets = locate(detections, table, config)
+    times = table.time_seconds
+
+    for detection, onset in zip(detections, onsets, strict=True):
+        if onset.refined is None:
+            continue
+        edge = float(times[detection.window.lo])
+        assert onset.refined != pytest.approx(edge, abs=1e-9), (
+            f"{onset.phase} refined to its window's left edge ({edge:.4f}), which is "
+            "the clipping rule's number and not a measurement"
+        )

@@ -924,11 +924,18 @@ def refine(
         return float(times[lo + cursor])
 
     if mode == "arrives":
-        # The mirror: find where quiet BEGINS and stays.
-        settled = np.flatnonzero(quiet & finite)
-        if settled.size == 0:
-            return None
-        return float(times[lo + int(settled[0])])
+        # The true mirror of `departs`: find the excursion, then walk FORWARD to
+        # where it ends. Taking the first quiet sample instead returned the window's
+        # LEFT EDGE whenever that sample happened to be quiet -- a number produced by
+        # the window-clipping rule rather than measured from the signal, and one that
+        # looks every bit as precise as a real one.
+        loud = np.flatnonzero(~quiet & finite)
+        if loud.size == 0:
+            return None  # never moved, so nothing arrived
+        cursor = int(loud[-1])
+        if cursor + 1 >= quiet.size:
+            return None  # still moving when the window ended
+        return float(times[lo + cursor + 1])
 
     raise ValueError(f"unknown mode {mode!r}")
 
