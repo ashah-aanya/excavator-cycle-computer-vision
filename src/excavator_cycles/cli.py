@@ -285,7 +285,7 @@ def _cmd_cycles(args: argparse.Namespace) -> int:
 
     from .cycles import assemble, summarise, write_answer
     from .features import load as load_features
-    from .fsm import calibrate, locate, walk
+    from .fsm import calibrate, evidence_within, locate, walk
 
     config = Config.load(args.config)
     table, _scene = load_features(args.track_dir)
@@ -296,7 +296,13 @@ def _cmd_cycles(args: argparse.Namespace) -> int:
 
     detections = walk(table, levels, config=config)
     onsets = locate(detections, table, config)
-    cycles = assemble(onsets, occurred={d.phase for d in detections})
+    # Evidence is asked about each cycle's OWN span. A single set built from the
+    # whole video and copied into every cycle marks them all complete as soon as
+    # any one of them was.
+    cycles = assemble(
+        onsets,
+        evidence=lambda start, end: evidence_within(table, levels, start, end),
+    )
     answer = summarise(cycles)
 
     out = args.out or args.track_dir / "answer.json"

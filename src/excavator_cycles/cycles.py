@@ -20,7 +20,17 @@ two numbers answer different questions and come from different populations.
 Telling "we missed a cue" from "no cycle happened" needs a weaker second check
 than an onset: did the phase leave *any* evidence at all? If the bucket was over
 the bed at some point in the span, dumping happened and the cue failed. If it
-never went near the truck, the machine re-dug and no cycle occurred.
+never went near the truck, the machine re-dug and no cycle occurred. That check
+is ``fsm.evidence_within``, and it is asked about **each cycle's own span** --
+passing one set built from the whole video, as an earlier version did, marks every
+cycle complete as soon as any cycle anywhere was.
+
+The split only survives if it is respected upstream too. ``locate`` keeps a
+detection whose pass-2 cue failed, with ``refined=None``, because ``assemble``
+splits on digging: dropping such a detection deletes a cycle BOUNDARY and takes
+the cycle out of *both* populations. A span is therefore bounded by pass 1's
+coarse times, which always exist, and measured from pass 2's refined ones, which
+may not.
 
 Head and tail partials need no rule
 -----------------------------------
@@ -32,28 +42,39 @@ after the last falls outside every cycle and is ignored -- which is the spec's
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
+from .fsm import Onset
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
 
 PHASES = ("digging", "hauling", "dumping", "swinging")
 
+# Which phases left any trace between two times. See `fsm.evidence_within`.
+Evidence = Callable[[float, float], set[str]]
+
 
 @dataclass(frozen=True)
 class Cycle:
     """One digging onset to the next.
 
-    ``onsets`` holds whichever of the four were located; ``occurred`` holds
-    whichever left evidence, located or not. The gap between those two sets is
+    ``onsets`` holds whichever of the four were REFINED; ``occurred`` holds
+    whichever left evidence, refined or not. The gap between those two sets is
     what separates a failed cue from an absent phase.
+
+    ``span`` is the coarse pair of trigger times that bound this cycle. It exists
+    separately from ``onsets`` because it must be available even when nothing
+    refined -- it is what the evidence check is asked about, and what makes a
+    cycle countable when it is not measurable.
     """
 
     onsets: dict[str, float]
-    ends: float | None  # the next digging onset; None if the clip ran out
+    ends: float | None  # the next REFINED digging onset; None if it was not found
+    span: tuple[float, float]
     occurred: set[str] = field(default_factory=set)
 
     @property
@@ -78,14 +99,14 @@ class Cycle:
         instead of four, the useful question is which two were rejected and
         what for.
         """
+        absent = [p for p in PHASES if p not in self.occurred]
+        if absent:
+            return f"no {', '.join(absent)} in this span -- no cycle occurred"
         missing = [p for p in PHASES if p not in self.onsets]
         if missing:
-            never = [p for p in missing if p not in self.occurred]
-            if never:
-                return f"no {', '.join(never)} in this span -- no cycle occurred"
             return f"{', '.join(missing)} occurred but its onset was not located"
         if self.ends is None:
-            return "the clip ended before the next digging onset"
+            return "the closing digging onset occurred but was not located"
         ordered = [self.onsets[p] for p in PHASES] + [self.ends]
         if any(b < a for a, b in pairwise(ordered)):
             return f"onsets are out of order: {[round(v, 2) for v in ordered]}"
@@ -130,25 +151,37 @@ class Answer:
         }
 
 
-def assemble(onsets: list[tuple[str, float]], occurred: set[str] | None = None) -> list[Cycle]:
-    """Turn a run of located onsets into cycles.
+def assemble(onsets: list[Onset], evidence: Evidence | None = None) -> list[Cycle]:
+    """Turn a run of onsets into cycles.
 
     Splits on digging, because that is the cycle boundary. N digging onsets
     bound N-1 cycles, and anything outside the first and last is in no cycle --
     the spec's head-and-tail rule, for free.
+
+    Args:
+        evidence: ``(start_seconds, end_seconds) -> set[str]`` -- which phases
+            left any trace in this cycle's span. Asked per cycle, never once for
+            the video. ``fsm.evidence_within`` is the real one; omitting it falls
+            back to "the phases that were detected here", which is weaker but
+            still per-cycle.
     """
-    digs = [i for i, (phase, _) in enumerate(onsets) if phase == "digging"]
+    digs = [i for i, onset in enumerate(onsets) if onset.phase == "digging"]
     cycles: list[Cycle] = []
     for start, stop in pairwise(digs):
-        span = onsets[start:stop]
+        inside = onsets[start:stop]
+        # Coarse times always exist, so the span always exists.
+        bounds = (inside[0].coarse, onsets[stop].coarse)
         located: dict[str, float] = {}
-        for phase, when in span:
-            located.setdefault(phase, when)  # the FIRST of each phase in this span
+        for onset in inside:
+            if onset.refined is not None:
+                located.setdefault(onset.phase, onset.refined)  # the FIRST per span
+        occurred = evidence(*bounds) if evidence is not None else {o.phase for o in inside}
         cycles.append(
             Cycle(
                 onsets=located,
-                ends=onsets[stop][1],
-                occurred=set(occurred) if occurred is not None else set(located),
+                ends=onsets[stop].refined,
+                span=bounds,
+                occurred=set(occurred),
             )
         )
     return cycles

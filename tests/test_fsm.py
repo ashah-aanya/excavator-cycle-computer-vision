@@ -815,20 +815,30 @@ def test_locate_refines_a_detection_into_a_time():
     table.dh_dt = np.r_[np.full(40, -0.3), np.zeros(n - 40)]
     found = locate([Detection("digging", Window(25, 60), 45)], table, Config.load())
     assert len(found) == 1
-    phase, when = found[0]
-    assert phase == "digging"
-    assert when == pytest.approx(4.0, abs=0.3), f"arrival is at 4.0s, got {when}"
+    assert found[0].phase == "digging"
+    assert found[0].refined == pytest.approx(4.0, abs=0.3), f"arrival at 4.0s, got {found[0]}"
+    assert found[0].coarse == pytest.approx(4.5, abs=0.2), "pass 1's trigger time, kept"
 
 
-def test_locate_drops_what_it_cannot_refine_rather_than_guessing():
-    """A window with no event in it yields nothing. A made-up onset would flow
-    into a duration and be indistinguishable from a measured one."""
+def test_locate_refuses_to_invent_an_onset_but_keeps_its_place():
+    """A window with no event in it yields `refined=None` -- NOT a dropped onset.
+
+    Both halves matter and they pull in opposite directions. Giving the trigger
+    time as the onset would put a made-up number into a duration, indistinguishable
+    from a measured one. But dropping the detection removed a cycle BOUNDARY:
+    `assemble` splits on digging, so a failed digging refinement deleted the whole
+    cycle, and the dev clip reported `cycle_count: 0` for a video with one
+    complete cycle in it. Keeping the place with no refined time does neither.
+    """
     from excavator_cycles.config import Config
     from excavator_cycles.fsm import Detection, Window, locate
 
     table = _CueTable(n=80)
     table.dh_dt = np.full(80, -0.3)  # never arrives at rest
-    assert locate([Detection("digging", Window(10, 40), 20)], table, Config.load()) == []
+    found = locate([Detection("digging", Window(10, 40), 20)], table, Config.load())
+    assert len(found) == 1, "the detection must survive; only its refinement failed"
+    assert found[0].refined is None, "no invented onset"
+    assert found[0].coarse == pytest.approx(2.0, abs=0.2), "the coarse time is still there"
 
 
 def test_locate_keeps_the_onsets_in_order():
@@ -840,19 +850,43 @@ def test_locate_keeps_the_onsets_in_order():
 
     n = 200
     table = _CueTable(n=n)
-    table.height = np.r_[np.linspace(0.5, 0.0, 30), np.zeros(40), np.linspace(0, 0.6, n - 70)]
+    # A full synthetic cycle, shaped so that each cue has something real to find:
+    # the bucket descends, rests in the material, lifts, travels over the bed,
+    # tips, then swings back. Flat segments are what `arrives`/`departs` need.
+    table.height = np.r_[
+        np.linspace(0.5, 0.0, 30),  # descending
+        np.zeros(30),  # in the material -- dh_dt ARRIVES at rest
+        np.linspace(0.0, 0.6, 40),  # lifting
+        np.full(40, 0.6),  # carrying at height
+        np.linspace(0.6, 0.5, 20),  # tipping
+        np.linspace(0.5, 0.5, 40),  # swinging back
+    ]
     table.dh_dt = np.gradient(table.height, table.time_seconds)
+    table.d2h_dt2 = np.gradient(table.dh_dt, table.time_seconds)
+    table.speed_x = np.r_[np.zeros(100), np.full(40, 0.8), np.zeros(20), np.full(40, 0.9)]
+    table.truck_overlap = np.r_[np.zeros(120), np.full(40, 0.5), np.zeros(40)]
+    table.rel_cabin_x = np.full(n, 0.4)
+    table.aspect_ratio = np.r_[np.full(140, 1.0), np.full(20, 2.5), np.full(40, 1.0)]
+
     found = walk(table, _lv(low=0.1, moving=5.0), hold_samples=3, lookback_samples=8)
-    times = [when for _phase, when in locate(found, table, Config.load())]
+    onsets = locate(found, table, Config.load())
+    times = [o.refined for o in onsets if o.refined is not None]
+    # Non-vacuity FIRST. Without it this test passed on an empty list for its
+    # entire life: the previous fixture refined nothing at all, so `[] == sorted([])`
+    # proved the ordering guarantee held over no onsets.
+    assert len(times) >= 2, f"need at least two refined onsets to order; got {onsets}"
     assert times == sorted(times), times
 
 
-def test_locate_drops_a_detection_whose_cue_found_nothing():
-    """refine() returning None means the window held no transition. The
-    detection is dropped rather than given a made-up time."""
+def test_locate_reports_a_cue_that_found_nothing_instead_of_hiding_it():
+    """A flat signal refines to nothing, and that fact must reach the caller.
+
+    `Cycle.reason` is what turns this into a sentence a reader can act on, and it
+    cannot do that for an onset that is simply absent from the list.
+    """
     from excavator_cycles.config import Config
     from excavator_cycles.fsm import Detection, Window, locate
 
     table = _CueTable(n=60)  # every signal is flat: nothing to find
-    bogus = [Detection("digging", Window(10, 30), 20)]
-    assert locate(bogus, table, Config.load()) == []
+    found = locate([Detection("digging", Window(10, 30), 20)], table, Config.load())
+    assert [(o.phase, o.refined) for o in found] == [("digging", None)]

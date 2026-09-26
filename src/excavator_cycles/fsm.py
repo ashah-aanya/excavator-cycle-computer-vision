@@ -715,6 +715,50 @@ def _rest_band(values: np.ndarray, sigma: float, floor_fraction: float = 0.02) -
 # `hauling` is the kink where scooping becomes lifting; `swinging` is the machine
 # leaving rest; `dumping` is the bucket's silhouette at its most stretched, which
 # is the closest thing available to "it has tipped".
+@dataclass(frozen=True)
+class Onset:
+    """One transition, with what each pass was able to say about it.
+
+    Both times are kept on purpose. `refined` is pass 2's answer and is the only
+    one fit to appear in a duration; `coarse` is pass 1's trigger time and is
+    always available. Keeping only `refined` is what made a failed cue delete a
+    cycle BOUNDARY, and with it the cycle, from a video where the cycle plainly
+    happened -- `cycle_count` went to 0 on a clip holding one complete cycle.
+
+    So the rule is: `coarse` bounds the span a cycle is asked about, `refined`
+    measures it. A phase can be counted on the strength of the first while being
+    excluded from the averages for want of the second, which is exactly the
+    counting-versus-measuring split `cycles.py` is built around.
+    """
+
+    phase: str
+    refined: float | None  # pass 2's instant; None when its cue found nothing
+    coarse: float  # pass 1's trigger time; always present
+    out_of_sequence: bool = False
+
+
+def evidence_within(table, levels, start: float, end: float) -> set[str]:
+    """Which phases left ANY trace between two times. The weak second check.
+
+    Weaker than an onset by design, and that is the whole point: "the bucket was
+    over the bed at some point in this span" is enough to say dumping happened,
+    and nowhere near enough to say when it started. No rising edge is required
+    and no hold -- a single sample satisfying the trigger counts.
+
+    This is the mechanism `cycles.py` documented from the beginning and did not
+    have. Without it the caller has to guess, and the CLI guessed badly: it built
+    one set from the whole video and copied it into every cycle, so one dumping
+    detection anywhere marked every cycle as having dumped.
+    """
+    times = np.asarray(table.time_seconds, dtype=float)
+    inside = np.flatnonzero((times >= start) & (times <= end))
+    return {
+        phase
+        for phase in PHASES
+        if any(TRIGGERS[phase](table, int(i), levels) for i in inside)
+    }
+
+
 REFINEMENTS: dict[str, tuple[str, Mode]] = {
     "digging": ("dh_dt", "arrives"),
     "hauling": ("d2h_dt2", "arrives"),
@@ -723,13 +767,20 @@ REFINEMENTS: dict[str, tuple[str, Mode]] = {
 }
 
 
-def locate(detections: list[Detection], table, config) -> list[tuple[str, float]]:
+def locate(detections: list[Detection], table, config) -> list[Onset]:
     """Turn pass 1's windows into instants: the join between the two passes.
 
-    A detection whose cue finds nothing in its window is DROPPED rather than
-    given the trigger time as a fallback. A made-up onset would flow into a
-    duration and be indistinguishable from a measured one; a missing onset is
-    visible, and `Cycle.reason` can say so.
+    A detection whose cue finds nothing keeps its place in the sequence, with
+    ``refined=None``. It is emphatically NOT given the trigger time as its onset:
+    a made-up onset would flow into a duration and be indistinguishable from a
+    measured one. But dropping the detection outright was worse, because
+    `assemble` splits cycles on digging, so a dropped digging refinement deleted a
+    cycle BOUNDARY -- and the cycle with it. On the dev clip that turned one
+    complete, fully-detected cycle into ``cycle_count: 0``.
+
+    `Onset` keeps both answers so the caller can count on the coarse time and
+    measure only on the refined one. A failure is now visible in the sequence
+    rather than absent from it, which is what `Cycle.reason` needs to explain it.
 
     Ordering needs no enforcement here -- pass 1's windows cannot overlap, so a
     refined time cannot cross its neighbour. That is checked by a test rather
@@ -737,7 +788,7 @@ def locate(detections: list[Detection], table, config) -> list[tuple[str, float]
     negative phase duration rather than an exception.
     """
     times = np.asarray(table.time_seconds, dtype=float)
-    out: list[tuple[str, float]] = []
+    out: list[Onset] = []
     for detection in detections:
         column, mode = REFINEMENTS[detection.phase]
         when = refine(
@@ -749,8 +800,9 @@ def locate(detections: list[Detection], table, config) -> list[tuple[str, float]
             floor_fraction=config.fsm.rest_floor_fraction,
         )
         if when is None:
-            log.info(
-                "%s at sample %d: the %s cue found no %s in [%d, %d); dropped",
+            log.warning(
+                "%s at sample %d: the %s cue found no %s in [%d, %d). The cycle is "
+                "still counted; this phase cannot be measured.",
                 detection.phase,
                 detection.fired_at,
                 column,
@@ -758,6 +810,12 @@ def locate(detections: list[Detection], table, config) -> list[tuple[str, float]
                 detection.window.lo,
                 detection.window.hi,
             )
-            continue
-        out.append((detection.phase, when))
+        out.append(
+            Onset(
+                phase=detection.phase,
+                refined=when,
+                coarse=float(times[detection.fired_at]),
+                out_of_sequence=detection.out_of_sequence,
+            )
+        )
     return out
