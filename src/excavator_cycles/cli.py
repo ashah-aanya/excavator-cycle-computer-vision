@@ -92,8 +92,8 @@ def main(argv: list[str] | None = None) -> int:
 
     features_parser = subparsers.add_parser(
         "features",
-        help="Stage 3: derive the scene (pivot, scale, zones, surface) and the "
-        "per-sample signals from cached masks. No models, no GPU.",
+        help="Stage 3: derive the scene (slew centre, reach L, truck box) and every "
+        "kinematic feature from the cached masks, then plot them. No models, no GPU.",
     )
     features_parser.add_argument("track_dir", type=Path, help="a directory from `track`")
     features_parser.add_argument("--config", type=Path, default=None)

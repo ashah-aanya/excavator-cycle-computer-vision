@@ -63,7 +63,7 @@ when reading this repo.
 
 | Path | Status |
 |---|---|
-| `src/excavator_cycles/` | Production. Mixed v1 and v2; the rebuild strips v2 and replaces v1. |
+| `src/excavator_cycles/` | Production. v3 only: boxes, no flow, no chain. 7,399 -> 5,332 lines. |
 | `reference/box-physics/` | **Recovered v3. Verified working** — re-run on recovery. Port **from** it; never import it. Its README lists the hardcoding that blocks direct reuse. |
 | `recovered-scratchpad/` | 179 MB of media from the same session. **Gitignored**, regenerable by re-running the scripts. |
 | `eval/` | Ground-truth labels + scorer. **Walled off**: nothing in `src/` may import or read it, and `tests/test_eval_labels.py` enforces that by grepping the package. |
@@ -111,27 +111,32 @@ they are geometric and load-bearing: `truck_overlap` (T3's location gate) and
 
 ---
 
-## The target layout
+## The layout, as built
 
 ```
 src/excavator_cycles/
-  detect/        DINO boxes               (diagram §1, unchanged)
-  seeding.py     geodesic bucket seed     (diagram §1, unchanged)
-  track.py       SAM2 two objects         (diagram §1, unchanged)
+  detect/        DINO boxes                                   diagram 1
+  seeding.py     geodesic bucket seed                         diagram 1
+  track.py       SAM 2, two objects                           diagram 1
   masks.py  video.py  config.py  devices.py  logging_setup.py  provenance.py
-  geometry.py    scene landmarks: pivot, L, zones
-  cabin.py       cabin reference          (centroid of the persistent core)
-  boxes.py       NEW — boxes + [i,i+10] smoothing + centres   (diagram §1.5)
-  features.py    REWRITTEN — dh/dt, dx/dt, trajectories,
-                 relative position, bucket-truck overlap      (diagram §2)
-  onsets.py      pass-2 primitives (trimmed)
-  fsm.py         NEW — pass 1 windows, pass 2 frames           (diagram §3)
-  cycles.py      NEW — cycle assembly + answer.json            (diagram §4)
-  render.py      annotated video: phase, duration, cycle count (diagram §4)
-  plots.py       feature graphs
+  geometry.py    slew centre, reach L, Otsu
+  kinematics.py  body_core, boom_base, geodesic_distance  (seeding needs these)
+  cabin.py       the cabin reference + its stability diagnostic
+  boxes.py       boxes + smoothing + centres                  diagram 1.5
+  features.py    trajectories, dh/dt, dx/dt, relative
+                 position, bucket-truck overlap               diagram 2
+  onsets.py      pass-2 primitives
+  plots.py       the 13-panel feature graph
+  render.py      annotated video
+  fsm.py         NOT BUILT YET -- pass 1 windows, pass 2 frames   diagram 3
+  cycles.py      NOT BUILT YET -- cycle assembly, answer.json      diagram 4
 ```
 
-No `motion.py`. No `signals.py`. No `filtering.py`. No chain fit. No ω.
+Gone, and recoverable from `deprecated/optical-flow`: `motion.py`, `signals.py`,
+`filtering.py`, `spike.py`, the arm-chain fitter. No optical flow, no omega.
+
+CLI: `probe`, `track`, `render`, `features`. The state machine and the answer
+are the two stages still missing.
 
 ---
 
