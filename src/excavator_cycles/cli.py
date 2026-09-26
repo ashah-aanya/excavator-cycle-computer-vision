@@ -290,7 +290,7 @@ def _cmd_cycles(args: argparse.Namespace) -> int:
     config = Config.load(args.config)
     table, _scene = load_features(args.track_dir)
 
-    levels = calibrate(table)
+    levels = calibrate(table, config)
     print()
     print(levels.report())
 

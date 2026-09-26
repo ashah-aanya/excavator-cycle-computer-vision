@@ -85,7 +85,7 @@ def detections():
     times = table.time_seconds
     found = walk(
         table,
-        calibrate(table),
+        calibrate(table, config),
         hold_samples=samples_for(config.fsm.hold_seconds, times),
         lookback_samples=samples_for(config.fsm.lookback_seconds, times),
     )

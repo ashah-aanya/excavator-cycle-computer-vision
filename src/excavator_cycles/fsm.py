@@ -85,14 +85,23 @@ class Split:
     below: int  # samples under the threshold
     above: int
 
+    min_side: int = 1  # the smallest side that counts as a population; see `split_of`
+
     @property
     def trustworthy(self) -> bool:
         """Whether the distribution actually had two modes to separate.
 
         A gate built on an untrustworthy split is not wrong so much as
         meaningless: the number exists, it just does not correspond to anything.
+
+        The mass requirement is not decoration. ``below > 0 and above > 0`` was
+        satisfied by a 400-to-1 split, so a single stray sample could constitute a
+        whole "population" and a level could sit above 99.99% of the data while
+        reporting itself clear.
         """
-        return self.separability >= MIN_SEPARABILITY and self.below > 0 and self.above > 0
+        return self.separability >= MIN_SEPARABILITY and min(self.below, self.above) >= max(
+            1, self.min_side
+        )
 
     def describe(self) -> str:
         verdict = "clear" if self.trustworthy else "WEAK"
@@ -102,12 +111,35 @@ class Split:
         )
 
 
-def split_of(signal: np.ndarray) -> Split:
+def split_of(signal: np.ndarray, min_side: int = 1) -> Split:
     """Where this signal's two modes divide, and how cleanly.
 
     ``separability`` is the between-class variance over the total variance --
     exactly the quantity Otsu maximises, divided by a constant so it lands in
     [0, 1] and can be compared across signals with different units.
+
+    **The threshold is read from a CLIPPED copy of the signal.** Otsu maximises a
+    variance, so it is pulled by extremes: a single detector flicker putting
+    `speed_x` at 20 L/s moved the level to 10.16 -- above every real sample, so
+    the swinging gate could never fire again -- and reported separability 0.97,
+    i.e. CLEAR. Confidently wrong for a whole video, from one frame. Clipping to
+    the signal's own central mass lets an outlier count towards the tallies while
+    denying it the power to place the line.
+
+    How much is clipped is derived, not chosen: ``min_side`` samples from each end,
+    which is the hold requirement. No excursion long enough to be a transition is
+    ever clipped away, because an excursion shorter than the hold cannot become a
+    detection anyway. At 296 samples with a 3-sample hold that is the 1st and 99th
+    percentiles.
+
+    ``separability`` and the two counts are computed on the UNCLIPPED data, so a
+    heavy tail still reads as the poor split it is rather than being tidied away.
+
+    Args:
+        min_side: the smallest number of samples on one side that counts as a
+            population, and the amount clipped from each end. Pass the walk's hold
+            in samples; the default of 1 keeps the old behaviour for callers that
+            have no sample rate to hand.
     """
     values = np.asarray(signal, dtype=float)
     finite = values[np.isfinite(values)]
@@ -116,18 +148,26 @@ def split_of(signal: np.ndarray) -> Split:
 
     total = float(finite.var())
     if total <= 0:
-        # Every sample identical. There is no split, and saying so beats
-        # returning a threshold that would silently put everything on one side.
-        return Split(float(finite[0]), 0.0, 0, int(finite.size))
+        # Every sample identical. There is genuinely no split. The threshold
+        # returned here is the constant itself, which puts every sample on one
+        # side -- unavoidable for a float return, and the reason `trustworthy` is
+        # False rather than something the caller has to infer from the counts.
+        return Split(float(finite[0]), 0.0, 0, int(finite.size), min_side)
 
-    threshold = otsu_threshold(finite)
+    guard = max(1, min(int(min_side), (finite.size - 1) // 2))
+    if finite.size > 2 * guard:
+        keep = np.sort(finite)[guard:-guard]
+        threshold = otsu_threshold(np.clip(finite, keep[0], keep[-1]))
+    else:
+        threshold = otsu_threshold(finite)
+
     below, above = finite[finite < threshold], finite[finite >= threshold]
     if below.size == 0 or above.size == 0:
-        return Split(threshold, 0.0, int(below.size), int(above.size))
+        return Split(threshold, 0.0, int(below.size), int(above.size), min_side)
 
     weight = below.size / finite.size
     between = weight * (1 - weight) * (float(below.mean()) - float(above.mean())) ** 2
-    return Split(threshold, float(between / total), int(below.size), int(above.size))
+    return Split(threshold, float(between / total), int(below.size), int(above.size), min_side)
 
 
 @dataclass(frozen=True)
@@ -154,13 +194,34 @@ class Levels:
         return "\n".join(lines)
 
 
-def calibrate(table) -> Levels:
+def calibrate(table, config=None) -> Levels:
     """Work out what "low", "over the truck" and "moving" mean on this video.
 
-    One pass over the whole feature table. Nothing here looks at time.
+    One pass over the whole feature table. Nothing here looks at time -- except to
+    convert the hold duration into a sample count, which decides both how much of
+    each signal is clipped before the threshold is read and how many samples one
+    side must hold to count as a population. See `split_of`.
+
+    **What happens to a level that cannot be trusted.** Previously: a WARNING was
+    logged and the number was used anyway, which is the one outcome worse than
+    either alternative -- the estimator knew it had failed and the answer came out
+    confident. Now it depends on whether the design can do without the gate:
+
+    * ``over_truck`` is OPTIONAL. A video with no truck already sets it to None and
+      `trigger_dumping` already handles that, so an untrustworthy truck level takes
+      the same route. Dumping is then undetectable, which is honest.
+    * ``low_height`` and ``moving`` are REQUIRED -- without them nothing can fire at
+      all. Disabling them would turn a degraded answer into no answer, and the task
+      asks for an answer, so these are kept and the warning says plainly that the
+      result is unreliable. The clipping in `split_of` is what makes that tolerable:
+      it removes the catastrophic case where one frame moved a level clean outside
+      the data.
     """
-    low_height = split_of(table.height)
-    moving = split_of(table.speed_x)
+    hold = FSMConfig().hold_seconds if config is None else config.fsm.hold_seconds
+    min_side = samples_for(hold, np.asarray(table.time_seconds, dtype=float))
+
+    low_height = split_of(table.height, min_side)
+    moving = split_of(table.speed_x, min_side)
 
     overlap = np.asarray(table.truck_overlap, dtype=float)
     if not np.isfinite(overlap).any():
@@ -169,22 +230,26 @@ def calibrate(table) -> Levels:
         log.info("no truck overlap in this run; the dumping location gate is unavailable")
         over_truck = None
     else:
-        over_truck = split_of(overlap)
+        over_truck = split_of(overlap, min_side)
+        if not over_truck.trustworthy:
+            log.warning(
+                "the over-truck level is meaningless (%s); the dumping location gate "
+                "is DISABLED for this video, so dumping cannot be detected.",
+                over_truck.describe(),
+            )
+            over_truck = None
 
-    levels = Levels(low_height=low_height, over_truck=over_truck, moving=moving)
-    for name, split in (
-        ("low height", low_height),
-        ("over truck", over_truck),
-        ("moving", moving),
-    ):
-        if split is not None and not split.trustworthy:
+    for name, split in (("low height", low_height), ("moving", moving)):
+        if not split.trustworthy:
             log.warning(
                 "the %s level rests on a weak split (%s). Otsu returns a number "
-                "whether or not the data has two modes; this one probably does not.",
+                "whether or not the data has two modes; this one probably does not. "
+                "This level is REQUIRED, so it is being used anyway and the answer "
+                "for this video should be treated as unreliable.",
                 name,
                 split.describe(),
             )
-    return levels
+    return Levels(low_height=low_height, over_truck=over_truck, moving=moving)
 
 
 # The cycle, in order. Fixed by the task definition, not by this video: digging,

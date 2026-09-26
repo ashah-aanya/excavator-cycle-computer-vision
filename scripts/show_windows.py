@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     table, _scene = load_features(args.track_dir)
-    levels = calibrate(table)
+    levels = calibrate(table, Config())
     print(levels.report())
 
     times = table.time_seconds

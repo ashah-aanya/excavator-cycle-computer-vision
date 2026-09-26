@@ -1148,3 +1148,98 @@ def test_the_injected_trigger_sees_the_same_config_on_every_call():
     assert all(c is sentinel for c in seen), (
         f"mixed configs reached the trigger: {set(map(id, seen))}"
     )
+
+
+# --- calibration robustness ---------------------------------------------------
+#
+# `calibrate` turns the words in the cue definitions into numbers. If one glitched
+# frame can move those numbers, every gate downstream is wrong for the whole video
+# -- and the failure is silent, because Otsu always returns something.
+
+
+def test_one_glitched_sample_cannot_move_a_level():
+    """The worst failure mode this pipeline has, and it was reachable.
+
+    A single detector flicker putting `speed_x` at 20 L/s used to give a threshold
+    of 10.16 with separability 0.97 -- reported CLEAR while nothing in the video
+    exceeds it, so `trigger_swinging` could never fire again. Confidently wrong is
+    worse than visibly broken.
+
+    The level is now read from a signal clipped to its own central mass, so an
+    extreme sample can contribute to the counts but cannot set the threshold.
+    """
+    from excavator_cycles.fsm import split_of
+
+    rng = np.random.default_rng(0)
+    clean = np.abs(rng.normal(0.0, 0.1, 300))
+    clean[:60] += 0.8  # a genuine second population
+    baseline = split_of(clean, min_side=3).threshold
+
+    for glitch in (2.0, 5.0, 20.0, 500.0):
+        dirty = clean.copy()
+        dirty[150] = glitch
+        moved = split_of(dirty, min_side=3).threshold
+        assert moved == pytest.approx(baseline, rel=0.15), (
+            f"a single sample at {glitch} moved the level from {baseline:.4f} to {moved:.4f}"
+        )
+
+
+def test_a_handful_of_samples_is_not_a_population():
+    """`trustworthy` was satisfied by `below > 0 and above > 0` -- a 400/1 split
+    counted as two populations.
+
+    The bar is now the hold requirement, which is derived rather than picked: a
+    side holding fewer samples than a trigger needs to fire cannot produce a
+    detection at all, so calling it a population is meaningless.
+    """
+    from excavator_cycles.fsm import split_of
+
+    rng = np.random.default_rng(1)
+    lopsided = np.r_[rng.normal(0.0, 0.01, 400), [5.0, 5.1]]  # two samples apart
+    assert not split_of(lopsided, min_side=3).trustworthy
+    # The same shape with a real minority population is fine.
+    genuine = np.r_[rng.normal(0.0, 0.01, 400), rng.normal(5.0, 0.01, 40)]
+    assert split_of(genuine, min_side=3).trustworthy
+
+
+def test_a_constant_signal_is_never_trustworthy():
+    """There is no split. The old code returned the constant AS the threshold,
+    which made `< threshold` false everywhere and `>= threshold` true everywhere
+    -- silently putting every sample on one side, which is exactly what its own
+    comment claimed to be avoiding."""
+    from excavator_cycles.fsm import split_of
+
+    split = split_of(np.full(200, 0.4), min_side=3)
+    assert not split.trustworthy
+    assert split.separability == 0.0
+
+
+def test_an_untrustworthy_truck_level_disables_the_dumping_gate():
+    """Acting on `trustworthy`, not merely logging it.
+
+    Nothing consulted the flag: `trigger_dumping` checked `over_truck is None` but
+    never `.trustworthy`, so a meaningless level was used as though it were real.
+    The truck gate is OPTIONAL by design -- a video with no truck already sets it
+    to None -- so an untrustworthy truck level takes the same route it already has.
+    """
+    from excavator_cycles.fsm import calibrate
+
+    n = 200
+    table = _walk_table(n)
+    table.height = np.r_[np.zeros(n // 2), np.ones(n // 2)]
+    table.speed_x = np.r_[np.zeros(n // 2), np.ones(n // 2)]
+    # Overlap is flat: there is no "near the truck" to separate from "not".
+    table.truck_overlap = np.full(n, 0.3)
+    assert calibrate(table).over_truck is None, "a meaningless level must not be used"
+
+
+def test_the_separability_of_a_clean_two_mode_signal_survives_clipping():
+    """Clipping must not damage good data, or it trades one failure for another."""
+    from excavator_cycles.fsm import split_of
+
+    rng = np.random.default_rng(2)
+    clean = np.r_[rng.normal(0.0, 0.05, 150), rng.normal(1.0, 0.05, 150)]
+    split = split_of(clean, min_side=3)
+    assert split.trustworthy
+    assert split.threshold == pytest.approx(0.5, abs=0.1)
+    assert split.below == pytest.approx(150, abs=5)

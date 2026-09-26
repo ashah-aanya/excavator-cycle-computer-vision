@@ -263,7 +263,7 @@ def _run(table):
     from excavator_cycles.fsm import calibrate, evidence_within, locate, walk
 
     config = Config.load()
-    levels = calibrate(table)
+    levels = calibrate(table, config)
     detections = walk(table, levels, config=config)
     onsets = locate(detections, table, config)
     cycles = assemble(
