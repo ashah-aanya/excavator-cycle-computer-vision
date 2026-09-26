@@ -133,7 +133,8 @@ def test_the_unrefined_onsets_are_reported_as_warnings(caplog):
     """A silently missing onset is how `cycle_count: 0` went unnoticed for a branch.
 
     The dev clip's two digging refinements fail, and that must be loud -- it is the
-    reason four of the five graded fields are zero.
+    reason five of the six graded fields are zero -- the four phase averages,
+    the cycle average, and everything except `cycle_count`.
     """
     import logging
 

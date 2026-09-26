@@ -348,3 +348,63 @@ def test_a_sample_on_a_cycle_boundary_belongs_to_exactly_one_cycle():
     assert "dumping" not in first, "the boundary sample belongs to the NEXT span"
     assert "dumping" in second
     assert not ({"dumping"} & first & second), "no sample may be evidence in two cycles"
+
+
+def test_the_span_uses_the_coarse_times_even_when_everything_refined():
+    """`coarse` bounds the span; `refined` measures it. Always, not just as a fallback.
+
+    A mutation replacing `onset.coarse` with `onset.refined or onset.coarse` passed
+    the whole suite: the only test covering this used all-unrefined onsets, so the
+    fallback made the two identical and nothing could tell them apart.
+
+    It matters because the span is what the evidence check is asked about. Letting it
+    move with refinement makes COUNTING depend on MEASURING, which is the coupling
+    this module exists to break.
+    """
+    asked: list[tuple[float, float]] = []
+
+    def evidence(start: float, end: float) -> set[str]:
+        asked.append((start, end))
+        return set(PHASES)
+
+    # Every onset refines, and to a time DIFFERENT from its coarse time.
+    onsets = [
+        Onset("digging", 2.5, 2.0),
+        Onset("hauling", 4.5, 4.0),
+        Onset("dumping", 6.5, 6.0),
+        Onset("swinging", 8.5, 8.0),
+        Onset("digging", 10.5, 10.0),
+    ]
+    cycles = assemble(onsets, evidence=evidence)
+    assert asked == [(2.0, 10.0)], f"the span must use the COARSE times; got {asked}"
+    assert cycles[0].span == (2.0, 10.0)
+    # …while the measurement uses the refined ones.
+    assert cycles[0].onsets["digging"] == 2.5
+    assert cycles[0].ends == 10.5
+    assert cycles[0].duration == pytest.approx(8.0)
+
+
+def test_a_digging_onset_is_always_a_boundary_never_inside_a_span():
+    """Closes a suspected defect by showing it cannot happen.
+
+    The worry: if an opening dig fails to refine while a LATER dig inside the same
+    span does, `located.setdefault` would take the later dig's time as the cycle's
+    digging onset. It cannot -- `assemble` splits on EVERY digging onset, including
+    an out-of-sequence one, so no span ever contains a second dig to be confused with
+    the first.
+    """
+    onsets = [
+        Onset("digging", None, 0.0),
+        Onset("hauling", 1.0, 1.0),
+        Onset("digging", 4.0, 4.0, out_of_sequence=True),
+        Onset("hauling", 11.0, 11.0),
+        Onset("digging", 20.0, 20.0),
+    ]
+    cycles = assemble(onsets, evidence=lambda start, end: set(PHASES))
+    assert len(cycles) == 2, "the out-of-sequence dig is itself a boundary"
+    for cycle in cycles:
+        assert cycle.span[0] in (0.0, 4.0)
+    # The first cycle's dig never refined, so it has no digging onset to measure…
+    assert "digging" not in cycles[0].onsets
+    # …and it did NOT inherit the out-of-sequence dig's time.
+    assert cycles[0].onsets.get("digging") != 4.0

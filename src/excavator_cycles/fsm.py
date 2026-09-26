@@ -1025,10 +1025,19 @@ class Onset:
 def evidence_within(table, levels, start: float, end: float) -> set[str]:
     """Which phases left ANY trace between two times. The weak second check.
 
-    Weaker than an onset by design, and that is the whole point: "the bucket was
-    over the bed at some point in this span" is enough to say dumping happened,
-    and nowhere near enough to say when it started. No rising edge is required
-    and no hold -- a single sample satisfying the trigger counts.
+    Weaker than an onset by design, and that is the whole point: a phase that left
+    a trace but whose onset could not be pinned still happened.
+
+    Be precise about HOW MUCH weaker, because it is less than it sounds. This runs
+    the SAME four triggers, with both of their conditions still ANDed -- dumping
+    still requires the bucket to be on the truck's side of the cabin, and still
+    returns False without a usable truck level. What is dropped is only the HOLD and
+    the RISING EDGE: one satisfying sample anywhere in the span counts, where an
+    onset needs a rise followed by evidence that persists.
+
+    So it does not implement "the bucket was over the bed at some point" -- an
+    earlier version of this docstring claimed that, and it is a stronger promise than
+    the code keeps.
 
     This is the mechanism `cycles.py` documented from the beginning and did not
     have. Without it the caller has to guess, and the CLI guessed badly: it built
