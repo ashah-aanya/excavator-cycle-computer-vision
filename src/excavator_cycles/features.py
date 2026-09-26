@@ -124,7 +124,8 @@ class FeatureTable:
 
     # --- shape
     aspect_ratio: np.ndarray  # bucket box width / height. Carries T3.
-    radius: np.ndarray  # |bucket - pivot| / L. How far the arm is reaching.
+    radius: np.ndarray  # |bucket - pivot| / L. Distance from the body
+    # centroid, which sits low among the tracks -- a proxy for reach, not reach.
 
     # --- the smoothed boxes themselves, in PIXELS, for drawing and overlap.
     # The only columns here not divided by L: the renderer works in image space,
@@ -158,6 +159,7 @@ def build_features(
     count = len(times)
     if count < 2:
         raise ValueError(f"need at least 2 samples to differentiate, got {count}")
+    _check_uniform_sampling(times)
 
     excavator = objects.get("excavator")
     if not excavator:
@@ -180,6 +182,35 @@ def build_features(
         raw_boxes(_body_masks(excavator, count, config), count), times, window, alignment
     )
     return _assemble(bucket_track, cabin_track, scene, times, config), scene
+
+
+def _check_uniform_sampling(times: np.ndarray, tolerance: float = 0.05) -> None:
+    """Warn when the samples are not evenly spaced in time.
+
+    Every derivative below passes a single scalar spacing to Savitzky-Golay, so
+    it assumes a uniform clock. That holds for any constant-frame-rate source,
+    because sampling takes an integer frame stride and therefore lands on evenly
+    spaced frames. It does NOT hold for variable-frame-rate footage -- phone or
+    web video -- where the decoder's timestamps genuinely jump around, and there
+    the rates are wrong by whatever the local spacing ratio happens to be,
+    silently.
+
+    A warning rather than an error: the answer degrades smoothly rather than
+    becoming nonsense, and refusing to run at all would be worse.
+    """
+    gaps = np.diff(times)
+    median = float(np.median(gaps))
+    if median <= 0:
+        raise ValueError(f"timestamps are not increasing (median spacing {median})")
+    spread = float(np.ptp(gaps)) / median
+    if spread > tolerance:
+        log.warning(
+            "sampling is not uniform: intervals span %.1f%% of the median (%.4f s). "
+            "Every rate assumes one spacing, so a variable-frame-rate source will "
+            "bias them by the local ratio.",
+            spread * 100,
+            median,
+        )
 
 
 def derive_scene(
