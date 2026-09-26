@@ -68,6 +68,7 @@ def render(
     physics: bool = True,
     onsets: dict[str, float] | None = None,
     windows: list[tuple[str, float, float]] | None = None,
+    reference: dict[str, float] | None = None,
 ) -> RenderStats:
     """Write an annotated copy of the source video.
 
@@ -87,6 +88,10 @@ def render(
             panel. Meant for the state machine's pass-1 output, where the
             question being asked of a picture is "does this window even contain
             the transition?" -- which a marker cannot answer and a span can.
+        reference: a SECOND set of onsets, drawn dashed and grey. Kept separate
+            from `onsets` so the two can be seen against each other: the
+            pipeline's answer solid, something to compare it to dashed. Only a
+            caller outside `src/` may supply hand labels here.
     """
     output_dir = Path(output_dir)
     result, masks = load_result(output_dir)
@@ -185,6 +190,7 @@ def render(
                             canvas_height,
                             onsets,
                             windows,
+                            reference,
                         ),
                     ]
                 )
@@ -369,6 +375,7 @@ def _graph_column(
     height: int,
     onsets: dict[str, float] | None = None,
     windows: list[tuple[str, float, float]] | None = None,
+    reference: dict[str, float] | None = None,
 ):
     """The signals, stacked down the right-hand side, with a shared playhead.
 

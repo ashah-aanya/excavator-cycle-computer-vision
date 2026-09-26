@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """DIAGNOSTIC, not pipeline. Where did pass 1 think each transition happened?
 
+    ./scripts/windows          # the whole loop: run, print, render, open
+
+Re-run it after every change to a cue. It is meant to be the inner loop of
+working on the triggers, so it takes about five seconds and needs no arguments.
+
 Not imported by anything under ``src/``. It exists to answer one question with a
 picture instead of a table: **does each coarse window actually contain the
 transition it is supposed to?**
@@ -49,9 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--labels",
         type=Path,
-        default=None,
-        help="eval/labels.json, to draw the truth alongside. Evaluation only.",
+        default=REPO / "eval" / "labels.json",
+        help="drawn dashed alongside the pipeline's own answer. Evaluation only.",
     )
+    parser.add_argument("--no-labels", action="store_true", help="hide the ground truth")
+    parser.add_argument("--open", action="store_true", help="open the video when done")
+    parser.add_argument("--no-video", action="store_true", help="print only; skip rendering")
     args = parser.parse_args(argv)
 
     table, _scene = load_features(args.track_dir)
@@ -75,23 +83,33 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     truth = {}
-    if args.labels:
+    if args.labels and not args.no_labels and args.labels.exists():
         labels = json.loads(args.labels.read_text())
         fps = float(labels["video"]["fps"])
         truth = {k: labels["boundaries"][v] / fps for k, v in ONSET_KEYS.items()}
 
+    fired = {}
     print(f"\n{len(found)} detections")
-    print(f"  {'phase':10}{'window (s)':>20}{'width':>7}{'truth':>8}   contains it?")
-    for (phase, start, end), detection in zip(found and windows, found, strict=True):
+    print(
+        f"  {'phase':10}{'window (s)':>20}{'width':>7}{'FIRED':>8}"
+        f"{'truth':>8}{'err':>8}   in window?"
+    )
+    for (phase, start, end), detection in zip(windows, found, strict=True):
+        when = float(times[detection.fired_at])
+        fired.setdefault(phase, when)
         reference = truth.get(phase)
-        verdict = ""
+        verdict = error = ""
         if reference is not None:
             verdict = "yes" if start <= reference <= end else "NO"
+            error = f"{when - reference:+.2f}"
         flag = "  out-of-seq" if detection.out_of_sequence else ""
         print(
             f"  {phase:10}{f'[{start:.2f}, {end:.2f}]':>20}{end - start:>7.2f}"
-            f"{reference if reference else 0:>8.2f}   {verdict}{flag}"
+            f"{when:>8.2f}{reference or 0:>8.2f}{error:>8}   {verdict}{flag}"
         )
+
+    if args.no_video:
+        return 0
 
     out = args.out or args.track_dir / "pass1_windows.mp4"
     stats = render(
@@ -99,12 +117,18 @@ def main(argv: list[str] | None = None) -> int:
         out_path=out,
         scale=args.scale,
         windows=windows,
-        onsets=truth or None,
+        onsets=fired,
+        reference=truth or None,
     )
     print(f"\n  wrote {stats.output_path}  ({stats.frames_written} frames)")
-    print("  shaded span = the window pass 1 chose")
+    print("    shaded span   the window pass 1 searched")
+    print("    SOLID line    where the trigger actually fired")
     if truth:
-        print("  dashed line = the hand-labelled truth")
+        print("    dashed grey   the hand-labelled truth")
+    if args.open:
+        import subprocess
+
+        subprocess.run(["open", str(out)], check=False)
     return 0
 
 
