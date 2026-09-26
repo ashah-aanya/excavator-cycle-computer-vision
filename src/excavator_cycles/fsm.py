@@ -305,8 +305,8 @@ def walk(
     Returns the detections in the order they were found. Multi-cycle is not
     special-cased: the loop simply keeps going.
     """
-    if fires is None:  # pragma: no cover - the real cues arrive in stage 5
-        raise NotImplementedError("the built-in cues are not wired yet")
+    if fires is None:
+        fires = default_fires
     strict = strict_hold_samples if strict_hold_samples is not None else hold_samples * 2
 
     times = np.asarray(table.time_seconds, dtype=float)
@@ -316,9 +316,22 @@ def walk(
     index = 0
 
     def sustained(phase: str, start: int, needed: int) -> bool:
-        """Did the trigger hold from `start` for `needed` consecutive samples?"""
+        """Did the trigger RISE here and then hold for `needed` samples?
+
+        A rising edge, not a level. The triggers are written as conditions --
+        "the bucket is down and still" -- and such a condition is true for the
+        whole of the phase it describes, not only at its start. Accepting a
+        level would make the always-on digging check fire on every sample of a
+        dig it has already recorded: on the development video that produced
+        sixteen digging detections inside one digging phase.
+
+        The edge is the whole difference between "digging is happening" and
+        "digging just started", and only the second is a transition.
+        """
         if start + needed > count:
             return False
+        if start > 0 and fires(phase, table, start - 1, levels, None):
+            return False  # already true before this sample: not an edge
         return all(fires(phase, table, i, levels, None) for i in range(start, start + needed))
 
     while index < count:
@@ -332,6 +345,12 @@ def walk(
 
         # Digging, always, at a higher bar -- it is the only transition that
         # re-establishes where we are.
+        #
+        # No guard against digging interrupting itself is needed: `sustained`
+        # requires a rising edge, and the condition that started a dig stays true
+        # for as long as that dig lasts, so it cannot rise again until the bucket
+        # has actually come back up. A `curr_stage != "digging"` guard here would
+        # be redundant AND wrong -- it would also block a genuine second dig.
         if target != "digging" and sustained("digging", index, strict):
             log.info(
                 "digging at sample %d interrupted %s; the cycle being built is abandoned",
@@ -359,3 +378,161 @@ def _detect(state, phase, index, held, lookback, times) -> Detection:
     window = Window(max(0, index - lookback), min(len(times), index + held))
     state.advance(phase, float(times[index]))  # provisional; pass 2 refines it
     return Detection(phase, window, index)
+
+
+# ---------------------------------------------------------------------------
+# The coarse triggers -- pass 1
+#
+# Each one answers "does this sample look like the next phase is starting?" and
+# nothing more. They pick the WINDOW; pass 2 picks the instant. That division is
+# why they are allowed to be blunt: a trigger that fires a little early or a
+# little wide costs pass 2 a slightly longer search, while a trigger that never
+# fires loses the transition entirely. So when in doubt, these err towards
+# firing.
+#
+# Every threshold below is a level from `calibrate()` -- derived from this
+# video's own distribution. There is no absolute number anywhere in this section,
+# which is what lets the same code work on footage shot from a different distance.
+# ---------------------------------------------------------------------------
+
+
+def _usable(table, index: int, *columns: str) -> bool:
+    """Was this sample measured at all?
+
+    A missing sample is not evidence against a transition -- the design treats
+    gaps as unknown rather than negative -- but it is certainly not evidence
+    *for* one, so nothing may fire on it.
+    """
+    if not bool(np.asarray(table.found)[index]):
+        return False
+    return all(np.isfinite(getattr(table, name)[index]) for name in columns)
+
+
+def trigger_digging(table, index: int, levels: Levels) -> bool:
+    """CUE 1  swinging -> digging.
+
+    The spec: *digging begins when the bucket first contacts the material and
+    starts scooping.*
+
+    Two conditions, and the second is what stops this firing on every pass over
+    the pile:
+
+      1.1  the bucket is DOWN -- `height` below the level that separates "in the
+           material" from "carrying" on this video. The diagram's "vertical goes
+           to the floor", with the floor derived rather than defined.
+
+      1.2  the machine is NOT traversing -- `|dx/dt|` below the "moving" level.
+           Low and moving is the bucket passing through on its way somewhere,
+           which the spec calls swinging. Low and still is a scoop. This is the
+           diagram's "no horizontal motion".
+
+    Deliberately NOT a level crossing of a calibrated surface height. `height`
+    carries a per-video offset (the slew centre moves 0.098 L across a quantile
+    sweep, 22% of its whole range), so an absolute threshold on it would not
+    travel. Being below a level derived from the same distribution does travel.
+    """
+    if not _usable(table, index, "height", "speed_x"):
+        return False
+    return (
+        table.height[index] < levels.low_height.threshold
+        and table.speed_x[index] < levels.moving.threshold
+    )
+
+
+def trigger_hauling(table, index: int, levels: Levels) -> bool:
+    """CUE 2  digging -> hauling.
+
+    The spec: *hauling begins when the entire loaded bucket clears the material
+    surface and continues as it moves toward the dumping location.*
+
+      2.1  the bucket is ABOVE the material level, and
+      2.2  it is RISING -- `dh_dt > 0`.
+
+    Condition 2.2 is the one that matters. The bucket is above the material for
+    most of the cycle, so height alone would fire continuously from the moment it
+    lifts until it comes back down. The spec's word is *clears*, which describes
+    a direction of travel, not a position.
+
+    `dh_dt` rather than `height` also sidesteps the offset problem: a rate is
+    immune to where the origin sits, while a level is not.
+    """
+    if not _usable(table, index, "height", "dh_dt"):
+        return False
+    return table.height[index] > levels.low_height.threshold and table.dh_dt[index] > 0
+
+
+def trigger_dumping(table, index: int, levels: Levels) -> bool:
+    """CUE 3  hauling -> dumping.
+
+    The spec: *dumping begins when the bucket reaches the dumping location and
+    starts tipping or uncurling to release its load.* And, crucially: *material
+    that spills while the loaded bucket is still being lifted or transported
+    remains part of hauling.*
+
+      3.1  the bucket is OVER THE BED -- `truck_overlap` above the level that
+           separates "near the truck" from "not". The diagram's "closest to the
+           truck".
+
+      3.2  the bucket is OUT PAST THE CABIN -- `rel_cabin_x > 0`. The diagram's
+           "cabin is to the left of the bucket" and "higher x value than cabin",
+           expressed as a sign so it does not depend on which way the machine
+           happens to face.
+
+    THE GAP WORTH KNOWING ABOUT. The spec's anti-spillage rule really asks for
+    the bucket's own ROTATION -- material falling during transport is still
+    hauling, so only the bucket tipping should start dumping. Neither condition
+    above measures rotation. The guard here rests entirely on position, and
+    whether that is sufficient is genuinely untested.
+
+    `over_truck` is None on a video where no truck was ever cleanly detected.
+    That is a legitimate video, and the gate is then UNAVAILABLE rather than
+    false -- but with no positional evidence at all this returns False, which
+    means dumping will never be detected on such a clip. A known limitation.
+    """
+    if levels.over_truck is None:
+        return False
+    if not _usable(table, index, "truck_overlap", "rel_cabin_x"):
+        return False
+    return (
+        table.truck_overlap[index] > levels.over_truck.threshold
+        and table.rel_cabin_x[index] > 0
+    )
+
+
+def trigger_swinging(table, index: int, levels: Levels) -> bool:
+    """CUE 4  dumping -> swinging.
+
+    The spec: *swinging begins when the excavator starts rotating back the
+    emptied bucket toward the digging location.*
+
+      4.1  the machine is TRAVERSING -- `|dx/dt|` above the "moving" level, and
+      4.2  the bucket is DESCENDING -- `dh_dt < 0`.
+
+    The diagram calls this "opposite conditions to hauling", and 4.2 is the
+    opposite in question. Both phases are traverses; the machine is moving
+    sideways in each. What separates them is the vertical: hauling carries a
+    loaded bucket UP and out, swinging brings an empty one BACK DOWN.
+
+    Note what is absent. The spec says "rotating back TOWARD the digging
+    location", which is a direction. This tests the vertical sign instead, which
+    is correlated with it but not the same thing -- a machine that repositioned
+    without returning would still satisfy both conditions. Measuring the
+    direction properly needs a rotation signal, and this pipeline deliberately
+    has none: the two earlier attempts at one both measured the wrong quantity.
+    """
+    if not _usable(table, index, "speed_x", "dh_dt"):
+        return False
+    return table.speed_x[index] > levels.moving.threshold and table.dh_dt[index] < 0
+
+
+TRIGGERS = {
+    "digging": trigger_digging,
+    "hauling": trigger_hauling,
+    "dumping": trigger_dumping,
+    "swinging": trigger_swinging,
+}
+
+
+def default_fires(phase: str, table, index: int, levels: Levels, config=None) -> bool:
+    """The trigger the walk uses when none is injected."""
+    return TRIGGERS[phase](table, index, levels)

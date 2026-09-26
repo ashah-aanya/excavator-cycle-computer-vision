@@ -419,3 +419,175 @@ def test_an_in_sequence_dig_is_not_marked_out_of_sequence():
         hold_samples=3,
     )
     assert not found[0].out_of_sequence
+
+
+# --- the coarse triggers --------------------------------------------------
+#
+# These pick the WINDOW, not the instant, so each test asks only "does this
+# fire where it obviously should, and stay quiet where it obviously should
+# not". Precision is pass 2's job and is tested separately.
+
+
+class _CueTable:
+    """Every column the triggers read, at a single instant."""
+
+    def __init__(self, n=50, **columns):
+        self.time_seconds = np.arange(n) * 0.1
+        for name in (
+            "height",
+            "dh_dt",
+            "d2h_dt2",
+            "speed_x",
+            "truck_overlap",
+            "rel_cabin_x",
+            "aspect_ratio",
+        ):
+            setattr(self, name, np.full(n, float(columns.get(name, 0.0))))
+        self.found = np.ones(n, bool)
+
+
+def _lv(low=0.1, truck=0.2, moving=0.3):
+    from excavator_cycles.fsm import Levels, Split
+
+    return Levels(
+        low_height=Split(low, 0.95, 50, 50),
+        over_truck=Split(truck, 0.95, 50, 50),
+        moving=Split(moving, 0.95, 50, 50),
+    )
+
+
+def test_digging_fires_when_the_bucket_is_down_and_still():
+    from excavator_cycles.fsm import trigger_digging
+
+    assert trigger_digging(_CueTable(height=0.0, speed_x=0.05), 10, _lv())
+
+
+def test_digging_stays_quiet_while_the_bucket_is_up():
+    from excavator_cycles.fsm import trigger_digging
+
+    assert not trigger_digging(_CueTable(height=0.5, speed_x=0.05), 10, _lv())
+
+
+def test_digging_stays_quiet_while_the_machine_is_traversing():
+    """Low and moving is the bucket passing through on its way somewhere, not
+    scooping. The spec puts that in swinging."""
+    from excavator_cycles.fsm import trigger_digging
+
+    assert not trigger_digging(_CueTable(height=0.0, speed_x=0.9), 10, _lv())
+
+
+def test_hauling_fires_when_the_bucket_is_clear_of_the_material_and_rising():
+    from excavator_cycles.fsm import trigger_hauling
+
+    assert trigger_hauling(_CueTable(height=0.5, dh_dt=0.2), 10, _lv())
+
+
+def test_hauling_stays_quiet_when_the_bucket_is_high_but_descending():
+    """Height alone is not enough -- the bucket is high for most of the cycle.
+    The spec's word is CLEARS, which is a direction, not a level."""
+    from excavator_cycles.fsm import trigger_hauling
+
+    assert not trigger_hauling(_CueTable(height=0.5, dh_dt=-0.2), 10, _lv())
+
+
+def test_dumping_fires_when_the_bucket_is_over_the_bed():
+    from excavator_cycles.fsm import trigger_dumping
+
+    assert trigger_dumping(_CueTable(truck_overlap=0.6, rel_cabin_x=0.5), 10, _lv())
+
+
+def test_dumping_stays_quiet_away_from_the_truck():
+    from excavator_cycles.fsm import trigger_dumping
+
+    assert not trigger_dumping(_CueTable(truck_overlap=0.01, rel_cabin_x=0.5), 10, _lv())
+
+
+def test_dumping_cannot_fire_on_a_video_with_no_truck():
+    """No truck is a legitimate video. The gate is unavailable, not false."""
+    from excavator_cycles.fsm import trigger_dumping
+
+    levels = _lv()
+    object.__setattr__(levels, "over_truck", None)
+    assert not trigger_dumping(_CueTable(truck_overlap=np.nan), 10, levels)
+
+
+def test_swinging_fires_when_traversing_and_descending():
+    from excavator_cycles.fsm import trigger_swinging
+
+    assert trigger_swinging(_CueTable(speed_x=0.9, dh_dt=-0.2), 10, _lv())
+
+
+def test_swinging_is_the_opposite_of_hauling_on_the_vertical():
+    """The diagram's words. Both are traverses; the sign of dh/dt separates
+    carrying a load out from bringing an empty bucket back."""
+    from excavator_cycles.fsm import trigger_hauling, trigger_swinging
+
+    rising = _CueTable(speed_x=0.9, dh_dt=0.2, height=0.5)
+    assert trigger_hauling(rising, 10, _lv())
+    assert not trigger_swinging(rising, 10, _lv())
+
+
+def test_a_sample_with_no_mask_never_fires_anything():
+    """Missing is not evidence against a transition, but it is certainly not
+    evidence for one."""
+    from excavator_cycles.fsm import default_fires
+
+    table = _CueTable(height=0.0, speed_x=0.05)
+    table.found[10] = False
+    for phase in ("digging", "hauling", "dumping", "swinging"):
+        assert not default_fires(phase, table, 10, _lv(), None)
+
+
+def test_a_nan_sample_never_fires_anything():
+    from excavator_cycles.fsm import default_fires
+
+    table = _CueTable(height=0.0, speed_x=0.05)
+    table.height[10] = np.nan
+    assert not default_fires("digging", table, 10, _lv(), None)
+
+
+def test_a_condition_that_stays_true_fires_only_once():
+    """A trigger is an EDGE, not a level.
+
+    "The bucket is down and still" is true for the whole digging phase, not just
+    at its start. Treating it as a level makes the always-on digging check fire
+    again on every sample of a dig it has already recorded -- which on the real
+    video produced sixteen digging detections inside one digging phase.
+    """
+    from excavator_cycles.fsm import walk
+
+    # the condition holds continuously from sample 10 to the end
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": set(range(10, 200))}),
+        hold_samples=3,
+    )
+    assert [d.phase for d in found] == ["digging"], [d.phase for d in found]
+
+
+def test_the_condition_must_go_away_before_it_can_fire_again():
+    """Two separate digs, with the bucket genuinely lifted in between."""
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": set(range(10, 20)) | set(range(60, 80))}),
+        hold_samples=3,
+        strict_hold_samples=3,
+    )
+    assert [d.phase for d in found] == ["digging", "digging"]
+
+
+def test_an_already_running_phase_cannot_interrupt_itself():
+    """The out-of-sequence digging check must not fire while we ARE digging."""
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": set(range(10, 100))}),
+        hold_samples=3,
+    )
+    assert not any(d.out_of_sequence for d in found)
