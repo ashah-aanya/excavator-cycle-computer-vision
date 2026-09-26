@@ -102,6 +102,33 @@ def main(argv: list[str] | None = None) -> int:
     )
     features_parser.set_defaults(func=_cmd_features)
 
+    cycles_parser = subparsers.add_parser(
+        "cycles",
+        help="Stage 4: find the work cycles and write answer.json. --test also "
+        "renders a diagnostic video and scores the result. No models, no GPU.",
+    )
+    cycles_parser.add_argument("track_dir", type=Path, help="a directory from `features`")
+    cycles_parser.add_argument("--config", type=Path, default=None)
+    cycles_parser.add_argument(
+        "--out", type=Path, default=None, help="answer.json (default: <track_dir>/answer.json)"
+    )
+    cycles_parser.add_argument(
+        "--test",
+        action="store_true",
+        help="also render the windows and predicted onsets over the video, and "
+        "print the per-cycle breakdown",
+    )
+    cycles_parser.add_argument(
+        "--labels",
+        type=Path,
+        default=None,
+        help="EVALUATION ONLY: hand-made ground truth to draw and score against. "
+        "Passed in, never discovered -- the pipeline cannot reach the answer on "
+        "its own.",
+    )
+    cycles_parser.add_argument("--scale", type=float, default=2.0, help="video resize factor")
+    cycles_parser.set_defaults(func=_cmd_cycles)
+
     args = parser.parse_args(argv)
     configure_logging(args.verbose, args.log_file)
     return args.func(args)
@@ -246,3 +273,117 @@ def _cmd_features(args: argparse.Namespace) -> int:
         print("  truck box      : none detected (overlap feature is nan)")
     print(f"  wrote          : {args.track_dir}/features.npz, scene.json")
     return 0
+
+
+def _cmd_cycles(args: argparse.Namespace) -> int:
+    """Stage 4: features -> onsets -> cycles -> answer.json.
+
+    `--test` does not change what the pipeline computes. It only adds evidence:
+    the same run, plus a video showing where each window was and where each cue
+    fired, plus the per-cycle breakdown. What is tested is what ships.
+    """
+
+    from .cycles import assemble, summarise, write_answer
+    from .features import load as load_features
+    from .fsm import calibrate, locate, walk
+
+    config = Config.load(args.config)
+    table, _scene = load_features(args.track_dir)
+
+    levels = calibrate(table)
+    print()
+    print(levels.report())
+
+    detections = walk(table, levels, config=config)
+    onsets = locate(detections, table, config)
+    cycles = assemble(onsets, occurred={d.phase for d in detections})
+    answer = summarise(cycles)
+
+    out = args.out or args.track_dir / "answer.json"
+    write_answer(answer, out)
+
+    print()
+    print(f"  cycles occurred  : {answer.cycle_count}")
+    print(f"  cycles measured  : {sum(1 for c in cycles if c.measurable)}")
+    print(f"  average cycle    : {answer.average_cycle_duration_seconds:.3f} s")
+    for phase, seconds in answer.average_phase_duration_seconds.items():
+        print(f"    {phase:9s}      : {seconds:.3f} s")
+    print(f"  wrote            : {out}")
+
+    if not args.test:
+        return 0
+
+    truth = _read_labels(args.labels) if args.labels else {}
+    _print_breakdown(cycles, onsets, truth)
+    _render_diagnostic(args, table, detections, onsets, truth)
+    return 0
+
+
+def _read_labels(path: Path) -> dict[str, float]:
+    """EVALUATION ONLY. The pipeline never calls this; only --test does."""
+    import json
+
+    labels = json.loads(path.read_text())
+    fps = float(labels["video"]["fps"])
+    keys = {
+        "digging": "digging_begins",
+        "hauling": "hauling_begins",
+        "dumping": "dumping_begins",
+        "swinging": "swinging_begins",
+    }
+    return {name: labels["boundaries"][key] / fps for name, key in keys.items()}
+
+
+def _print_breakdown(cycles, onsets, truth: dict[str, float]) -> None:
+    print()
+    print("  --- onsets " + "-" * 52)
+    header = f"  {'phase':10}{'predicted':>11}"
+    if truth:
+        header += f"{'truth':>9}{'err':>8}"
+    print(header)
+    seen: set[str] = set()
+    for phase, when in onsets:
+        line = f"  {phase:10}{when:>11.2f}"
+        if truth and phase not in seen:
+            line += f"{truth[phase]:>9.2f}{when - truth[phase]:>+8.2f}"
+        seen.add(phase)
+        print(line)
+
+    print()
+    print("  --- cycles " + "-" * 52)
+    if not cycles:
+        print("  none: fewer than two digging onsets, so no span is bounded")
+    for index, cycle in enumerate(cycles, 1):
+        verdict = "measured" if cycle.measurable else f"EXCLUDED -- {cycle.reason}"
+        print(f"  cycle {index}: {verdict}")
+        for phase, seconds in cycle.durations().items():
+            print(f"      {phase:9s} {seconds:6.2f} s")
+
+
+def _render_diagnostic(args, table, detections, onsets, truth) -> None:
+    from .render import render
+
+    times = table.time_seconds
+    windows = [
+        (d.phase, float(times[d.window.lo]), float(times[min(d.window.hi, len(times) - 1)]))
+        for d in detections
+    ]
+    predicted: dict[str, float] = {}
+    for phase, when in onsets:
+        predicted.setdefault(phase, when)
+
+    out = args.track_dir / "cycles.mp4"
+    stats = render(
+        args.track_dir,
+        out_path=out,
+        scale=args.scale,
+        windows=windows,
+        onsets=predicted,
+        reference=truth or None,
+    )
+    print()
+    print(f"  wrote {stats.output_path}  ({stats.frames_written} frames)")
+    print("    shaded span   the window pass 1 searched")
+    print("    solid line    the refined onset pass 2 returned")
+    if truth:
+        print("    dashed white  the hand-labelled truth")
