@@ -126,6 +126,12 @@ class FeatureTable:
     aspect_ratio: np.ndarray  # bucket box width / height. Carries T3.
     radius: np.ndarray  # |bucket - pivot| / L. How far the arm is reaching.
 
+    # --- the smoothed boxes themselves, in PIXELS, for drawing and overlap.
+    # The only columns here not divided by L: the renderer works in image space,
+    # and the annotated video has to show the boxes the pipeline actually used.
+    bucket_box: np.ndarray  # (n, 4) x0 y0 x1 y1
+    cabin_box: np.ndarray  # (n, 4) x0 y0 x1 y1
+
     found: np.ndarray  # bool: did this sample have a bucket mask?
 
     def __len__(self) -> int:
@@ -317,6 +323,8 @@ def _assemble(
         truck_overlap=overlap,
         aspect_ratio=bucket.aspect_ratio,
         radius=np.hypot(bx - scene.pivot[0] / scale, by - scene.pivot[1] / scale),
+        bucket_box=np.stack([bucket.x0, bucket.y0, bucket.x1, bucket.y1], axis=1),
+        cabin_box=np.stack([cabin.x0, cabin.y0, cabin.x1, cabin.y1], axis=1),
         found=bucket.found,
     )
 

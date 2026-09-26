@@ -85,8 +85,7 @@ def render(
         try:
             from .features import load as load_features
 
-            table, scene_dict = load_features(output_dir)
-            scene = scene_dict
+            table, scene = load_features(output_dir)
             strip = _signal_strip(table, scene)
             log.info("physics overlay enabled")
         except (FileNotFoundError, KeyError) as exc:
@@ -228,133 +227,82 @@ def _draw_frame(frame, mask, record, result: TrackResult, scale: float, draw_box
 
 
 def _draw_physics(canvas, mask, table, scene, position: int, scale: float):
-    """Draw what the geometry stage measures, on top of the frame.
+    """Draw what the measurement stage actually used: two boxes and a pivot.
 
-    The point is that the derived quantities are checkable by eye: the chain's
-    links should lie along the boom, the stick and the bucket, the base should
-    sit where the boom is anchored, and the surface line should lie on the
-    material. If the drawing looks wrong, the numbers are wrong.
+    Every shape here is read from the feature table, so the video cannot show
+    something the pipeline did not measure. That is the point -- the task
+    requires the annotation to be evidence, not illustration.
     """
-    import numpy as np
 
-    centre = (scene["centre"][0] * scale, scene["centre"][1] * scale)
-    reach = scene["scale"] * scale
+    def at(box):
+        return tuple(round(v * scale) for v in box)
 
-    # The machine's pivot and its reach, for scale.
-    cv2.circle(canvas, (int(centre[0]), int(centre[1])), int(reach), _PIVOT, 1, cv2.LINE_AA)
-    cv2.drawMarker(
-        canvas, (int(centre[0]), int(centre[1])), _PIVOT, cv2.MARKER_CROSS, int(14 * scale), 2
-    )
+    pivot = (int(scene.pivot[0] * scale), int(scene.pivot[1] * scale))
 
-    # The fitted kinematic chain: boom base, the two joints, and the bucket tip.
-    # This is what every measurement is taken from, so it is what has to look
-    # right -- the links should lie along the boom, the stick and the bucket.
-    chain = [
-        (table.base_x[position], table.base_y[position]),
-        (table.joint1_x[position], table.joint1_y[position]),
-        (table.joint2_x[position], table.joint2_y[position]),
-        (table.tip_x[position], table.tip_y[position]),
-    ]
-    if all(np.isfinite(point).all() for point in chain):
-        drawn = [(int(x * scale), int(y * scale)) for x, y in chain]
-        for start, end in pairwise(drawn):
-            cv2.line(canvas, start, end, _TRACE, max(1, int(scale)), cv2.LINE_AA)
-        for point, colour, label in zip(
-            drawn,
-            (_PIVOT, _FOREARM_BAND, _BUCKET_BAND, _TIP),
-            ("base", "boom-stick", "stick-bucket", "bucket"),
-            strict=True,
-        ):
-            cv2.circle(canvas, point, max(2, int(3 * scale)), colour, -1, cv2.LINE_AA)
-            cv2.putText(
-                canvas,
-                label,
-                (point[0] + 6, point[1] - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.30 * scale,
-                colour,
-                1,
-                cv2.LINE_AA,
-            )
+    if scene.truck_box is not None:
+        _dashed_box(canvas, at(scene.truck_box), _TRUCK_COLOR)
+        _label(canvas, "truck", (at(scene.truck_box)[0], at(scene.truck_box)[1] - 4),
+               _TRUCK_COLOR)
 
-    # The material surface: the level that defines two of the four boundaries.
-    if scene.get("surface_height") is not None:
-        y = int(centre[1] - scene["surface_height"] * reach)
-        cv2.line(canvas, (0, y), (canvas.shape[1], y), _SURFACE, 1, cv2.LINE_AA)
-        cv2.putText(
-            canvas,
-            "material surface",
-            (6, y - 4),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.32 * scale,
-            _SURFACE,
-            1,
-            cv2.LINE_AA,
+    cabin = table.cabin_box[position]
+    if np.isfinite(cabin).all():
+        _box(canvas, at(cabin), _FOREARM_BAND, 1)
+        _label(canvas, "cabin", (at(cabin)[0], at(cabin)[1] - 4), _FOREARM_BAND)
+
+    bucket = table.bucket_box[position]
+    if np.isfinite(bucket).all():
+        _box(canvas, at(bucket), _BUCKET_BAND, 2)
+        centre = (
+            round((bucket[0] + bucket[2]) / 2 * scale),
+            round((bucket[1] + bucket[3]) / 2 * scale),
         )
+        cv2.circle(canvas, centre, 3, _TIP, -1)
+        cv2.line(canvas, pivot, centre, _TRACE, 1)
 
-    for key, colour, label in (("dig_zone", _DIG, "dig"), ("dump_zone", _DUMP, "dump")):
-        zone = scene.get(key)
-        if zone:
-            point = (int(zone[0] * scale), int(zone[1] * scale))
-            cv2.circle(canvas, point, int(6 * scale), colour, 2, cv2.LINE_AA)
-            cv2.putText(
-                canvas,
-                label,
-                (point[0] + 8, point[1]),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.32 * scale,
-                colour,
-                1,
-                cv2.LINE_AA,
-            )
+        # Where the bucket centre has been, so a jump is visible rather than
+        # merely implied by a number changing.
+        trail = table.bucket_box[max(0, position - 25) : position + 1]
+        points = [
+            (round((b[0] + b[2]) / 2 * scale), round((b[1] + b[3]) / 2 * scale))
+            for b in trail
+            if np.isfinite(b).all()
+        ]
+        for start, end in pairwise(points):
+            cv2.line(canvas, start, end, _TRACE, 1)
+
+    cv2.drawMarker(canvas, pivot, _PIVOT, cv2.MARKER_CROSS, 12, 2)
+    _label(canvas, "slew centre", (pivot[0] + 8, pivot[1] - 6), _PIVOT)
     return canvas
 
 
 def _signal_strip(table, scene, height: int = 96):
-    """Pre-render the whole video's signals once; the renderer blits a window."""
-    import numpy as np
+    """A strip of the three signals that decide the phase boundaries."""
 
-    n = len(table.time_seconds)
-    strip = np.full((height, n, 3), 22, dtype=np.uint8)
     rows = [
-        (
-            "elevation",
-            np.asarray(table.elevation, float),
-            _SURFACE,
-            None if scene.get("surface_height") is None else float(scene["surface_height"]),
-        ),
-        ("curl", np.asarray(table.curl, float), _BUCKET_BAND, None),
-        ("slew", np.asarray(table.slew_rate, float), _DIG, 0.0),
+        ("height (up +)", table.height, _SURFACE),
+        ("|dx/dt|", table.speed_x, _DIG),
+        ("truck overlap", table.truck_overlap, _DUMP),
     ]
-    band = height // len(rows)
-    for index, (name, values, colour, reference) in enumerate(rows):
-        top = index * band
+    width = max(len(table.time_seconds), 2)
+    strip = np.full((height * len(rows), width, 3), _PANEL, dtype=np.uint8)
+    for index, (label, values, colour) in enumerate(rows):
+        top = index * height
+        values = np.asarray(values, dtype=float)
         finite = values[np.isfinite(values)]
         if finite.size == 0:
             continue
-        lo, hi = float(finite.min()), float(finite.max())
-        span = (hi - lo) or 1.0
-
-        def to_y(v, top=top, lo=lo, span=span, band=band):
-            return int(top + band - 4 - (v - lo) / span * (band - 8))
-
-        if reference is not None and lo <= reference <= hi:
-            y = to_y(reference)
-            cv2.line(strip, (0, y), (n, y), (70, 70, 70), 1)
-        points = [(x, to_y(v)) for x, v in enumerate(values) if np.isfinite(v)]
-        for (x0, y0), (x1, y1) in pairwise(points):
-            if x1 - x0 <= 2:
-                cv2.line(strip, (x0, y0), (x1, y1), colour, 1, cv2.LINE_AA)
-        cv2.putText(
-            strip,
-            name,
-            (3, top + 11),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.32,
-            (200, 200, 200),
-            1,
-            cv2.LINE_AA,
-        )
+        low, high = float(finite.min()), float(finite.max())
+        span = max(high - low, np.finfo(float).eps)
+        previous = None
+        for x, value in enumerate(values):
+            if not np.isfinite(value):
+                previous = None
+                continue
+            y = top + int((1 - (value - low) / span) * (height - 10)) + 5
+            if previous is not None:
+                cv2.line(strip, previous, (x, y), colour, 1)
+            previous = (x, y)
+        _label(strip, label, (4, top + 12), colour)
     return strip
 
 
@@ -419,9 +367,10 @@ def _draw_panel(
 
     if table is not None and position is not None:
         physics = (
-            f"elev {float(table.elevation[position]):+.3f} L   "
-            f"curl {float(table.curl[position]):+.2f} rad   "
-            f"slew {float(table.slew_rate[position]):+.2f} rad/s"
+            f"h {float(table.height[position]):+.3f} L   "
+            f"|dx/dt| {float(table.speed_x[position]):.3f} L/s   "
+            f"overlap {float(table.truck_overlap[position]):.2f}   "
+            f"AR {float(table.aspect_ratio[position]):.2f}"
         )
         cv2.putText(
             panel,
