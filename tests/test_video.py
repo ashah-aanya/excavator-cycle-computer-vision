@@ -168,7 +168,17 @@ def test_the_two_clocks_disagree_on_the_task_video():
         Path(__file__).resolve().parent.parent / "construction_excavator_cycle_duration_1.mp4"
     )
     if not video.exists():
-        pytest.skip("task video not present")
+        # SKIPS IN CI, and that is acceptable rather than a gap. `*.mp4` is
+        # gitignored, and this test pins the specific magnitude of the discrepancy on
+        # the real file, which cannot be synthesised faithfully -- it is a property of
+        # that container's metadata against OpenCV's timeline.
+        #
+        # The BEHAVIOUR is covered by tests that do run in CI:
+        # `test_constant_rate_timestamps_come_from_the_frame_rate` and
+        # `test_constant_rate_timing_is_exact_arithmetic_not_the_decoder`. Those assert
+        # that the pipeline reads time from the frame rate rather than the decoder,
+        # which is the thing that would break. This one records why it matters.
+        pytest.skip("task video not present; the behaviour is covered synthetically")
     capture = cv2.VideoCapture(str(video))
     try:
         fps = capture.get(cv2.CAP_PROP_FPS)
