@@ -53,6 +53,9 @@ markers = [
 [tool.ruff]
 line-length = 95
 src = ["src", "tests"]
+# Recovered scratchpad code, kept verbatim as the record of what was verified.
+# Reformatting it would make it stop matching the transcript it came from.
+extend-exclude = ["reference/"]
 
 [tool.ruff.lint]
 # E/W pycodestyle, F pyflakes, I import order, UP modern syntax, B bugbears,

@@ -1,430 +1,141 @@
-"""Diagnostic plots -- the gate for the feature stage.
+"""Feature graphs.
 
-The rule for this stage is that a human must be able to *see* the four phase
-boundaries in these signals before any rule is asked to find them. If a boundary
-is invisible here, no threshold will locate it reliably, and the fix belongs in
-the features rather than in cleverer logic downstream.
+The rule this stage works to: a human must be able to see the four phase
+boundaries in these signals *before* any rule is asked to find them. If a
+boundary is not visible by eye in some panel here, no threshold is going to
+recover it, and the honest move is to find a better feature rather than a
+cleverer detector.
 
-Two figures:
-
-* **signals** -- every measurement against time, so the cycle's rhythm and the
-  boundaries are visible directly.
-* **scene** -- the derived landmarks drawn on a real frame, so the pivot, the
-  scale, the two zones and the surface height can be checked against what a
-  person would point at.
+Every panel carries a note saying which transition it is meant to serve, so a
+reader can check the claim rather than take it. Panels with no transition named
+are context: they explain what the machine is doing, and exist to make a wrong
+call visible.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
 import matplotlib
+
+matplotlib.use("Agg")  # no display on a cluster, and none needed
+import matplotlib.pyplot as plt
 import numpy as np
 
-matplotlib.use("Agg")  # no display on a cluster node
-import matplotlib.pyplot as plt
-
-from .features import FeatureTable
-from .geometry import Scene
+from .features import FeatureTable, Scene
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
 
+_INK = "#e8edf5"
+_DIM = "#a8b8cc"
+_AXIS = "#70808f"
+_GROUND = "#0b0f16"
+_EDGE = "#2a3341"
+_ZERO = "#54606f"
+_TRACE = "#e8edf5"
 
-def plot_signals(table: FeatureTable, scene: Scene, path: str | Path) -> Path:
-    """Every feature against time, stacked on a shared axis."""
-    path = Path(path)
-    panels = [
-        ("bearing (rad)", table.bearing, None),
-        ("slew rate (rad/s)\nsign = swing direction", table.slew_rate, 0.0),
-        ("elevation (L)\nvs material surface", table.elevation, scene.surface_height),
-        ("elevation rate (L/s)", table.elevation_rate, 0.0),
-        (
-            "curl vs forearm (rad)\ngaps = not measurable",
-            _gapped(table.curl, table.curl_valid),
-            None,
-        ),
-        ("curl rate (rad/s)", _gapped(table.curl_rate, table.curl_valid), 0.0),
-        ("falling material (flow)\nINDEPENDENT of the mask", table.falling, None),
-        ("speed (L/s)", table.speed, None),
-        ("mask area (L^2)\ndips when buried", table.area, None),
+
+def _panels(table: FeatureTable) -> list[tuple[str, np.ndarray, float | None]]:
+    """(label, values, where-to-draw-a-zero-line).
+
+    Ordered to read top to bottom as the machine's story: where the bucket is,
+    how fast it is going, where it is relative to the two things that matter,
+    and what shape it presents.
+    """
+    return [
+        ("bucket x  (L)", table.bucket_x, None),
+        ("bucket y  (L)\nimage coords: down is +", table.bucket_y, None),
+        ("height above slew centre  (L)\nup is +    -> T1, T2", table.height, None),
+        ("dh/dt  (L/s)\n-> T1: arrives at 0", table.dh_dt, 0.0),
+        ("d2h/dt2  (L/s^2)\n-> T2: arrives at 0", table.d2h_dt2, 0.0),
+        ("dx/dt  (L/s)", table.dx_dt, 0.0),
+        ("|dx/dt|  (L/s)\n-> T4: departs 0", table.speed_x, 0.0),
+        ("bucket - cabin  x  (L)", table.rel_cabin_x, 0.0),
+        ("bucket - cabin  y  (L)\n+ = bucket above cabin", table.rel_cabin_y, 0.0),
+        ("bucket - truck  x  (L)", table.rel_truck_x, 0.0),
+        ("bucket ^ truck box\n-> T3 gate", table.truck_overlap, None),
+        ("box aspect ratio  w/h\n-> T3: peaks as it tips", table.aspect_ratio, None),
+        ("radius from slew centre  (L)", table.radius, None),
     ]
 
-    figure, axes = plt.subplots(len(panels), 1, figsize=(14, 2.0 * len(panels)), sharex=True)
-    for axis, (label, values, reference) in zip(axes, panels, strict=True):
-        axis.plot(table.time_seconds, values, linewidth=1.2, color="#1f4e79")
-        if reference is not None:
-            axis.axhline(reference, color="#c0392b", linestyle="--", linewidth=0.9)
-        axis.set_ylabel(label, fontsize=8)
-        axis.grid(alpha=0.25, linewidth=0.5)
-        axis.tick_params(labelsize=8)
 
-        # Shade where the bucket is in each zone: the cycle's rhythm should be
-        # obvious, and if it is not, the zones are wrong.
-        _shade(axis, table.time_seconds, table.in_dig_zone, "#2e7d32", "dig")
-        _shade(axis, table.time_seconds, table.in_dump_zone, "#1565c0", "dump")
+def plot_features(
+    table: FeatureTable,
+    scene: Scene,
+    path: str | Path,
+    onsets: dict[str, float] | None = None,
+) -> Path:
+    """Every feature against time, stacked on a shared axis.
 
-    axes[-1].set_xlabel("time (s)")
-    axes[0].legend(loc="upper right", fontsize=7, ncol=2)
-    figure.suptitle(
-        "Feature signals -- the four phase boundaries should be visible by eye",
+    Args:
+        onsets: detected phase onsets in seconds, drawn as vertical lines. Absent
+            until the state machine exists, and the graphs are useful without it
+            -- that is the point of looking at them first.
+    """
+    path = Path(path)
+    panels = _panels(table)
+    figure, axes = plt.subplots(
+        len(panels), 1, figsize=(13, 1.9 * len(panels)), dpi=110, sharex=True
+    )
+    figure.patch.set_facecolor(_GROUND)
+
+    colours = {
+        "digging": "#5ab4f0",
+        "hauling": "#78dc78",
+        "dumping": "#f0aa46",
+        "swinging": "#dc82f0",
+    }
+
+    for axis, (label, values, zero) in zip(axes, panels, strict=True):
+        axis.set_facecolor(_GROUND)
+        axis.plot(table.time_seconds, values, color=_TRACE, lw=1.2)
+        if zero is not None:
+            axis.axhline(zero, color=_ZERO, lw=0.8)
+        _shade_gaps(axis, table)
+        for name, when in (onsets or {}).items():
+            if when is not None:
+                axis.axvline(when, color=colours.get(name, _DIM), lw=1.6)
+        axis.set_ylabel(label, color=_DIM, fontsize=8)
+        axis.tick_params(colors=_AXIS, labelsize=7)
+        for spine in axis.spines.values():
+            spine.set_color(_EDGE)
+
+    caption = "seconds"
+    if onsets:
+        caption += "    solid vertical = detected onset"
+    axes[-1].set_xlabel(caption, color=_DIM)
+    axes[0].set_title(
+        f"Box features.  L = {scene.scale:.0f} px, "
+        f"slew centre ({scene.pivot[0]:.0f}, {scene.pivot[1]:.0f}) px, "
+        f"truck {'found' if scene.truck_box else 'not found'}.  No optical flow.",
+        color=_INK,
         fontsize=11,
     )
     figure.tight_layout()
-    figure.savefig(path, dpi=130)
+    figure.savefig(path, facecolor=figure.get_facecolor())
     plt.close(figure)
     log.info("wrote %s", path)
     return path
 
 
-def _gapped(values: np.ndarray, valid: np.ndarray) -> np.ndarray:
-    """Blank out samples that were interpolated rather than measured.
+def _shade_gaps(axis, table: FeatureTable) -> None:
+    """Mark where the bucket had no mask.
 
-    A filled gap drawn as a solid line reads as data. The curl signal looked
-    smooth and trustworthy in an earlier plot precisely because three quarters
-    of it was interpolation.
+    Drawn rather than left blank because a flat line through a gap and a flat
+    line through a stationary bucket look identical, and only one of them is a
+    measurement.
     """
-    out = np.asarray(values, dtype=float).copy()
-    out[~np.asarray(valid, dtype=bool)] = np.nan
-    return out
-
-
-def _shade(axis, times, flags, colour, label):
-    flags = np.asarray(flags, dtype=bool)
-    if not flags.any():
+    missing = ~table.found
+    if not missing.any():
         return
-    edges = np.diff(flags.astype(int))
-    starts = list(np.flatnonzero(edges == 1) + 1)
-    ends = list(np.flatnonzero(edges == -1) + 1)
-    if flags[0]:
-        starts.insert(0, 0)
-    if flags[-1]:
-        ends.append(len(flags) - 1)
-    for index, (start, end) in enumerate(zip(starts, ends, strict=False)):
-        axis.axvspan(
-            times[start],
-            times[end],
-            color=colour,
-            alpha=0.10,
-            label=label if index == 0 else None,
-        )
-
-
-def plot_scene(frame: np.ndarray, table: FeatureTable, scene: Scene, path: str | Path) -> Path:
-    """The derived landmarks drawn on a real frame.
-
-    This is the check that matters most in this stage: the pivot should sit on
-    the machine's body, the scale circle should reach about as far as the arm
-    does, the two zones should land where the bucket actually works, and the
-    surface line should lie on the pile.
-    """
-    path = Path(path)
-    figure, axis = plt.subplots(figsize=(11, 7))
-    axis.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-    cx, cy = scene.centre
-    axis.plot(
-        cx,
-        cy,
-        "+",
-        color="#ffeb3b",
-        markersize=16,
-        markeredgewidth=2.5,
-        label="rotation centre",
-    )
-    axis.add_patch(
-        plt.Circle(
-            (cx, cy),
-            scene.scale,
-            fill=False,
-            color="#ffeb3b",
-            linestyle=":",
-            linewidth=1.4,
-            alpha=0.9,
-        )
-    )
-
-    for zone, colour, name in (
-        (scene.dig_zone, "#4caf50", "dig zone"),
-        (scene.dump_zone, "#2196f3", "dump zone"),
-    ):
-        if zone is not None:
-            axis.plot(
-                *zone, "o", color=colour, markersize=13, markeredgecolor="white", label=name
-            )
-
-    if scene.surface_height is not None and scene.dig_zone is not None:
-        y = cy - scene.surface_height * scene.scale
-        axis.axhline(
-            y, color="#ff5722", linewidth=1.6, linestyle="--", label="material surface"
-        )
-
-    # The bucket's whole path, so the cycle is visible as a shape.
-    bx = cx + np.cos(table.bearing) * table.extension * scene.scale
-    by = cy - np.sin(table.bearing) * table.extension * scene.scale
-    axis.plot(bx, by, "-", color="#ffffff", linewidth=0.7, alpha=0.6, label="bucket path")
-
-    axis.set_title(
-        f"Derived scene   L = {scene.scale:.0f} px"
-        + (f"   zones {scene.zone_separation:.2f} L apart" if scene.zone_separation else "")
-        + f"   return = {'left' if scene.return_sign > 0 else 'right'}",
-        fontsize=10,
-    )
-    axis.legend(loc="lower right", fontsize=8, framealpha=0.85)
-    axis.set_xlim(0, frame.shape[1])
-    axis.set_ylim(frame.shape[0], 0)
-    axis.axis("off")
-    figure.tight_layout()
-    figure.savefig(path, dpi=130)
-    plt.close(figure)
-    log.info("wrote %s", path)
-    return path
-
-
-def plot_motion(field, times: np.ndarray, path: str | Path) -> Path:
-    """The motion field as four stacked signals, with the dwell gate shaded.
-
-    Laid out so the three questions the state machine asks can be read off one
-    figure: which way is it swinging, is the bucket rising or falling, and is it
-    moving at all.
-    """
-    path = Path(path)
-    figure, axes = plt.subplots(4, 1, figsize=(15, 10), sharex=True)
-
-    still = np.isfinite(field.speed) & (field.speed < np.nanquantile(field.speed, 0.35))
-    panels = (
-        (
-            field.omega,
-            "tab:blue",
-            "swing rate (rad/s)",
-            "sign separates hauling from returning",
-        ),
-        (field.v_up, "tab:green", "bucket vertical (L/s)", "positive while the bucket rises"),
-        (field.v_radial, "tab:orange", "radial rate (L/s)", "reaching out vs folding in"),
-        (field.speed, "tab:purple", "speed (L/s)", "the dwell gate"),
-    )
-    for axis, (signal, colour, label, note) in zip(axes, panels, strict=True):
-        axis.plot(times, signal, lw=0.8, alpha=0.4, color=colour)
-        axis.plot(times, _smooth_for_display(signal), lw=2.0, color=colour)
-        axis.axhline(0, color="k", lw=0.8)
-        _shade(axis, times, still, "0.85", "dwell")
-        axis.set_ylabel(label, fontsize=9)
-        axis.set_title(note, fontsize=9, loc="left")
-        axis.grid(alpha=0.25)
-    axes[-1].set_xlabel("time (s)")
-    figure.suptitle("Motion field: measured from flow, not from arm pose", fontsize=11)
-    figure.tight_layout()
-    figure.savefig(path, dpi=110)
-    plt.close(figure)
-    log.info("wrote %s", path)
-    return path
-
-
-def _smooth_for_display(signal: np.ndarray, window: int = 9, order: int = 2) -> np.ndarray:
-    """Savitzky-Golay over the finite samples, for the eye only.
-
-    Symmetric, so it does not shift an extremum -- but nothing downstream reads
-    this; the state machine smooths for itself with the configured window.
-    """
-    from scipy.signal import savgol_filter
-
-    out = np.asarray(signal, dtype=float).copy()
-    good = np.isfinite(out)
-    if good.sum() < window:
-        return out
-    out[~good] = np.interp(np.flatnonzero(~good), np.flatnonzero(good), out[good])
-    return savgol_filter(out, window, order)
-
-
-def render_flow_overlay(
-    frames: list[np.ndarray],
-    masks: list[np.ndarray],
-    field,
-    times: np.ndarray,
-    pivot: tuple[float, float],
-    output_dir: str | Path,
-    upscale: int = 3,
-    arrow_gain: float = 8.0,
-) -> Path:
-    """Draw the flow field on the frames, with the measured numbers and a strip.
-
-    This exists because every wrong call on this project was caught by looking
-    at a picture. The arrows are the raw evidence; the HUD is what the pipeline
-    made of it; disagreeing with each other is the thing worth seeing.
-    """
-    from .motion import dense_flow
-
-    output_dir = Path(output_dir)
-    path = output_dir / "motion.mp4"
-    height, width = masks[0].shape
-    frame_width, frame_height = width * upscale, height * upscale
-    strip_height = 150
-
-    writer = cv2.VideoWriter(
-        str(path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        max(1.0, 1.0 / max(np.median(np.diff(times)), 1e-6)),
-        (frame_width, frame_height + strip_height),
-    )
-    if not writer.isOpened():
-        raise RuntimeError(f"could not open a writer for {path}")
-
-    curves = [
-        (_normalise(_smooth_for_display(field.omega)), (255, 160, 60), 25, "swing"),
-        (_normalise(_smooth_for_display(field.v_up)), (60, 220, 60), 70, "bucket up/down"),
-        (_normalise(_smooth_for_display(field.speed)), (200, 120, 255), 115, "speed"),
-    ]
-
-    written = 0
-    for index in range(len(frames) - 1):
-        image = cv2.resize(
-            frames[index], None, fx=upscale, fy=upscale, interpolation=cv2.INTER_NEAREST
-        )
-        mask = masks[index]
-        contours, _ = cv2.findContours(
-            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        cv2.drawContours(image, [c * upscale for c in contours], -1, (0, 255, 255), 1)
-        cv2.circle(
-            image, (int(pivot[0] * upscale), int(pivot[1] * upscale)), 5, (255, 0, 255), -1
-        )
-
-        flow = dense_flow(frames[index], frames[index + 1])
-        for y in range(0, height, 6):
-            for x in range(0, width, 6):
-                if not mask[y, x]:
-                    continue
-                fx, fy = flow[y, x]
-                magnitude = float(np.hypot(fx, fy))
-                if magnitude < 0.25:
-                    continue
-                colour = (0, 255, 0) if magnitude > 0.8 else (0, 200, 255)
-                cv2.arrowedLine(
-                    image,
-                    (x * upscale, y * upscale),
-                    (
-                        int((x + fx * arrow_gain) * upscale),
-                        int((y + fy * arrow_gain) * upscale),
-                    ),
-                    colour,
-                    1,
-                    tipLength=0.3,
-                )
-
-        cv2.rectangle(image, (0, 0), (frame_width, 46), (0, 0, 0), -1)
-        cv2.putText(
-            image,
-            f"t={times[index]:5.2f}s   swing={field.omega[index]:+.3f} rad/s",
-            (6, 17),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            1,
-        )
-        cv2.putText(
-            image,
-            f"bucket={field.v_up[index]:+.3f} L/s   speed={field.speed[index]:.3f} L/s",
-            (6, 37),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (180, 255, 180),
-            1,
-        )
-
-        panel = np.full((strip_height, frame_width, 3), 25, np.uint8)
-        for curve, colour, offset, label in curves:
-            points = [
-                (int(i * frame_width / max(len(curve) - 1, 1)), int(offset - curve[i] * 18))
-                for i in range(len(curve))
-                if np.isfinite(curve[i])
-            ]
-            for k in range(1, len(points)):
-                cv2.line(panel, points[k - 1], points[k], colour, 1)
-            cv2.line(panel, (0, offset), (frame_width, offset), (70, 70, 70), 1)
-            cv2.putText(
-                panel, label, (4, offset - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.35, colour, 1
-            )
-        playhead = int(index * frame_width / max(len(frames) - 1, 1))
-        cv2.line(panel, (playhead, 0), (playhead, strip_height), (255, 255, 255), 1)
-
-        canvas = np.vstack([image, panel])
-        if canvas.shape[:2] != (frame_height + strip_height, frame_width):
-            raise RuntimeError(f"frame {index} is {canvas.shape[:2]}, not the writer's size")
-        writer.write(canvas)
-        written += 1
-
-    writer.release()
-    # A writer that silently drops every frame leaves a valid but tiny file; it
-    # has happened here before, so the size is checked rather than trusted.
-    if path.stat().st_size < 10_000:
-        raise RuntimeError(f"{path} is {path.stat().st_size} bytes after {written} frames")
-    log.info("wrote %s (%d frames)", path, written)
-    return path
-
-
-def _normalise(signal: np.ndarray) -> np.ndarray:
-    """Scale to roughly [-1, 1] for drawing, without moving the zero line."""
-    peak = np.nanmax(np.abs(signal)) if np.isfinite(signal).any() else 0.0
-    return signal / peak if peak > 0 else signal
-
-
-def plot_mask_contact_sheet(
-    frames: list[np.ndarray],
-    masks: list[np.ndarray],
-    times: np.ndarray,
-    path: str | Path,
-    tiles: int = 16,
-    columns: int = 4,
-    upscale: int = 3,
-) -> Path:
-    """A grid of frames spanning the clip, each with its mask filled in.
-
-    The point is to judge segmentation over the WHOLE video rather than at a few
-    chosen moments: a mask that drifts, or that swallows the truck, shows up as
-    one bad tile among good ones. `frames` and `masks` are parallel and in sample
-    order -- the same join the motion stage insists on, for the same reason.
-    """
-    if len(frames) != len(masks):
-        raise ValueError(f"{len(frames)} frames but {len(masks)} masks; they must be parallel")
-
-    path = Path(path)
-    picks = np.linspace(0, len(frames) - 1, tiles).astype(int)
-    panels = []
-    for index in picks:
-        image = cv2.resize(
-            frames[index], None, fx=upscale, fy=upscale, interpolation=cv2.INTER_NEAREST
-        )
-        mask = cv2.resize(
-            masks[index].astype(np.uint8),
-            None,
-            fx=upscale,
-            fy=upscale,
-            interpolation=cv2.INTER_NEAREST,
-        ).astype(bool)
-        tinted = image.copy()
-        tinted[mask] = (0, 0, 255)
-        image = cv2.addWeighted(image, 0.55, tinted, 0.45, 0)
-        contours, _ = cv2.findContours(
-            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        cv2.drawContours(image, contours, -1, (0, 255, 255), 1)
-        cv2.rectangle(image, (0, 0), (image.shape[1], 18), (0, 0, 0), -1)
-        cv2.putText(
-            image,
-            f"t={times[index]:5.2f}s   mask={masks[index].mean() * 100:.1f}% of frame",
-            (5, 13),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.4,
-            (255, 255, 255),
-            1,
-        )
-        panels.append(image)
-
-    rows = [
-        np.hstack(panels[i : i + columns])
-        for i in range(0, len(panels) - columns + 1, columns)
-    ]
-    cv2.imwrite(str(path), np.vstack(rows), [cv2.IMWRITE_JPEG_QUALITY, 92])
-    log.info("wrote %s", path)
-    return path
+    times = table.time_seconds
+    start = None
+    for index, gone in enumerate(missing):
+        if gone and start is None:
+            start = index
+        elif not gone and start is not None:
+            axis.axvspan(times[start], times[index - 1], color="#3a2020", alpha=0.6, lw=0)
+            start = None
+    if start is not None:
+        axis.axvspan(times[start], times[-1], color="#3a2020", alpha=0.6, lw=0)

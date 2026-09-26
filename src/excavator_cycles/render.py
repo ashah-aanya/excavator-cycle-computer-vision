@@ -49,6 +49,8 @@ _SURFACE = (60, 140, 255)
 _DIG = (90, 230, 120)
 _DUMP = (250, 180, 80)
 _TRACE = (220, 220, 220)
+_EDGE = (60, 60, 60)
+_PLAYHEAD = (160, 160, 160)
 
 
 @dataclass
@@ -64,6 +66,7 @@ def render(
     scale: float = 1.0,
     draw_boxes: bool = True,
     physics: bool = True,
+    onsets: dict[str, float] | None = None,
 ) -> RenderStats:
     """Write an annotated copy of the source video.
 
@@ -73,6 +76,12 @@ def render(
         scale: resize factor. Small sources benefit from >1 so the overlays and
             text are legible; the underlying data is unchanged either way.
         draw_boxes: include the detector's boxes as well as the mask.
+        onsets: phase name -> onset time in seconds. Drawn as a marker on every
+            signal panel and as a phase banner on the frame. This function does
+            not know or care where they came from: the state machine will supply
+            predictions, and `eval/annotate_solution.py` supplies the hand labels
+            to make a reference video. Nothing under `src/` may read the labels
+            itself, so they arrive as an argument or not at all.
     """
     output_dir = Path(output_dir)
     result, masks = load_result(output_dir)
@@ -85,8 +94,7 @@ def render(
         try:
             from .features import load as load_features
 
-            table, scene_dict = load_features(output_dir)
-            scene = scene_dict
+            table, scene = load_features(output_dir)
             strip = _signal_strip(table, scene)
             log.info("physics overlay enabled")
         except (FileNotFoundError, KeyError) as exc:
@@ -105,14 +113,18 @@ def render(
     # The writer accepts exactly one frame size and silently DROPS anything
     # else, so the total height has to account for every panel we stack --
     # including the signal strip, whose presence depends on stage 3 having run.
-    strip_height = strip.shape[0] if strip is not None else 0
-    canvas_height = height + panel_height + strip_height
+    # Layout: the video on the left with a thin status bar under it, and the
+    # signals in a column down the right. Stacking the signals underneath made
+    # the canvas nearly square and gave half the frame to the graphs.
+    graph_width = round(width * 0.62) if strip is not None else 0
+    canvas_height = height + panel_height
+    canvas_width = width + graph_width
 
     writer = cv2.VideoWriter(
         str(out_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
         info.fps,
-        (width, canvas_height),
+        (canvas_width, canvas_height),
     )
     if not writer.isOpened():
         raise RuntimeError(f"could not open video writer for {out_path}")
@@ -140,28 +152,40 @@ def render(
             canvas = _draw_frame(frame, mask, record, result, scale, draw_boxes)
             if table is not None and sample_position is not None:
                 canvas = _draw_physics(canvas, mask, table, scene, sample_position, scale)
-            panels = [
-                canvas,
-                _draw_panel(
-                    record,
-                    result,
-                    width,
-                    panel_height,
-                    frame_index,
-                    info.fps,
-                    table,
-                    sample_position,
-                ),
-            ]
-            if strip is not None:
-                panels.append(_blit_strip(strip, table, sample_position, width))
-            canvas = np.vstack(panels)
-            if canvas.shape[:2] != (canvas_height, width):
+            if onsets:
+                _draw_phase_banner(canvas, onsets, frame_index / info.fps)
+            left = np.vstack(
+                [
+                    canvas,
+                    _draw_panel(
+                        record,
+                        result,
+                        width,
+                        panel_height,
+                        frame_index,
+                        info.fps,
+                        table,
+                        sample_position,
+                    ),
+                ]
+            )
+            if graph_width:
+                canvas = np.hstack(
+                    [
+                        left,
+                        _graph_column(
+                            table, sample_position, graph_width, canvas_height, onsets
+                        ),
+                    ]
+                )
+            else:
+                canvas = left
+            if canvas.shape[:2] != (canvas_height, canvas_width):
                 # Without this the writer drops the frame and returns nothing,
                 # and the run reports success while producing an empty file.
                 raise RuntimeError(
                     f"frame is {canvas.shape[1]}x{canvas.shape[0]}, "
-                    f"writer expects {width}x{canvas_height}"
+                    f"writer expects {canvas_width}x{canvas_height}"
                 )
             writer.write(canvas)
             written += 1
@@ -228,144 +252,196 @@ def _draw_frame(frame, mask, record, result: TrackResult, scale: float, draw_box
 
 
 def _draw_physics(canvas, mask, table, scene, position: int, scale: float):
-    """Draw what the geometry stage measures, on top of the frame.
+    """Draw what the measurement stage actually used: two boxes and a pivot.
 
-    The point is that the derived quantities are checkable by eye: the chain's
-    links should lie along the boom, the stick and the bucket, the base should
-    sit where the boom is anchored, and the surface line should lie on the
-    material. If the drawing looks wrong, the numbers are wrong.
+    Every shape here is read from the feature table, so the video cannot show
+    something the pipeline did not measure. That is the point -- the task
+    requires the annotation to be evidence, not illustration.
     """
-    import numpy as np
 
-    centre = (scene["centre"][0] * scale, scene["centre"][1] * scale)
-    reach = scene["scale"] * scale
+    def at(box):
+        return tuple(round(v * scale) for v in box)
 
-    # The machine's pivot and its reach, for scale.
-    cv2.circle(canvas, (int(centre[0]), int(centre[1])), int(reach), _PIVOT, 1, cv2.LINE_AA)
-    cv2.drawMarker(
-        canvas, (int(centre[0]), int(centre[1])), _PIVOT, cv2.MARKER_CROSS, int(14 * scale), 2
-    )
+    pivot = (int(scene.pivot[0] * scale), int(scene.pivot[1] * scale))
 
-    # The fitted kinematic chain: boom base, the two joints, and the bucket tip.
-    # This is what every measurement is taken from, so it is what has to look
-    # right -- the links should lie along the boom, the stick and the bucket.
-    chain = [
-        (table.base_x[position], table.base_y[position]),
-        (table.joint1_x[position], table.joint1_y[position]),
-        (table.joint2_x[position], table.joint2_y[position]),
-        (table.tip_x[position], table.tip_y[position]),
-    ]
-    if all(np.isfinite(point).all() for point in chain):
-        drawn = [(int(x * scale), int(y * scale)) for x, y in chain]
-        for start, end in pairwise(drawn):
-            cv2.line(canvas, start, end, _TRACE, max(1, int(scale)), cv2.LINE_AA)
-        for point, colour, label in zip(
-            drawn,
-            (_PIVOT, _FOREARM_BAND, _BUCKET_BAND, _TIP),
-            ("base", "boom-stick", "stick-bucket", "bucket"),
-            strict=True,
-        ):
-            cv2.circle(canvas, point, max(2, int(3 * scale)), colour, -1, cv2.LINE_AA)
-            cv2.putText(
-                canvas,
-                label,
-                (point[0] + 6, point[1] - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.30 * scale,
-                colour,
-                1,
-                cv2.LINE_AA,
-            )
-
-    # The material surface: the level that defines two of the four boundaries.
-    if scene.get("surface_height") is not None:
-        y = int(centre[1] - scene["surface_height"] * reach)
-        cv2.line(canvas, (0, y), (canvas.shape[1], y), _SURFACE, 1, cv2.LINE_AA)
-        cv2.putText(
-            canvas,
-            "material surface",
-            (6, y - 4),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.32 * scale,
-            _SURFACE,
-            1,
-            cv2.LINE_AA,
+    if scene.truck_box is not None:
+        _dashed_box(canvas, at(scene.truck_box), _TRUCK_COLOR)
+        _label(
+            canvas, "truck", (at(scene.truck_box)[0], at(scene.truck_box)[1] - 4), _TRUCK_COLOR
         )
 
-    for key, colour, label in (("dig_zone", _DIG, "dig"), ("dump_zone", _DUMP, "dump")):
-        zone = scene.get(key)
-        if zone:
-            point = (int(zone[0] * scale), int(zone[1] * scale))
-            cv2.circle(canvas, point, int(6 * scale), colour, 2, cv2.LINE_AA)
-            cv2.putText(
-                canvas,
-                label,
-                (point[0] + 8, point[1]),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.32 * scale,
-                colour,
-                1,
-                cv2.LINE_AA,
-            )
+    cabin = table.cabin_box[position]
+    if np.isfinite(cabin).all():
+        _box(canvas, at(cabin), _FOREARM_BAND, 1)
+        _label(canvas, "cabin", (at(cabin)[0], at(cabin)[1] - 4), _FOREARM_BAND)
+
+    bucket = table.bucket_box[position]
+    if np.isfinite(bucket).all():
+        _box(canvas, at(bucket), _BUCKET_BAND, 2)
+        centre = (
+            round((bucket[0] + bucket[2]) / 2 * scale),
+            round((bucket[1] + bucket[3]) / 2 * scale),
+        )
+        cv2.circle(canvas, centre, 3, _TIP, -1)
+        cv2.line(canvas, pivot, centre, _TRACE, 1)
+
+        # Where the bucket centre has been, so a jump is visible rather than
+        # merely implied by a number changing.
+        trail = table.bucket_box[max(0, position - 25) : position + 1]
+        points = [
+            (round((b[0] + b[2]) / 2 * scale), round((b[1] + b[3]) / 2 * scale))
+            for b in trail
+            if np.isfinite(b).all()
+        ]
+        for start, end in pairwise(points):
+            cv2.line(canvas, start, end, _TRACE, 1)
+
+    cv2.drawMarker(canvas, pivot, _PIVOT, cv2.MARKER_CROSS, 12, 2)
+    _label(canvas, "slew centre", (pivot[0] + 8, pivot[1] - 6), _PIVOT)
     return canvas
 
 
-def _signal_strip(table, scene, height: int = 96):
-    """Pre-render the whole video's signals once; the renderer blits a window."""
-    import numpy as np
+# Which signals ride along with the video, and in what order. Six rather than
+# all thirteen: these are the ones a phase boundary will be read off, and a
+# panel too short to see a shape in is worse than no panel.
+_GRAPHS = (
+    ("height  (up +)", "height", _SURFACE),
+    ("dh/dt", "dh_dt", _DIG),
+    ("d2h/dt2", "d2h_dt2", (120, 200, 255)),
+    ("|dx/dt|", "speed_x", (120, 235, 140)),
+    ("truck overlap", "truck_overlap", _DUMP),
+    ("aspect ratio", "aspect_ratio", (230, 160, 240)),
+)
 
-    n = len(table.time_seconds)
-    strip = np.full((height, n, 3), 22, dtype=np.uint8)
-    rows = [
-        (
-            "elevation",
-            np.asarray(table.elevation, float),
-            _SURFACE,
-            None if scene.get("surface_height") is None else float(scene["surface_height"]),
-        ),
-        ("curl", np.asarray(table.curl, float), _BUCKET_BAND, None),
-        ("slew", np.asarray(table.slew_rate, float), _DIG, 0.0),
+
+def _signal_strip(table, scene, height: int = 0):
+    """Kept so `render` can test whether stage 3 ran; the drawing is per-frame."""
+    return table
+
+
+_PHASE_COLOUR = {
+    "digging": (240, 180, 90),
+    "hauling": (120, 220, 120),
+    "dumping": (70, 170, 240),
+    "swinging": (240, 130, 220),
+}
+
+
+def phase_at(onsets: dict[str, float], now: float) -> str | None:
+    """Which phase is running at ``now``: the latest onset that has passed."""
+    passed = [
+        (when, name) for name, when in onsets.items() if when is not None and now >= when
     ]
-    band = height // len(rows)
-    for index, (name, values, colour, reference) in enumerate(rows):
-        top = index * band
+    return max(passed)[1] if passed else None
+
+
+def _draw_phase_banner(canvas, onsets: dict[str, float], now: float) -> None:
+    """The current phase, and how long it has been running."""
+    name = phase_at(onsets, now)
+    if name is None:
+        return
+    started = onsets[name]
+    colour = _PHASE_COLOUR.get(name, _TEXT)
+    text = f"{name.upper()}   {now - started:.1f}s"
+    font = max(0.5, canvas.shape[1] / 1400)
+    (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, 2)
+    cv2.rectangle(canvas, (8, 8), (8 + tw + 16, 8 + th + base + 12), (18, 18, 18), cv2.FILLED)
+    cv2.rectangle(canvas, (8, 8), (8 + tw + 16, 8 + th + base + 12), colour, 2)
+    cv2.putText(
+        canvas, text, (16, 12 + th), cv2.FONT_HERSHEY_SIMPLEX, font, colour, 2, cv2.LINE_AA
+    )
+
+
+def _graph_column(
+    table,
+    position: int | None,
+    width: int,
+    height: int,
+    onsets: dict[str, float] | None = None,
+):
+    """The signals, stacked down the right-hand side, with a shared playhead.
+
+    Drawn fresh each frame rather than blitted from a pre-rendered strip,
+    because the playhead and the live value both move -- and at this width the
+    whole column is a few thousand line segments, which is cheap.
+    """
+    column = np.full((height, width, 3), _PANEL, dtype=np.uint8)
+    rows = len(_GRAPHS)
+    each = height // rows
+    left, right = 56, width - 8  # room for the label on the left
+    span = max(right - left, 1)
+    total = max(len(table.time_seconds) - 1, 1)
+
+    for index, (label, field, colour) in enumerate(_GRAPHS):
+        top = index * each
+        base, ceiling = top + each - 10, top + 8
+        values = np.asarray(getattr(table, field), dtype=float)
         finite = values[np.isfinite(values)]
         if finite.size == 0:
             continue
-        lo, hi = float(finite.min()), float(finite.max())
-        span = (hi - lo) or 1.0
+        low, high = float(finite.min()), float(finite.max())
+        scale = max(high - low, float(np.finfo(float).eps))
 
-        def to_y(v, top=top, lo=lo, span=span, band=band):
-            return int(top + band - 4 - (v - lo) / span * (band - 8))
+        cv2.line(column, (left, base + 4), (right, base + 4), _EDGE, 1)
+        previous = None
+        for i, value in enumerate(values):
+            if not np.isfinite(value):
+                previous = None
+                continue
+            x = left + round(span * i / total)
+            y = base - round((value - low) / scale * (base - ceiling))
+            if previous is not None:
+                cv2.line(column, previous, (x, y), colour, 1, cv2.LINE_AA)
+            previous = (x, y)
 
-        if reference is not None and lo <= reference <= hi:
-            y = to_y(reference)
-            cv2.line(strip, (0, y), (n, y), (70, 70, 70), 1)
-        points = [(x, to_y(v)) for x, v in enumerate(values) if np.isfinite(v)]
-        for (x0, y0), (x1, y1) in pairwise(points):
-            if x1 - x0 <= 2:
-                cv2.line(strip, (x0, y0), (x1, y1), colour, 1, cv2.LINE_AA)
         cv2.putText(
-            strip,
-            name,
-            (3, top + 11),
+            column,
+            label,
+            (6, top + 16),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.32,
-            (200, 200, 200),
+            0.33,
+            colour,
             1,
             cv2.LINE_AA,
         )
-    return strip
+        if position is not None and np.isfinite(values[position]):
+            cv2.putText(
+                column,
+                f"{values[position]:+.3f}",
+                (6, top + 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.30,
+                _TEXT,
+                1,
+                cv2.LINE_AA,
+            )
 
+    # Onset markers span every panel, so a boundary can be read against all six
+    # signals at once -- which is the point of stacking them.
+    times = np.asarray(table.time_seconds, dtype=float)
+    for name, when in (onsets or {}).items():
+        if when is None:
+            continue
+        index = int(np.argmin(np.abs(times - when)))
+        x = left + round(span * index / total)
+        colour = _PHASE_COLOUR.get(name, _TEXT)
+        for y in range(4, height - 4, 6):  # dashed, so it reads under the traces
+            cv2.line(column, (x, y), (x, min(y + 3, height - 4)), colour, 1)
+        cv2.putText(
+            column,
+            name[:4],
+            (x + 3, height - 6),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.3,
+            colour,
+            1,
+            cv2.LINE_AA,
+        )
 
-def _blit_strip(strip, table, position: int | None, width: int):
-    """The signal strip scaled to the frame width, with a playhead."""
-
-    out = cv2.resize(strip, (width, strip.shape[0]), interpolation=cv2.INTER_AREA)
-    if position is not None and len(table.time_seconds) > 1:
-        x = int(position / (len(table.time_seconds) - 1) * (width - 1))
-        cv2.line(out, (x, 0), (x, out.shape[0]), (255, 255, 255), 1)
-    return out
+    if position is not None:
+        x = left + round(span * position / total)
+        cv2.line(column, (x, 4), (x, height - 4), _PLAYHEAD, 1)
+    return column
 
 
 def _draw_panel(
@@ -380,7 +456,9 @@ def _draw_panel(
 ):
     """A readout strip: time, and the numbers QA judges the masks by."""
     panel = np.full((height, width, 3), _PANEL, dtype=np.uint8)
-    scale = max(0.35, height / 130)
+    # Sized against the video's width, not the panel's height: the panel is a
+    # thin status bar now that the signals live in their own column.
+    scale = max(0.42, width / 1500)
     line = int(height * 0.42)
 
     seconds = frame_index / fps if fps else 0.0
@@ -411,7 +489,7 @@ def _draw_panel(
         right,
         (width - text_width - 10, line),
         cv2.FONT_HERSHEY_SIMPLEX,
-        scale,
+        scale * 0.62,
         colour,
         1,
         cv2.LINE_AA,
@@ -419,9 +497,10 @@ def _draw_panel(
 
     if table is not None and position is not None:
         physics = (
-            f"elev {float(table.elevation[position]):+.3f} L   "
-            f"curl {float(table.curl[position]):+.2f} rad   "
-            f"slew {float(table.slew_rate[position]):+.2f} rad/s"
+            f"h {float(table.height[position]):+.3f} L   "
+            f"|dx/dt| {float(table.speed_x[position]):.3f} L/s   "
+            f"overlap {float(table.truck_overlap[position]):.2f}   "
+            f"AR {float(table.aspect_ratio[position]):.2f}"
         )
         cv2.putText(
             panel,
@@ -482,7 +561,9 @@ def _dashed_box(canvas, box, colour, dash: int = 6):
 
 
 def _label(canvas, text, origin, colour):
-    font_scale = max(0.3, canvas.shape[0] / 900)
+    # Against the canvas WIDTH: the overlay labels sit on the video, which is
+    # wide and short, and sizing them off its height made them shout.
+    font_scale = max(0.28, canvas.shape[1] / 2600)
     (text_width, text_height), baseline = cv2.getTextSize(
         text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1
     )

@@ -95,39 +95,6 @@ class DetectionConfig:
 
 
 @dataclass(frozen=True)
-class SpikeConfig:
-    """Stage 1: the gate that decides whether perception is good enough to build on.
-
-    These are *diagnostic* thresholds, not pipeline behaviour -- they change what
-    the spike reports, never what the pipeline answers. They exist so "does
-    detection work?" has a number attached instead of an impression.
-    """
-
-    # How many frames to sample, spread across the whole video so every phase of
-    # the cycle is represented.
-    n_frames: int = 20
-
-    # The machine must be found in essentially every frame. Downstream tracking
-    # can bridge a brief gap, but not a detector that fails one frame in five.
-    min_detection_rate: float = 0.95
-
-    # A detector scraping its own threshold is fragile on unseen footage, even
-    # when the box happens to be right.
-    min_median_score: float = 0.40
-
-    # Plausibility of the box itself. A "detection" covering most of the frame
-    # is the model grabbing the whole scene; a tiny one is background. Both pass
-    # a confidence check happily, which is why size is checked separately.
-    max_box_area_fraction: float = 0.60
-    min_box_area_fraction: float = 0.005
-
-    # How far the box centre may move between sampled frames, as a fraction of
-    # the box's own diagonal. Large values mean the detector is latching onto
-    # different objects, which no downstream smoothing can repair.
-    max_centre_jump: float = 0.75
-
-
-@dataclass(frozen=True)
 class TrackConfig:
     """Stage 2: turning boxes into masks that follow the machine.
 
@@ -170,6 +137,32 @@ class TrackConfig:
     min_area_ratio: float = 0.4
     max_bad_area_fraction: float = 0.10  # share of samples allowed to be off
 
+    # --- the second tracked object: the bucket ----------------------------
+    # Which of the three prompt forms the bucket seed is handed to SAM 2 as.
+    # The model's own ablation (paper Table 4, zero-shot VOS over 17 datasets)
+    # prices them 64.3 J&F for one click, 72.9 for a box, 75.4 for five clicks
+    # and 77.6 for a mask -- and the seed already computes the mask, so the
+    # strongest form is also the free one. "points" and "box" are kept because
+    # the same ablation says a box is the robust choice when the mask itself is
+    # suspect, and because a prompt form is the first thing worth sweeping if
+    # the bucket cannot be held.
+    bucket_prompt: str = "mask"
+
+    # The speck cut is a fraction of the MASK's own area, not the frame's, so it
+    # is scale-free in principle. In practice it is not: SAM's strays are a few
+    # dozen pixels whatever the object's size, and the bucket's mask is an order
+    # of magnitude smaller than the machine's (~1,100 px against ~9,000 on the
+    # development footage). At 0.05 the cut would erase a genuinely detached
+    # 50-pixel fragment of bucket while leaving a 50-pixel speck untouched, so
+    # the bucket gets a much smaller fraction of its own.
+    bucket_min_component_fraction: float = 0.01
+
+    # Prompt sizes when `bucket_prompt` is "points": five positives is the knee
+    # of the ablation curve above, and the negatives sit on the stick to stop
+    # SAM claiming the whole arm as "the bucket".
+    bucket_point_count: int = 5
+    bucket_negative_count: int = 3
+
 
 @dataclass(frozen=True)
 class GeometryConfig:
@@ -194,14 +187,9 @@ class GeometryConfig:
     # crop makes any region circular: measured that way the bucket's elongation
     # is 1.25 (apparently shapeless), measured as a radial band it is 2.13.
     bucket_band_low: float = 0.85
-    forearm_band_low: float = 0.55
 
     # Size of the optical-flow patch below the bucket, in units of L.
     bucket_radius_frac: float = 0.22
-
-    # The "elbow" used to define the forearm direction sits this far along the
-    # arm from the rotation centre, as a fraction of the distance to the tip.
-    elbow_frac: float = 0.60
 
     # Temporal filter on the bucket's position (design doc section 4.3). All in
     # units of the machine's reach L and in seconds, so one set of values serves
@@ -214,11 +202,6 @@ class GeometryConfig:
     tip_process_noise: float = 2.0  # L per second squared
     tip_measurement_noise: float = 0.02  # L, expected error of one pose fit
     tip_gate_sigma: float = 3.0  # reject beyond this many sigmas
-
-    # Below this ratio of long side to short side, the bucket region is too
-    # round for its axis to mean anything -- a couple of pixels flipping swings
-    # it by 90 degrees -- so the curl measurement is rejected for that sample.
-    min_bucket_elongation: float = 1.35
 
     # Samples slower than this quantile of speed count as "dwelling", and are
     # what the dig/dump location clustering is run on.
@@ -238,49 +221,39 @@ class FeatureConfig:
     # is not a preference: a one-sided filter delays signals by an amount that
     # depends on their shape, which is exactly the systematic bias the +/-0.6 s
     # tolerance cannot absorb.
-    smoothing_window_seconds: float = 0.5
+    # Two windows, deliberately separate, because they were once conflated: the
+    # trailing mean ran at 0.3-0.5 s while every derivative went through
+    # Savitzky-Golay at 0.9 s, so varying the first barely moved anything and the
+    # second was doing the work. Sweeping both (graded fields out of 6):
+    #
+    #       SG ->     0.3s  0.5s  0.7s  0.9s  1.3s
+    #   trail NONE     deg     6     6     5     4
+    #         0.3s       6     6     5     5     4
+    #         0.5s       5     5     5     5     3
+    #         0.7s       5     6     6     5     3
+    #
+    # 0.5 / 0.9 is the pair under which all four transitions were verified to
+    # land inside tolerance; 0.3 / 0.3 scored best but its neighbours do not, so
+    # it sits on a boundary rather than a plateau. Tuning belongs to the state
+    # machine stage, with a second video to check against.
+    derivative_window_seconds: float = 0.9
     smoothing_polyorder: int = 2
 
-    # Thresholds are `alpha * percentile(|signal|)` over this video's own valid
-    # samples. This percentile defines the "typical magnitude" each alpha scales.
-    threshold_percentile: float = 95.0
+    # Box smoothing (design diagram stage 1.5). Measured on the development
+    # video, counting transitions inside the +/-0.6 s tolerance: 0.3 s -> 4/4,
+    # 0.5 s -> 4/4, 0.9 s -> 1/4, 1.5 s -> 1/4. The diagram's "[i, i+10]" is a
+    # 1.0 s window at 10 Hz, which is in the collapsed region -- the mechanism is
+    # right, the length is not.
+    box_window_seconds: float = 0.5
+    # trailing | centred | leading. The diagram draws a LEADING window. All three
+    # give byte-identical durations, because a uniform time shift cancels in every
+    # difference and durations are what the task grades. "trailing" is the default
+    # only because it is what was used when all four transitions were verified.
+    box_alignment: str = "trailing"
 
     # Samples below this confidence are treated as MISSING, not as evidence
     # against a transition. A gap in perception is not a statement about physics.
     min_sample_confidence: float = 0.35
-
-
-@dataclass(frozen=True)
-class MotionConfig:
-    """Dense optical flow inside the mask (see ``motion.py``).
-
-    These are fractions and pixel counts rather than levels, for the reason the
-    module header gives: the numbers this produces are already normalised by the
-    machine's reach and by the sample interval, so nothing here is tied to one
-    video's scale or frame rate.
-    """
-
-    # Where "the moving part" of the silhouette starts, as a quantile of radius
-    # from the slew pivot. The body sits on the pivot and does not rotate about
-    # it in projection, so including it drags the median towards zero: measured
-    # at 0.005 rad/s over the whole mask against 0.257 rad/s over the outer half
-    # during the same swing.
-    radial_fraction: float = 0.5
-
-    # Stricter cut for the vertical rate, because the bucket is at the far end
-    # and its rise/fall is the digging and dumping evidence.
-    distal_fraction: float = 0.8
-
-    # Shrink the mask before sampling flow: on the silhouette's edge, flow mixes
-    # machine pixels with background pixels and measures neither.
-    erode_pixels: int = 2
-
-    # Below this many usable pixels, report no measurement rather than a number
-    # computed from too little. A gap is honest; a bad number is not.
-    min_pixels: int = 150
-
-    # Only used to report coverage -- how much of the machine is visibly moving.
-    moving_threshold_px: float = 0.3
 
 
 @dataclass(frozen=True)
@@ -339,11 +312,15 @@ class QAConfig:
     """
 
     min_excavator_coverage: float = 0.97  # fraction of samples with a valid mask
-    max_detection_gap_seconds: float = 0.50  # longest run of missing masks
     min_anchor_agreement: float = 0.70  # median IoU, fresh detection vs track
-    max_tip_jump_frac: float = 0.35  # tip jump per sample, in units of L
-    min_frame_iou: float = 0.80  # frame-to-frame mask overlap
-    min_cyclicity: float = 0.30  # strength of the dominant bearing period
+
+    # The bucket's own bands. These are ADVISORY: they produce notes in the
+    # report, not a pass/fail, because whether a ~25 px object can be held for a
+    # whole clip is still an open question and a gate calibrated before the
+    # first measurement would be a guess dressed as a standard.
+    min_bucket_coverage: float = 0.90  # samples that got a bucket mask at all
+    min_bucket_containment: float = 0.80  # bucket pixels inside the machine's mask
+    max_bucket_area_ratio: float = 4.0  # p90/p10 of bucket area across the clip
 
 
 @dataclass(frozen=True)
@@ -352,11 +329,9 @@ class Config:
 
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
-    spike: SpikeConfig = field(default_factory=SpikeConfig)
     track: TrackConfig = field(default_factory=TrackConfig)
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
-    motion: MotionConfig = field(default_factory=MotionConfig)
     fsm: FSMConfig = field(default_factory=FSMConfig)
     cycles: CycleConfig = field(default_factory=CycleConfig)
     qa: QAConfig = field(default_factory=QAConfig)

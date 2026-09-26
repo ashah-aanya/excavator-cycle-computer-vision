@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 from . import __version__
@@ -53,43 +52,6 @@ def main(argv: list[str] | None = None) -> int:
     probe_parser.add_argument("--json", action="store_true", help="machine-readable output")
     probe_parser.set_defaults(func=_cmd_probe)
 
-    spike_parser = subparsers.add_parser(
-        "spike",
-        help="Stage 1: check whether the detector finds the excavator in this "
-        "footage, before anything is built on top of it.",
-    )
-    spike_parser.add_argument(
-        "video",
-        type=Path,
-        help="video file, a single image, or a folder of images. Images let you "
-        "check the real detector before the target video is available.",
-    )
-    spike_parser.add_argument(
-        "--config", type=Path, default=None, help="YAML config overriding defaults"
-    )
-    spike_parser.add_argument(
-        "--out",
-        type=Path,
-        default=None,
-        help="output directory (default: outputs/spike/<video stem>)",
-    )
-    spike_parser.add_argument(
-        "--detector",
-        action="append",
-        choices=["grounding_dino", "owlv2"],
-        help="repeatable; two detectors enables the cross-model agreement check",
-    )
-    spike_parser.add_argument(
-        "--prompt",
-        action="append",
-        help="repeatable; defaults to the configured excavator prompts",
-    )
-    spike_parser.add_argument("--frames", type=int, default=None, help="how many to sample")
-    spike_parser.add_argument(
-        "--device", default=None, help="cuda / mps / cpu (default: best available)"
-    )
-    spike_parser.set_defaults(func=_cmd_spike)
-
     track_parser = subparsers.add_parser(
         "track",
         help="Stage 2: run detection + SAM 2 over a video and cache masks. "
@@ -130,8 +92,8 @@ def main(argv: list[str] | None = None) -> int:
 
     features_parser = subparsers.add_parser(
         "features",
-        help="Stage 3: derive the scene (pivot, scale, zones, surface) and the "
-        "per-sample signals from cached masks. No models, no GPU.",
+        help="Stage 3: derive the scene (slew centre, reach L, truck box) and every "
+        "kinematic feature from the cached masks, then plot them. No models, no GPU.",
     )
     features_parser.add_argument("track_dir", type=Path, help="a directory from `track`")
     features_parser.add_argument("--config", type=Path, default=None)
@@ -139,18 +101,6 @@ def main(argv: list[str] | None = None) -> int:
         "--no-plots", action="store_true", help="skip the diagnostic figures"
     )
     features_parser.set_defaults(func=_cmd_features)
-
-    motion_parser = subparsers.add_parser(
-        "motion",
-        help="Stage 3b: measure the motion field (dense optical flow inside the "
-        "mask) and write motion.npz plus a diagnostic overlay video.",
-    )
-    motion_parser.add_argument("track_dir", type=Path, help="a directory from `track`")
-    motion_parser.add_argument("--config", type=Path, default=None)
-    motion_parser.add_argument(
-        "--no-video", action="store_true", help="skip the flow overlay video"
-    )
-    motion_parser.set_defaults(func=_cmd_motion)
 
     args = parser.parse_args(argv)
     configure_logging(args.verbose, args.log_file)
@@ -207,50 +157,6 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         f"(tolerance is 0.6 s, so quantisation is not the limit)"
     )
     return 0
-
-
-def _cmd_spike(args: argparse.Namespace) -> int:
-    """Run the detector spike and print its verdict.
-
-    Imported lazily: the spike is the only command that needs the model extras,
-    and `probe` must keep working on a machine without them.
-    """
-    from .detect import build_detector
-    from .provenance import set_seeds
-    from .spike import format_report, run_spike
-
-    set_seeds()
-    config = Config.load(args.config)
-    names = args.detector or ["grounding_dino"]
-    out_dir = args.out or Path("outputs/spike") / Path(args.video).stem
-
-    log.info("building detector(s): %s", ", ".join(names))
-    detectors = {
-        name: build_detector(name, config.detection, device=args.device) for name in names
-    }
-
-    report = run_spike(
-        video_path=args.video,
-        detectors=detectors,
-        config=config,
-        output_dir=out_dir,
-        prompts=args.prompt,
-        n_frames=args.frames,
-    )
-
-    print()
-    print(format_report(report))
-    print()
-    print(f"  artifacts: {out_dir}")
-
-    # Non-zero exit on a failed gate, so this is usable in a script -- but the
-    # artifacts are written either way, because a failure is what you most need
-    # to look at.
-    return 0 if report.gate["status"] == "pass" else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
 
 
 def _cmd_track(args: argparse.Namespace) -> int:
@@ -312,124 +218,31 @@ def _cmd_render(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_motion(args: argparse.Namespace) -> int:
-    """Measure the motion field, and draw it so the measurement can be judged.
-
-    The video this writes is not decoration. Every wrong call so far on this
-    project was found by looking at a picture and none by reading a metric, so
-    the overlay ships with the numbers rather than after them.
-    """
-    import numpy as np
-
-    from .motion import build_motion_field, save_motion
-    from .plots import plot_motion, render_flow_overlay
-    from .track import load_result
-    from .video import iter_samples
-
-    config = Config.load(args.config)
-    result, masks = load_result(args.track_dir)
-    scene = json.loads((args.track_dir / "scene.json").read_text())
-
-    # Masks are stored by SAMPLE ORDINAL, not by source frame index. Joining on
-    # the wrong one silently pairs each frame with a mask from elsewhere in the
-    # video and produces a confident null result; it has happened once already.
-    mask_list = [masks[ordinal] for ordinal in range(len(result.frames))]
-    frames = [s.image for s in iter_samples(result.video, config.sampling.rate_hz)]
-    if len(frames) != len(mask_list):
-        log.warning(
-            "decoded %d frames but hold %d masks; truncating to the shorter",
-            len(frames),
-            len(mask_list),
-        )
-        keep = min(len(frames), len(mask_list))
-        frames, mask_list = frames[:keep], mask_list[:keep]
-
-    times = np.array([f.time_seconds for f in result.frames[: len(frames)]])
-    dt = float(np.median(np.diff(times)))
-
-    field = build_motion_field(
-        frames,
-        mask_list,
-        pivot=tuple(scene["centre"]),
-        scale=float(scene["scale"]),
-        dt=dt,
-        radial_fraction=config.motion.radial_fraction,
-        distal_fraction=config.motion.distal_fraction,
-        erode_pixels=config.motion.erode_pixels,
-        min_pixels=config.motion.min_pixels,
-        moving_threshold_px=config.motion.moving_threshold_px,
-    )
-    save_motion(field, times, args.track_dir)
-    plot_motion(field, times, args.track_dir / "motion.png")
-
-    if not args.no_video:
-        path = render_flow_overlay(
-            frames, mask_list, field, times, tuple(scene["centre"]), args.track_dir
-        )
-        print(f"\n  wrote {path}")
-
-    measured = int(np.isfinite(field.omega).sum())
-    moving = np.isfinite(field.speed) & (field.speed > np.nanmedian(field.speed))
-    print(f"  samples        : {len(field)}  ({measured} with a flow measurement)")
-    omega_p95 = np.nanquantile(np.abs(field.omega), 0.95)
-    print(f"  swing rate     : p95 |omega| = {omega_p95:.3f} rad/s")
-    print(
-        f"  bucket vertical: p95 |v_up|  = {np.nanquantile(np.abs(field.v_up), 0.95):.3f} L/s"
-    )
-    print(
-        f"  speed          : median {np.nanmedian(field.speed):.4f} L/s, "
-        f"p95 {np.nanquantile(field.speed, 0.95):.4f} L/s"
-    )
-    print(f"  moving samples : {int(moving.sum())} of {measured}")
-    print(f"\n  wrote motion.npz, motion.csv, motion.png to {args.track_dir}")
-    return 0
-
-
 def _cmd_features(args: argparse.Namespace) -> int:
-    """Derive the scene and the signals, and plot them for inspection."""
-    import cv2
-
+    """Stage 3: derive the scene and every kinematic feature, and plot them."""
     from .features import build_features, save
+    from .masks import load_objects
     from .track import load_result
 
     config = Config.load(args.config)
-    result, masks = load_result(args.track_dir)
-    table, scene = build_features(result, masks, config)
+    result, _excavator = load_result(args.track_dir)
+    objects, _shape = load_objects(args.track_dir / "masks.npz")
+    table, scene = build_features(result, objects, config)
     save(table, scene, args.track_dir)
 
     if not args.no_plots:
-        from .plots import plot_scene, plot_signals
-        from .video import read_frames_at
+        from .plots import plot_features
 
-        plot_signals(table, scene, args.track_dir / "signals.png")
-        mid = read_frames_at(result.video, [result.duration_seconds / 2])
-        if mid:
-            plot_scene(mid[0].image, table, scene, args.track_dir / "scene.png")
-        else:
-            log.warning("could not read a frame for the scene plot")
-        del cv2  # imported only to fail early if OpenCV is missing
+        plot_features(table, scene, args.track_dir / "features.png")
 
     print()
-    print(f"  samples        : {len(table)}  ({int(table.valid.sum())} valid)")
-    print(f"  rotation centre: ({scene.centre[0]:.0f}, {scene.centre[1]:.0f}) px")
+    print(f"  samples        : {len(table)}  ({int(table.found.sum())} with a bucket)")
+    print(f"  slew centre    : ({scene.pivot[0]:.0f}, {scene.pivot[1]:.0f}) px")
     print(f"  arm reach L    : {scene.scale:.0f} px")
-    if scene.dig_zone and scene.dump_zone:
-        print(f"  dig zone       : ({scene.dig_zone[0]:.0f}, {scene.dig_zone[1]:.0f})")
-        print(f"  dump zone      : ({scene.dump_zone[0]:.0f}, {scene.dump_zone[1]:.0f})")
-        print(f"  separation     : {scene.zone_separation:.2f} L")
+    if scene.truck_box:
+        box = ", ".join(f"{v:.0f}" for v in scene.truck_box)
+        print(f"  truck box      : ({box}) px")
     else:
-        print("  zones          : NOT RESOLVED")
-    surface = scene.surface_height
-    print(
-        f"  surface height : {surface:.3f} L"
-        if surface is not None
-        else "  surface height : NOT RESOLVED"
-    )
-    print(f"  return swing   : {'left' if scene.return_sign > 0 else 'right'}")
-    print()
-    print(f"  wrote features.npz, features.csv, scene.json to {args.track_dir}")
-    if not args.no_plots:
-        print(f"  LOOK AT: {args.track_dir}/scene.png and {args.track_dir}/signals.png")
-        print("  The gate for this stage is visual: the landmarks must land where")
-        print("  you would put them, and the four boundaries must be visible.")
+        print("  truck box      : none detected (overlap feature is nan)")
+    print(f"  wrote          : {args.track_dir}/features.npz, scene.json")
     return 0
