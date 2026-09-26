@@ -32,16 +32,24 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
+from excavator_cycles.config import Config  # noqa: E402
 from excavator_cycles.features import load as load_features  # noqa: E402
-from excavator_cycles.fsm import calibrate, walk  # noqa: E402
+from excavator_cycles.fsm import calibrate, samples_for, walk  # noqa: E402
 from excavator_cycles.render import render  # noqa: E402
 
-ONSET_KEYS = {
-    "digging": "digging_begins",
-    "hauling": "hauling_begins",
-    "dumping": "dumping_begins",
-    "swinging": "swinging_begins",
-}
+# Truth is paired BY POSITION, not by phase name. The cycle is
+# dig -> haul -> dump -> swing -> dig, so the fifth transition is digging again
+# and its truth is `cycle_ends`. Keying by name scored the closing dig against
+# the opening one and printed a meaningless +23.95 s error. The dev clip holds
+# one complete cycle, so anything past the fifth detection has no truth to be
+# compared against and is shown without an error.
+ONSET_SEQUENCE = (
+    ("digging", "digging_begins"),
+    ("hauling", "hauling_begins"),
+    ("dumping", "dumping_begins"),
+    ("swinging", "swinging_begins"),
+    ("digging", "cycle_ends"),
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,8 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("track_dir", type=Path, help="a directory produced by `track`")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--scale", type=float, default=2.0)
-    parser.add_argument("--hold-samples", type=int, default=3)
-    parser.add_argument("--lookback-samples", type=int, default=8)
+    defaults = Config().fsm
+    parser.add_argument("--hold-seconds", type=float, default=defaults.hold_seconds)
+    parser.add_argument("--lookback-seconds", type=float, default=defaults.lookback_seconds)
     parser.add_argument(
         "--labels",
         type=Path,
@@ -65,13 +74,13 @@ def main(argv: list[str] | None = None) -> int:
     levels = calibrate(table)
     print(levels.report())
 
+    times = table.time_seconds
     found = walk(
         table,
         levels,
-        hold_samples=args.hold_samples,
-        lookback_samples=args.lookback_samples,
+        hold_samples=samples_for(args.hold_seconds, times),
+        lookback_samples=samples_for(args.lookback_seconds, times),
     )
-    times = table.time_seconds
     windows = [
         (
             d.phase,
@@ -85,7 +94,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.labels and not args.no_labels and args.labels.exists():
         labels = json.loads(args.labels.read_text())
         fps = float(labels["video"]["fps"])
-        truth = {k: labels["boundaries"][v] / fps for k, v in ONSET_KEYS.items()}
+        truth = [
+            (phase, float(labels["boundaries"][key]) / fps) for phase, key in ONSET_SEQUENCE
+        ]
 
     fired = {}
     print(f"\n{len(found)} detections")
@@ -93,18 +104,23 @@ def main(argv: list[str] | None = None) -> int:
         f"  {'phase':10}{'window (s)':>20}{'width':>7}{'FIRED':>8}"
         f"{'truth':>8}{'err':>8}   in window?"
     )
-    for (phase, start, end), detection in zip(windows, found, strict=True):
+    for index, ((phase, start, end), detection) in enumerate(zip(windows, found, strict=True)):
         when = float(times[detection.fired_at])
-        fired.setdefault(phase, when)
-        reference = truth.get(phase)
+        # Every onset, not just the first per phase: `setdefault` silently dropped
+        # the cycle-closing dig from the rendered overlay.
+        fired.setdefault(phase, []).append(when)
+        expected_phase, reference = truth[index] if index < len(truth) else (phase, None)
         verdict = error = ""
         if reference is not None:
             verdict = "yes" if start <= reference <= end else "NO"
             error = f"{when - reference:+.2f}"
+            if expected_phase != phase:
+                verdict += f"  (expected {expected_phase} here)"
         flag = "  out-of-seq" if detection.out_of_sequence else ""
         print(
             f"  {phase:10}{f'[{start:.2f}, {end:.2f}]':>20}{end - start:>7.2f}"
-            f"{when:>8.2f}{reference or 0:>8.2f}{error:>8}   {verdict}{flag}"
+            f"{when:>8.2f}{reference if reference is not None else 0:>8.2f}{error:>8}"
+            f"   {verdict}{flag}"
         )
 
     if args.no_video:
@@ -116,8 +132,12 @@ def main(argv: list[str] | None = None) -> int:
         out_path=out,
         scale=args.scale,
         windows=windows,
-        onsets=fired,
-        reference=truth or None,
+        # `render`'s overlay is keyed by phase name, so it can hold one onset per
+        # phase and no more. The printed table above shows every onset; the video
+        # shows the first of each. Drawing repeats needs `render` to take a list,
+        # which is a change to the pipeline's API and not this script's business.
+        onsets={phase: whens[0] for phase, whens in fired.items()},
+        reference=dict(truth) or None,
     )
     print(f"\n  wrote {stats.output_path}  ({stats.frames_written} frames)")
     print("    shaded span   the window pass 1 searched")
