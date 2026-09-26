@@ -1146,16 +1146,26 @@ def test_a_transition_at_the_very_end_of_the_clip_is_not_discarded():
     """
     from excavator_cycles.fsm import walk
 
-    for rise in (56, 57, 58, 59):
-        schedule = {"digging": set(range(rise, 60))}
-        found = walk(
-            _walk_table(60),
-            _levels(),
-            fires=_scripted(schedule),
-            hold_samples=3,
-            lookback_samples=2,
-        )
-        assert [d.phase for d in found] == ["digging"], f"rising at {rise} of 60 gave {found}"
+    def phases_when_rising_at(rise: int) -> list[str]:
+        return [
+            d.phase
+            for d in walk(
+                _walk_table(60),
+                _levels(),
+                fires=_scripted({"digging": set(range(rise, 60))}),
+                hold_samples=3,
+                strict_hold_samples=6,
+                lookback_samples=2,
+            )
+        ]
+
+    # 56 and 57 leave a full three samples; 58 leaves two, which clears the
+    # half-the-hold floor. 59 leaves one, which does not -- see
+    # `test_a_single_sample_at_the_clip_edge_is_not_a_transition` for why that floor
+    # exists at all.
+    for rise in (56, 57, 58):
+        assert phases_when_rising_at(rise) == ["digging"], f"rising at {rise} of 60 was lost"
+    assert phases_when_rising_at(59) == [], "one sample is below the floor"
 
 
 def test_a_truncated_hold_is_only_allowed_at_the_clip_edge():
@@ -1370,3 +1380,92 @@ def test_mirroring_the_dev_clip_changes_nothing_about_dumping():
     ]
     assert any(original), "the fixture must actually dump somewhere, or this proves nothing"
     assert original == flipped
+
+
+def test_a_single_sample_at_the_clip_edge_is_not_a_transition():
+    """The truncated hold needed a floor.
+
+    Accepting "every sample that exists" with no minimum meant one sample at the
+    final index became a detection -- and because digging bounds cycles, that
+    changed `cycle_count`, the field graded exactly. Half the hold is the bar: a
+    clip ending one or two frames early keeps its transition, a blip does not
+    become one.
+    """
+    from excavator_cycles.fsm import walk
+
+    def found_for(indices):
+        return [
+            d.phase
+            for d in walk(
+                _walk_table(50),
+                _levels(),
+                fires=_scripted({"digging": set(indices)}),
+                hold_samples=3,
+                strict_hold_samples=6,
+                lookback_samples=8,
+            )
+        ]
+
+    assert found_for({49}) == [], "one sample of three is not a sustained anything"
+    assert found_for({48, 49}) == ["digging"], "two of three survives a clip ending early"
+    assert found_for({47, 48, 49}) == ["digging"], "the full hold, at the very edge"
+
+
+def test_a_truncated_hold_is_reported_as_the_weaker_bar_it_is(caplog):
+    """Accepting less evidence than asked for must be visible, not quiet."""
+    import logging
+
+    from excavator_cycles.fsm import walk
+
+    with caplog.at_level(logging.WARNING):
+        walk(
+            _walk_table(50),
+            _levels(),
+            fires=_scripted({"digging": {48, 49}}),
+            hold_samples=3,
+            strict_hold_samples=6,
+            lookback_samples=8,
+        )
+    assert any("truncated hold" in r.message for r in caplog.records), (
+        f"expected a truncation warning, got {[r.message for r in caplog.records]}"
+    )
+
+
+def test_an_out_of_sequence_dig_gets_no_truncation_allowance():
+    """It ABANDONS the cycle in progress and adds a boundary, so it must clear the
+    full strict bar. It was being accepted on 1 of 6 samples -- the opposite of the
+    "unexpected evidence should be expensive" rule it exists to enforce."""
+    from excavator_cycles.fsm import walk
+
+    schedule = {"digging": set(range(5, 8)) | {29}, "hauling": set(range(12, 15))}
+    found = walk(
+        _walk_table(30),
+        _levels(),
+        fires=_scripted(schedule),
+        hold_samples=3,
+        strict_hold_samples=6,
+        lookback_samples=4,
+    )
+    assert [d.phase for d in found] == ["digging", "hauling"]
+    assert not any(d.out_of_sequence for d in found), (
+        "a one-sample dig at the clip edge must not abandon a good cycle"
+    )
+
+
+def test_an_out_of_sequence_dig_with_full_evidence_is_still_accepted():
+    """The control: the guard above must not disable the mechanism entirely."""
+    from excavator_cycles.fsm import walk
+
+    schedule = {
+        "digging": set(range(5, 8)) | set(range(20, 30)),
+        "hauling": set(range(12, 15)),
+    }
+    found = walk(
+        _walk_table(40),
+        _levels(),
+        fires=_scripted(schedule),
+        hold_samples=3,
+        strict_hold_samples=6,
+        lookback_samples=4,
+    )
+    assert any(d.out_of_sequence for d in found), f"a genuine mid-cycle dig must fire: {found}"

@@ -460,7 +460,14 @@ def walk(
     # so consecutive windows cannot overlap.
     previous = None
 
-    def sustained(phase: str, start: int, needed: int, *, require_edge: bool = True) -> int:
+    def sustained(
+        phase: str,
+        start: int,
+        needed: int,
+        *,
+        require_edge: bool = True,
+        allow_truncation: bool = True,
+    ) -> int:
         """How many samples the trigger held for here, or 0 if this is no transition.
 
         A rising edge, not a level. The triggers are written as conditions --
@@ -485,23 +492,41 @@ def walk(
 
         Returns a COUNT rather than a bool so the caller can size the window to
         the evidence that actually exists. At the end of the clip fewer than
-        ``needed`` samples remain, and all of them holding is all the evidence
-        there can be -- refusing it silently discarded any transition rising in
-        the last ``needed - 1`` samples. The labelled cycle-closing dig sits at
-        sample 293 of 296, which cleared the old bar by exactly zero margin.
+        ``needed`` samples remain, and refusing on that ground alone silently
+        discarded any transition rising in the last ``needed - 1`` samples -- the
+        labelled cycle-closing dig sits at sample 293 of 296 and cleared the old bar
+        by exactly zero margin.
+
+        But "some of the evidence" is not "the evidence", so a truncated hold has a
+        FLOOR: at least half of what the hold asks for. Without one, a single sample
+        at the final index became a detection, and because digging bounds cycles that
+        changed `cycle_count` -- the field graded exactly. Half is dimensionless and
+        travels; it says a transition must be supported by most of the evidence
+        requested, while still surviving a clip that ends one or two frames early.
+
+        ``allow_truncation=False`` refuses any shortfall. The out-of-sequence digging
+        check passes it, because that path ABANDONS the cycle in progress and adds a
+        boundary: it was accepting a dig on 1 of 6 strict samples, which is the
+        opposite of the "unexpected evidence should be expensive" rule it exists to
+        enforce.
         """
         available = count - start
         if available <= 0:
             return 0
         held = min(needed, available)
+        if held < needed:
+            if not allow_truncation:
+                return 0
+            if 2 * held < needed:
+                return 0
         if require_edge and start > 0 and fires(phase, table, start - 1, levels, config):
             return 0  # already true before this sample: not an edge
         if not all(fires(phase, table, i, levels, config) for i in range(start, start + held)):
             return 0
         if held < needed:
-            log.info(
-                "%s at sample %d held for %d of %d samples -- the clip ends. Accepted: "
-                "every sample that exists supports it.",
+            log.warning(
+                "%s at sample %d held for only %d of %d samples -- the clip ends there. "
+                "Accepted on a truncated hold, which is a weaker bar than usual.",
                 phase,
                 start,
                 held,
@@ -534,7 +559,7 @@ def walk(
         # for as long as that dig lasts, so it cannot rise again until the bucket
         # has actually come back up. A `curr_stage != "digging"` guard here would
         # be redundant AND wrong -- it would also block a genuine second dig.
-        strict_held = sustained("digging", index, strict)
+        strict_held = sustained("digging", index, strict, allow_truncation=False)
         if target != "digging" and strict_held:
             log.info(
                 "digging at sample %d interrupted %s; the cycle being built is abandoned",
