@@ -104,7 +104,9 @@ def main(argv: list[str] | None = None) -> int:
         "--reuse",
         action="store_true",
         help="skip stages whose output is already in the work directory. For iterating "
-        "on later stages without re-running the GPU pass.",
+        "on later stages without re-running the GPU pass. Once a stage runs, every "
+        "later stage runs too. Settings are NOT compared: after changing --config or "
+        "--rate, delete the work directory or run without --reuse.",
     )
     run_parser.add_argument(
         "--test",
@@ -328,10 +330,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # returned as this command's own exit code, so a caller checking the status
     # still learns about it.
     concerns: list[str] = []
+    # `--reuse` asked each stage separately whether its product existed, so a
+    # re-run `track` could be followed by a REUSED `features.npz` built from the
+    # previous masks -- fresh input, stale features, and an answer from neither.
+    # Once any stage runs, everything downstream of it is out of date.
+    #
+    # What `--reuse` still does not do is compare settings. `track.json` records a
+    # digest, but of the WHOLE config: comparing it would re-run the GPU pass for an
+    # `fsm` change that cannot affect tracking, and `features` records none. So a
+    # changed `--config` or `--rate` is the caller's to handle; the help says so.
+    upstream_ran = False
     for name, product, run_stage, extra in stages:
-        if args.reuse and product is not None and product.exists():
+        if args.reuse and not upstream_ran and product is not None and product.exists():
             log.info("%s: reusing %s", name, product)
             continue
+        upstream_ran = True
         log.info("%s: running", name)
         # A copy per stage, so one stage's arguments cannot leak into the next.
         stage_args = argparse.Namespace(**vars(args))
@@ -353,9 +366,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return status
 
     answer = Path(args.out) if args.out else cached
-    if answer != cached:
+    # Compared RESOLVED. The same file can be spelled two ways -- relative and
+    # absolute -- and a textual comparison called those different, so
+    # `copyfile` was asked to copy a file onto itself and raised `SameFileError`
+    # after the whole pipeline had succeeded.
+    if answer.resolve() != cached.resolve():
         import shutil
 
+        answer.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(cached, answer)
         log.info("copied the answer to %s", answer)
     print()
@@ -469,19 +487,23 @@ def _print_breakdown(cycles, onsets, truth: dict[str, float]) -> None:
     print(header)
     seen: set[str] = set()
     for onset in onsets:
+        # A dig that abandoned the cycle in progress is worth seeing: the cycle
+        # before it is cut short, and a stray one mid-phase is the symptom of a
+        # cue or a perception gap going wrong.
+        note = "   (interrupted a cycle)" if onset.out_of_sequence else ""
         # An onset with no refined time is the interesting case, not one to skip:
         # the cycle is still counted, and the coarse time shows where pass 1 was.
         if onset.refined is None:
             line = f"  {onset.phase:10}{'--':>11}   (pass 2 found nothing; "
             line += f"pass 1 fired at {onset.coarse:.2f}s)"
-            print(line)
+            print(line + note)
             seen.add(onset.phase)
             continue
         line = f"  {onset.phase:10}{onset.refined:>11.2f}"
         if truth and onset.phase not in seen:
             line += f"{truth[onset.phase]:>9.2f}{onset.refined - truth[onset.phase]:>+8.2f}"
         seen.add(onset.phase)
-        print(line)
+        print(line + note)
 
     print()
     print("  --- cycles " + "-" * 52)
