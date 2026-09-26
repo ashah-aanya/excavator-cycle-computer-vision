@@ -58,7 +58,6 @@ def main(argv: list[str] | None = None) -> int:
         help="drawn dashed alongside the pipeline's own answer. Evaluation only.",
     )
     parser.add_argument("--no-labels", action="store_true", help="hide the ground truth")
-    parser.add_argument("--open", action="store_true", help="open the video when done")
     parser.add_argument("--no-video", action="store_true", help="print only; skip rendering")
     args = parser.parse_args(argv)
 
@@ -125,10 +124,6 @@ def main(argv: list[str] | None = None) -> int:
     print("    SOLID line    where the trigger actually fired")
     if truth:
         print("    dashed grey   the hand-labelled truth")
-    if args.open:
-        import subprocess
-
-        subprocess.run(["open", str(out)], check=False)
     return 0
 
 

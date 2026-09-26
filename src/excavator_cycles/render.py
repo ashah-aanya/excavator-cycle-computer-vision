@@ -50,7 +50,8 @@ _DIG = (90, 230, 120)
 _DUMP = (250, 180, 80)
 _TRACE = (220, 220, 220)
 _EDGE = (60, 60, 60)
-_PLAYHEAD = (160, 160, 160)
+_PLAYHEAD = (110, 110, 110)
+_REFERENCE = (235, 235, 235)
 
 
 @dataclass
@@ -447,20 +448,38 @@ def _graph_column(
             shade[: region.shape[0], : region.shape[1]], 0.22, region, 0.78, 0
         )
 
-    # Onset markers span every panel, so a boundary can be read against all six
-    # signals at once -- which is the point of stacking them.
-    for name, when in (onsets or {}).items():
+    # Reference first, DASHED and grey, so the pipeline's own answer draws over
+    # it rather than under. Both span every panel, so one boundary can be read
+    # against all six signals at once -- the point of stacking them.
+    for name, when in (reference or {}).items():
         if when is None:
             continue
-        index = int(np.argmin(np.abs(times - when)))
-        x = left + round(span * index / total)
-        colour = _PHASE_COLOUR.get(name, _TEXT)
-        for y in range(4, height - 4, 6):  # dashed, so it reads under the traces
-            cv2.line(column, (x, y), (x, min(y + 3, height - 4)), colour, 1)
+        x = left + round(span * int(np.argmin(np.abs(times - when))) / total)
+        for y in range(6, height - 16, 8):
+            cv2.line(column, (x, y), (x, min(y + 4, height - 16)), _REFERENCE, 1)
         cv2.putText(
             column,
             name[:4],
-            (x + 3, height - 6),
+            (x + 3, height - 16),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.3,
+            _REFERENCE,
+            1,
+            cv2.LINE_AA,
+        )
+
+    # The pipeline's own onsets: SOLID and phase-coloured, with a dot on top.
+    for name, when in (onsets or {}).items():
+        if when is None:
+            continue
+        x = left + round(span * int(np.argmin(np.abs(times - when))) / total)
+        colour = _PHASE_COLOUR.get(name, _TEXT)
+        cv2.line(column, (x, 4), (x, height - 4), colour, 1, cv2.LINE_AA)
+        cv2.circle(column, (x, 9), 3, colour, -1)
+        cv2.putText(
+            column,
+            name[:4],
+            (x + 3, height - 5),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.3,
             colour,
