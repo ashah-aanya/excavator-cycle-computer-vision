@@ -1,0 +1,183 @@
+"""The state machine: what the features mean, then when the phases changed.
+
+Design diagram stage 3 (``docs/state-machine-design.html``).
+
+The rule this module is built around
+------------------------------------
+**A global statistic may say what a word MEANS. It may not say WHEN anything
+happened.**
+
+Calibration looks at the whole video and works out that, here, "in the material"
+means ``height < 0.094 L``. That is a statement about a distribution and it needs
+every sample to be any good. Deciding that seconds 2.8 to 12.6 *were* the digging
+phase is a different kind of claim, and it belongs to the sequential walk.
+
+An earlier design blurred the two: it cut the video into dig episodes with a
+global Otsu split and treated those episodes as the answer. That made digging the
+only transition found globally and non-causally while the other three were found
+locally and in order -- an asymmetry with no justification, on the one transition
+that most wants to behave like the others, because it is the cycle boundary. It
+also degrades badly: a single global split assumes the whole clip is bimodal,
+where a local search does not care what happened forty seconds ago.
+
+Why Otsu
+--------
+Otsu's method takes a histogram and finds the cut that makes the two resulting
+halves as internally uniform as possible. On this project's signals that is a
+real question with a real answer, because each one genuinely mixes two
+activities: on the development clip the bucket's height piles up around -0.11 L
+while digging and +0.23 L while carrying, with a sparse valley between.
+
+The value of it is that it is **a threshold with no tuned constant**. Writing
+``height < 0.1`` bakes in the camera distance, the machine's size and the depth
+of the pile. Shoot the same scene from twice as far and every length halves --
+but the histogram still has two humps, and Otsu still finds the valley.
+
+What Otsu does not do is notice when it is wrong. Handed one mode, it returns a
+number anyway, and that number means nothing. So every split here carries its
+**separability** -- Otsu's own objective, normalised: the share of the total
+variance that the split explains. Near 1 is two clean modes; low means the cut is
+arbitrary and the gate built on it should not be trusted.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .geometry import otsu_threshold
+from .logging_setup import get_logger
+
+log = get_logger(__name__)
+
+# A split explaining less of the variance than this is reported untrustworthy.
+# Dimensionless and fixed across every video: it is a property of the *shape* of
+# a distribution, never of any one clip's scale.
+#
+# Measured, rather than guessed. Otsu always returns a number, so the question is
+# where genuinely-one-population ends and genuinely-two begins:
+#
+#     single Gaussian  0.641  |  two modes, gap 0.3   0.899
+#     exponential      0.653  |  two modes, gap 1.0   0.982
+#     uniform          0.750  |  zero-inflated + tail 0.835
+#                             |  mostly-still+spikes  0.887
+#
+# The gap between 0.75 and 0.835 is where the line belongs. Note that two of this
+# project's three gates -- truck overlap and |dx/dt| -- are not bimodal in the
+# mixture-of-Gaussians sense; they are near-zero most of the time with an
+# occasional excursion. That is still a real two-population structure and the cut
+# is not arbitrary, but it scores lower than a clean pair of modes, and on the
+# development clip both land at 0.81-0.82: above the line, without much room.
+MIN_SEPARABILITY = 0.80
+
+
+@dataclass(frozen=True)
+class Split:
+    """A level derived from one signal's own distribution, and how much to trust it."""
+
+    threshold: float
+    separability: float  # [0, 1]: share of the variance the split explains
+    below: int  # samples under the threshold
+    above: int
+
+    @property
+    def trustworthy(self) -> bool:
+        """Whether the distribution actually had two modes to separate.
+
+        A gate built on an untrustworthy split is not wrong so much as
+        meaningless: the number exists, it just does not correspond to anything.
+        """
+        return self.separability >= MIN_SEPARABILITY and self.below > 0 and self.above > 0
+
+    def describe(self) -> str:
+        verdict = "clear" if self.trustworthy else "WEAK"
+        return (
+            f"{self.threshold:+.4f}  separability {self.separability:.2f} "
+            f"({verdict})  {self.below} below / {self.above} above"
+        )
+
+
+def split_of(signal: np.ndarray) -> Split:
+    """Where this signal's two modes divide, and how cleanly.
+
+    ``separability`` is the between-class variance over the total variance --
+    exactly the quantity Otsu maximises, divided by a constant so it lands in
+    [0, 1] and can be compared across signals with different units.
+    """
+    values = np.asarray(signal, dtype=float)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        raise ValueError("no finite samples; cannot find a split")
+
+    total = float(finite.var())
+    if total <= 0:
+        # Every sample identical. There is no split, and saying so beats
+        # returning a threshold that would silently put everything on one side.
+        return Split(float(finite[0]), 0.0, 0, int(finite.size))
+
+    threshold = otsu_threshold(finite)
+    below, above = finite[finite < threshold], finite[finite >= threshold]
+    if below.size == 0 or above.size == 0:
+        return Split(threshold, 0.0, int(below.size), int(above.size))
+
+    weight = below.size / finite.size
+    between = weight * (1 - weight) * (float(below.mean()) - float(above.mean())) ** 2
+    return Split(threshold, float(between / total), int(below.size), int(above.size))
+
+
+@dataclass(frozen=True)
+class Levels:
+    """What the words in the cue definitions mean, on this video.
+
+    Every field is a level. None is an interval, and none of them says when
+    anything happened -- see the module docstring for why that separation is the
+    point rather than a detail.
+    """
+
+    low_height: Split  # "the bucket is down in the material"
+    over_truck: Split | None  # "the bucket is at the bed"; None with no truck
+    moving: Split  # "the machine is traversing"
+
+    def report(self) -> str:
+        lines = [f"  low height   {self.low_height.describe()}"]
+        lines.append(
+            f"  over truck   {self.over_truck.describe()}"
+            if self.over_truck is not None
+            else "  over truck   unavailable (no truck detected)"
+        )
+        lines.append(f"  moving       {self.moving.describe()}")
+        return "\n".join(lines)
+
+
+def calibrate(table) -> Levels:
+    """Work out what "low", "over the truck" and "moving" mean on this video.
+
+    One pass over the whole feature table. Nothing here looks at time.
+    """
+    low_height = split_of(table.height)
+    moving = split_of(table.speed_x)
+
+    overlap = np.asarray(table.truck_overlap, dtype=float)
+    if not np.isfinite(overlap).any():
+        # A legitimate video, not an error: nothing that looked like a truck was
+        # ever cleanly detected, so the dumping gate simply has no evidence.
+        log.info("no truck overlap in this run; the dumping location gate is unavailable")
+        over_truck = None
+    else:
+        over_truck = split_of(overlap)
+
+    levels = Levels(low_height=low_height, over_truck=over_truck, moving=moving)
+    for name, split in (
+        ("low height", low_height),
+        ("over truck", over_truck),
+        ("moving", moving),
+    ):
+        if split is not None and not split.trustworthy:
+            log.warning(
+                "the %s level rests on a weak split (%s). Otsu returns a number "
+                "whether or not the data has two modes; this one probably does not.",
+                name,
+                split.describe(),
+            )
+    return levels
