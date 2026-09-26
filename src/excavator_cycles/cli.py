@@ -74,6 +74,52 @@ def main(argv: list[str] | None = None) -> int:
     )
     track_parser.set_defaults(func=_cmd_track)
 
+    run_parser = subparsers.add_parser(
+        "run",
+        help="THE DELIVERABLE: video in, answer.json out. Chains track -> features "
+        "-> cycles so a reviewer needs one command and no knowledge of the stages.",
+    )
+    run_parser.add_argument("video", type=Path)
+    run_parser.add_argument("--config", type=Path, default=None)
+    run_parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="answer.json path (default: <work dir>/answer.json)",
+    )
+    run_parser.add_argument(
+        "--work-dir",
+        type=Path,
+        default=None,
+        help="where the intermediate cache goes (default: outputs/track/<video stem>)",
+    )
+    run_parser.add_argument("--device", default=None, help="cuda / mps / cpu")
+    run_parser.add_argument(
+        "--detector", default="grounding_dino", choices=["grounding_dino", "owlv2"]
+    )
+    run_parser.add_argument(
+        "--rate", type=float, default=None, help="samples per second (overrides config)"
+    )
+    run_parser.add_argument(
+        "--reuse",
+        action="store_true",
+        help="skip stages whose output is already in the work directory. For iterating "
+        "on later stages without re-running the GPU pass.",
+    )
+    run_parser.add_argument(
+        "--test",
+        action="store_true",
+        help="also render the diagnostic video and print the per-cycle breakdown",
+    )
+    run_parser.add_argument(
+        "--labels",
+        type=Path,
+        default=None,
+        help="EVALUATION ONLY. Ground truth to draw and score.",
+    )
+    run_parser.add_argument("--scale", type=float, default=2.0, help="video resize factor")
+    run_parser.set_defaults(func=_cmd_run)
+
     render_parser = subparsers.add_parser(
         "render",
         help="Rebuild the video with the cached masks and detections drawn on it. "
@@ -242,6 +288,52 @@ def _cmd_render(args: argparse.Namespace) -> int:
     )
     print(f"\n  wrote {stats.output_path}")
     print(f"  {stats.frames_written} frames, {stats.frames_with_mask} carrying a mask")
+    return 0
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Video in, answer.json out. The whole pipeline, one command.
+
+    The four stages exist because only one of them needs a GPU and the other three
+    are worth re-running on a cached result in under a second. That division is
+    right for development and wrong for a reviewer, who should not have to know it
+    exists to get an answer out of a video.
+
+    So this adds no new logic. It calls the same three subcommands in order, with
+    the same arguments, through their own `_cmd_*` functions -- which means the
+    thing a reviewer runs is the thing the tests exercise, rather than a second
+    path that can drift from it.
+    """
+    work_dir = args.work_dir or Path("outputs/track") / Path(args.video).stem
+
+    stages = (
+        ("track", work_dir / "masks.npz", _cmd_track, {"out": work_dir}),
+        ("features", work_dir / "features.npz", _cmd_features, {"no_plots": False}),
+        ("cycles", None, _cmd_cycles, {}),
+    )
+    for name, product, run_stage, extra in stages:
+        if args.reuse and product is not None and product.exists():
+            log.info("%s: reusing %s", name, product)
+            continue
+        log.info("%s: running", name)
+        # A copy per stage, so one stage's defaults cannot leak into the next.
+        stage_args = argparse.Namespace(**vars(args))
+        stage_args.track_dir = work_dir
+        for key, value in extra.items():
+            setattr(stage_args, key, value)
+        status = run_stage(stage_args)
+        if status != 0:
+            log.error("%s failed with status %d; stopping", name, status)
+            return status
+
+    answer = args.out or work_dir / "answer.json"
+    if answer != work_dir / "answer.json":
+        import shutil
+
+        shutil.copyfile(work_dir / "answer.json", answer)
+        log.info("copied the answer to %s", answer)
+    print()
+    print(f"  ANSWER: {answer}")
     return 0
 
 
