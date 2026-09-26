@@ -100,13 +100,12 @@ def render(
 
     # The physics overlay needs stage 3's output. Absent, the video still renders
     # with masks and boxes -- the stages stay independent.
-    table = scene = strip = None
+    table = scene = None
     if physics:
         try:
             from .features import load as load_features
 
             table, scene = load_features(output_dir)
-            strip = _signal_strip(table, scene)
             log.info("physics overlay enabled")
         except (FileNotFoundError, KeyError) as exc:
             log.warning("no feature data (%s); rendering masks only", exc)
@@ -123,11 +122,11 @@ def render(
 
     # The writer accepts exactly one frame size and silently DROPS anything
     # else, so the total height has to account for every panel we stack --
-    # including the signal strip, whose presence depends on stage 3 having run.
+    # including the signal graphs, whose presence depends on stage 3 having run.
     # Layout: the video on the left with a thin status bar under it, and the
     # signals in a column down the right. Stacking the signals underneath made
     # the canvas nearly square and gave half the frame to the graphs.
-    graph_width = round(width * 0.62) if strip is not None else 0
+    graph_width = round(width * 0.62) if table is not None else 0
     canvas_height = height + panel_height
     canvas_width = width + graph_width
 
@@ -162,7 +161,7 @@ def render(
 
             canvas = _draw_frame(frame, mask, record, result, scale, draw_boxes)
             if table is not None and sample_position is not None:
-                canvas = _draw_physics(canvas, mask, table, scene, sample_position, scale)
+                canvas = _draw_physics(canvas, table, scene, sample_position, scale)
             if onsets:
                 _draw_phase_banner(canvas, onsets, frame_index / info.fps)
             left = np.vstack(
@@ -268,7 +267,7 @@ def _draw_frame(frame, mask, record, result: TrackResult, scale: float, draw_box
     return canvas
 
 
-def _draw_physics(canvas, mask, table, scene, position: int, scale: float):
+def _draw_physics(canvas, table, scene, position: int, scale: float):
     """Draw what the measurement stage actually used: two boxes and a pivot.
 
     Every shape here is read from the feature table, so the video cannot show
@@ -329,11 +328,6 @@ _GRAPHS = (
     ("truck overlap", "truck_overlap", _DUMP),
     ("aspect ratio", "aspect_ratio", (230, 160, 240)),
 )
-
-
-def _signal_strip(table, scene, height: int = 0):
-    """Kept so `render` can test whether stage 3 ran; the drawing is per-frame."""
-    return table
 
 
 _PHASE_COLOUR = {

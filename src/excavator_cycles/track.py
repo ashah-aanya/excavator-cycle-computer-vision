@@ -76,7 +76,7 @@ from .kinematics import body_core, boom_base
 from .logging_setup import get_logger
 from .provenance import config_digest, file_digest, run_record, set_seeds
 from .seeding import BucketSeed
-from .video import Sample, VideoInfo, iter_samples, probe
+from .video import Sample, iter_samples, probe
 
 log = get_logger(__name__)
 
@@ -155,9 +155,7 @@ class DetectionPass:
     truck: dict[int, Detection] = field(default_factory=dict)
 
 
-def detect_anchors(
-    samples: list[Sample], detector, config: Config, info: VideoInfo
-) -> DetectionPass:
+def detect_anchors(samples: list[Sample], detector, config: Config) -> DetectionPass:
     """Run the detector on a sparse, evenly spaced subset of the samples.
 
     Sparse because detection is expensive and, on this kind of footage,
@@ -587,7 +585,7 @@ def track(
         )
 
         detector = build_detector(detector_name, config.detection, device=device)
-        detections = detect_anchors(samples, detector, config, info)
+        detections = detect_anchors(samples, detector, config)
         truck_box = estimate_truck_box(detections, config)
         negatives = negative_points(truck_box, config)
         seed_position, seed_box = choose_seed(detections, config)
@@ -995,15 +993,3 @@ def load_result(output_dir: str | Path) -> tuple[TrackResult, dict[int, np.ndarr
     result = TrackResult(**data)
     loaded, _ = mask_io.load(output_dir / "masks.npz")
     return result, loaded
-
-
-def load_bucket_masks(output_dir: str | Path) -> dict[int, np.ndarray]:
-    """The bucket masks from a completed run, keyed by sample ordinal.
-
-    Separate from ``load_result`` rather than bolted onto its return value,
-    because every stage downstream already unpacks that two-tuple and only the
-    stages that need the bucket should pay to decode it. Returns an empty
-    mapping for a run made before the bucket was tracked.
-    """
-    objects, _ = mask_io.load_objects(Path(output_dir) / "masks.npz")
-    return objects.get("bucket", {})

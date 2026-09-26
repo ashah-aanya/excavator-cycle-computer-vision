@@ -231,17 +231,6 @@ def test_time_must_move_forward():
         state.advance("hauling", 3.0)
 
 
-def test_a_phase_can_be_noted_as_having_happened_without_an_onset():
-    """The weak second check. This is what separates "we missed a cue" from "no
-    cycle happened" when a cycle is closed."""
-    from excavator_cycles.fsm import MachineState
-
-    state = MachineState()
-    state.note_occurred("dumping")
-    assert "dumping" in state.occurred
-    assert "dumping" not in state.pending, "occurring is not the same as being located"
-
-
 def test_elapsed_reports_how_long_we_have_been_in_this_phase():
     from excavator_cycles.fsm import MachineState
 

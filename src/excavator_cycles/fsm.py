@@ -237,15 +237,6 @@ class MachineState:
         self.curr_stage = phase
         self.since = when
 
-    def note_occurred(self, phase: str) -> None:
-        """Record that a phase happened, without claiming to know when.
-
-        Weaker than an onset on purpose: "the bucket was over the bed at some
-        point in this span" is enough to say dumping occurred, and nowhere near
-        enough to say when it started.
-        """
-        self.occurred.add(phase)
-
 
 def samples_for(seconds: float, times: np.ndarray) -> int:
     """How many samples span ``seconds``, from the observed spacing.
@@ -364,7 +355,7 @@ def walk(
         """
         if start + needed > count:
             return False
-        if start > 0 and fires(phase, table, start - 1, levels, None):
+        if start > 0 and fires(phase, table, start - 1, levels, config):
             return False  # already true before this sample: not an edge
         return all(fires(phase, table, i, levels, None) for i in range(start, start + needed))
 
@@ -599,8 +590,12 @@ TRIGGERS = {
 }
 
 
-def default_fires(phase: str, table, index: int, levels: Levels, config=None) -> bool:
-    """The trigger the walk uses when none is injected."""
+def default_fires(phase: str, table, index: int, levels: Levels, _config=None) -> bool:
+    """The trigger the walk uses when none is injected.
+
+    ``_config`` is part of the injection protocol -- a caller supplying its own
+    trigger may want it -- and is unused here, hence the underscore.
+    """
     return TRIGGERS[phase](table, index, levels)
 
 
@@ -623,6 +618,7 @@ def refine(
     window: Window,
     mode: Mode,
     sigma: float = 3.0,
+    floor_fraction: float = 0.02,
 ) -> float | None:
     """The instant a transition happened, inside ``window``.
 
@@ -662,7 +658,7 @@ def refine(
     # Rest for a RATE is zero, absolutely -- it does not have to be estimated,
     # only its width does. Estimating the level is what once made the detector
     # settle on the hauling height instead of the dig plateau.
-    band = _rest_band(inside[finite], sigma)
+    band = _rest_band(inside[finite], sigma, floor_fraction)
     if band <= 0:
         return None
     quiet = np.abs(inside) <= band
@@ -744,7 +740,14 @@ def locate(detections: list[Detection], table, config) -> list[tuple[str, float]
     out: list[tuple[str, float]] = []
     for detection in detections:
         column, mode = REFINEMENTS[detection.phase]
-        when = refine(getattr(table, column), times, detection.window, mode)
+        when = refine(
+            getattr(table, column),
+            times,
+            detection.window,
+            mode,
+            sigma=config.fsm.rest_sigma,
+            floor_fraction=config.fsm.rest_floor_fraction,
+        )
         if when is None:
             log.info(
                 "%s at sample %d: the %s cue found no %s in [%d, %d); dropped",

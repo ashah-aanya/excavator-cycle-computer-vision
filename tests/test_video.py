@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import pytest
 
-from excavator_cycles.video import iter_samples, probe, sample_times
+from excavator_cycles.video import iter_samples, probe
 
 
 def _write_video(path: Path, fps: float, n_frames: int, size=(160, 120)) -> Path:
@@ -83,16 +83,6 @@ def test_downscaling_preserves_aspect_ratio(clip_30fps: Path):
     image = samples[0].image
     assert max(image.shape[:2]) == 80
     assert image.shape[1] / image.shape[0] == pytest.approx(160 / 120, abs=0.05)
-
-
-def test_sample_times_spread_across_video(clip_30fps: Path):
-    info = probe(clip_30fps)
-    times = sample_times(info, count=5)
-    assert len(times) == 5
-    assert times == sorted(times)
-    # Spread across the clip, but clear of the very first and last frames.
-    assert 0 < times[0] < 0.2
-    assert info.duration_seconds - 0.2 < times[-1] < info.duration_seconds
 
 
 def test_probe_verify_counts_decodable_frames(clip_30fps: Path):

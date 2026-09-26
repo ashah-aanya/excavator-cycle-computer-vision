@@ -283,10 +283,16 @@ class FSMConfig:
     # a window starting at the trigger would exclude what it is looking for.
     lookback_seconds: float = 0.80
 
-    # A phase running longer than this multiple of the median cycle seen so far
-    # is abandoned. A constant here would be tuned to one video; there is no
-    # timeout on the first cycle, since there is no history to derive it from.
-    timeout_cycles: float = 1.5
+    # Pass 2: how many multiples of a window's own noise still count as "at
+    # rest". Dimensionless -- a multiple of a quantity measured from the same
+    # window -- so it carries no assumption about any video's scale.
+    rest_sigma: float = 3.0
+
+    # ...and the floor under that band, as a fraction of what the signal does
+    # across the window. Rest cannot be defined more tightly than this: on an
+    # exactly flat lead-in the measured noise is zero, and a zero band makes
+    # every sample an excursion.
+    rest_floor_fraction: float = 0.02
 
 
 @dataclass(frozen=True)
