@@ -70,6 +70,7 @@ def render(
     onsets: dict[str, float] | None = None,
     windows: list[tuple[str, float, float]] | None = None,
     reference: dict[str, float] | None = None,
+    levels: dict[str, tuple[str, float]] | None = None,
 ) -> RenderStats:
     """Write an annotated copy of the source video.
 
@@ -93,6 +94,9 @@ def render(
             from `onsets` so the two can be seen against each other: the
             pipeline's answer solid, something to compare it to dashed. Only a
             caller outside `src/` may supply hand labels here.
+        levels: feature column -> (label, value), drawn as a dashed gold line
+            across that column's panel. Meant for the calibrated levels, so the
+            line each trigger compares against is visible beside the signal.
     """
     output_dir = Path(output_dir)
     result, masks = load_result(output_dir)
@@ -191,6 +195,7 @@ def render(
                             onsets,
                             windows,
                             reference,
+                            levels,
                         ),
                     ]
                 )
@@ -320,14 +325,22 @@ def _draw_physics(canvas, table, scene, position: int, scale: float):
 # Which signals ride along with the video, and in what order. Six rather than
 # all thirteen: these are the ones a phase boundary will be read off, and a
 # panel too short to see a shape in is worse than no panel.
+#
+# Each panel carries a plain title AND its unit. The bare symbols (`dh/dt`,
+# `|dx/dt|`) were legible only to whoever wrote the feature table, and a unit is
+# what lets a reader judge a number: 0.3 means nothing until it says "L/s".
 _GRAPHS = (
-    ("height  (up +)", "height", _SURFACE),
-    ("dh/dt", "dh_dt", _DIG),
-    ("d2h/dt2", "d2h_dt2", (120, 200, 255)),
-    ("|dx/dt|", "speed_x", (120, 235, 140)),
-    ("truck overlap", "truck_overlap", _DUMP),
-    ("aspect ratio", "aspect_ratio", (230, 160, 240)),
+    ("BUCKET HEIGHT", "L, up is +", "height", _SURFACE),
+    ("VERTICAL SPEED dh/dt", "L/s, rising is +", "dh_dt", _DIG),
+    ("VERTICAL ACCEL d2h/dt2", "L/s^2", "d2h_dt2", (120, 200, 255)),
+    ("SIDEWAYS SPEED |dx/dt|", "L/s", "speed_x", (120, 235, 140)),
+    ("OVER THE TRUCK", "share of bucket box, 0-1", "truck_overlap", _DUMP),
+    ("BUCKET SHAPE", "box width / height", "aspect_ratio", (230, 160, 240)),
 )
+
+# The calibrated levels -- Otsu's lines -- drawn across the panel they gate.
+_LEVEL = (0, 215, 255)
+_MUTED = (150, 150, 150)
 
 
 _PHASE_COLOUR = {
@@ -371,119 +384,186 @@ def _graph_column(
     onsets: dict[str, float] | None = None,
     windows: list[tuple[str, float, float]] | None = None,
     reference: dict[str, float] | None = None,
+    levels: dict[str, tuple[str, float]] | None = None,
 ):
     """The signals, stacked down the right-hand side, with a shared playhead.
 
     Drawn fresh each frame rather than blitted from a pre-rendered strip,
     because the playhead and the live value both move -- and at this width the
     whole column is a few thousand line segments, which is cheap.
+
+    Every panel is labelled with a title, a unit and its own value range, and the
+    column ends in a time axis and a legend. A graph a reader has to ask about is a
+    graph that did not do its job.
     """
     column = np.full((height, width, 3), _PANEL, dtype=np.uint8)
     rows = len(_GRAPHS)
-    each = height // rows
-    left, right = 56, width - 8  # room for the label on the left
+    axis_height, legend_height = 18, 36
+    plot_bottom = height - axis_height - legend_height
+    each = plot_bottom // rows
+    left, right = 56, width - 8  # room for the value scale on the left
     span = max(right - left, 1)
     total = max(len(table.time_seconds) - 1, 1)
+    times = np.asarray(table.time_seconds, dtype=float)
 
-    for index, (label, field, colour) in enumerate(_GRAPHS):
+    def x_at(when: float) -> int:
+        return left + round(span * int(np.argmin(np.abs(times - when))) / total)
+
+    def text(s, origin, colour, size=0.33, thick=1):
+        cv2.putText(
+            column, s, origin, cv2.FONT_HERSHEY_SIMPLEX, size, colour, thick, cv2.LINE_AA
+        )
+
+    def dashed(p, q, colour, dash=6, gap=4):
+        (x0, y0), (x1, y1) = p, q
+        length = max(abs(x1 - x0), abs(y1 - y0), 1)
+        step = 0
+        while step < length:
+            a = step / length
+            b = min(step + dash, length) / length
+            cv2.line(
+                column,
+                (round(x0 + (x1 - x0) * a), round(y0 + (y1 - y0) * a)),
+                (round(x0 + (x1 - x0) * b), round(y0 + (y1 - y0) * b)),
+                colour,
+                1,
+            )
+            step += dash + gap
+
+    # Windows first, so everything else draws on top of them.
+    for name, start, end in windows or ():
+        colour = _PHASE_COLOUR.get(name, _TEXT)
+        x0, x1 = x_at(start), x_at(end)
+        shade = np.full((plot_bottom - 4, max(1, x1 - x0), 3), colour, dtype=np.uint8)
+        region = column[4:plot_bottom, x0 : x0 + shade.shape[1]]
+        column[4:plot_bottom, x0 : x0 + shade.shape[1]] = cv2.addWeighted(
+            shade[: region.shape[0], : region.shape[1]], 0.22, region, 0.78, 0
+        )
+
+    for index, (title, unit, field, colour) in enumerate(_GRAPHS):
         top = index * each
-        base, ceiling = top + each - 10, top + 8
+        ceiling, base = top + 24, top + each - 6
         values = np.asarray(getattr(table, field), dtype=float)
         finite = values[np.isfinite(values)]
+
+        (title_width, _), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        text(title, (6, top + 14), colour, 0.4)
+        text(unit, (12 + title_width, top + 14), _MUTED, 0.32)
         if finite.size == 0:
+            text("not measured on this video", (left, (ceiling + base) // 2), _MUTED)
             continue
         low, high = float(finite.min()), float(finite.max())
         scale = max(high - low, float(np.finfo(float).eps))
 
-        cv2.line(column, (left, base + 4), (right, base + 4), _EDGE, 1)
+        def y_of(value, low=low, scale=scale, base=base, ceiling=ceiling):
+            return base - round((value - low) / scale * (base - ceiling))
+
+        # The value scale: the panel's own top and bottom, so a shape can be read
+        # as a number without waiting for the playhead to reach it.
+        cv2.line(column, (left, base + 3), (right, base + 3), _EDGE, 1)
+        text(f"{high:+.2f}", (4, ceiling + 4), _MUTED, 0.3)
+        text(f"{low:+.2f}", (4, base), _MUTED, 0.3)
+        if low < 0 < high:
+            zero = y_of(0.0)
+            cv2.line(column, (left, zero), (right, zero), _EDGE, 1)
+            text("0", (left - 12, zero + 4), _MUTED, 0.3)
+
         previous = None
         for i, value in enumerate(values):
             if not np.isfinite(value):
                 previous = None
                 continue
-            x = left + round(span * i / total)
-            y = base - round((value - low) / scale * (base - ceiling))
+            point = (left + round(span * i / total), y_of(value))
             if previous is not None:
-                cv2.line(column, previous, (x, y), colour, 1, cv2.LINE_AA)
-            previous = (x, y)
+                cv2.line(column, previous, point, colour, 1, cv2.LINE_AA)
+            previous = point
 
-        cv2.putText(
-            column,
-            label,
-            (6, top + 16),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.33,
-            colour,
-            1,
-            cv2.LINE_AA,
-        )
+        level = (levels or {}).get(field)
+        if level is not None and np.isfinite(level[1]):
+            label, value = level
+            y = y_of(min(max(value, low), high))
+            dashed((left, y), (right, y), _LEVEL)
+            caption = f"{label} {value:+.3f}"
+            (caption_width, _), _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, 0.32, 1)
+            text(caption, (right - caption_width, y - 4), _LEVEL, 0.32)
+
         if position is not None and np.isfinite(values[position]):
-            cv2.putText(
-                column,
-                f"{values[position]:+.3f}",
-                (6, top + 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.30,
-                _TEXT,
-                1,
-                cv2.LINE_AA,
-            )
+            now = f"now {values[position]:+.3f}"
+            (now_width, _), _ = cv2.getTextSize(now, cv2.FONT_HERSHEY_SIMPLEX, 0.36, 1)
+            text(now, (right - now_width, top + 14), _TEXT, 0.36)
 
-    times = np.asarray(table.time_seconds, dtype=float)
+    # Onset labels would sit on top of each other wherever two onsets are close
+    # (hauling and dumping fire 1 s apart on the dev clip). Each label takes the
+    # lowest row where it does not touch one already placed, and flips to the left
+    # of its line near the right edge rather than running off the frame.
+    placed: list[tuple[int, int, int]] = []  # (row, x0, x1)
 
-    # Windows first, so the markers and traces draw on top of them.
-    for name, start, end in windows or ():
-        colour = _PHASE_COLOUR.get(name, _TEXT)
-        x0 = left + round(span * int(np.argmin(np.abs(times - start))) / total)
-        x1 = left + round(span * int(np.argmin(np.abs(times - end))) / total)
-        shade = np.full((height - 8, max(1, x1 - x0), 3), colour, dtype=np.uint8)
-        region = column[4 : height - 4, x0 : x0 + shade.shape[1]]
-        column[4 : height - 4, x0 : x0 + shade.shape[1]] = cv2.addWeighted(
-            shade[: region.shape[0], : region.shape[1]], 0.22, region, 0.78, 0
-        )
+    def mark_label(label: str, x: int, colour, bottom: int) -> None:
+        (w, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)
+        x0 = x + 3 if x + 3 + w < width - 2 else x - 3 - w
+        row = 0
+        while any(r == row and x0 < b + 6 and a < x0 + w + 6 for r, a, b in placed):
+            row += 1
+        placed.append((row, x0, x0 + w))
+        text(label, (x0, bottom - row * 11), colour, 0.3)
 
-    # Reference first, DASHED and grey, so the pipeline's own answer draws over
+    # Reference first, DASHED and white, so the pipeline's own answer draws over
     # it rather than under. Both span every panel, so one boundary can be read
     # against all six signals at once -- the point of stacking them.
+    marks = []
     for name, when in (reference or {}).items():
         if when is None:
             continue
-        x = left + round(span * int(np.argmin(np.abs(times - when))) / total)
-        for y in range(6, height - 16, 8):
-            cv2.line(column, (x, y), (x, min(y + 4, height - 16)), _REFERENCE, 1)
-        cv2.putText(
-            column,
-            name[:4],
-            (x + 3, height - 16),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.3,
-            _REFERENCE,
-            1,
-            cv2.LINE_AA,
-        )
+        x = x_at(when)
+        dashed((x, 4), (x, plot_bottom), _REFERENCE, 4, 4)
+        marks.append((x, f"{name} (label)", _REFERENCE))
 
     # The pipeline's own onsets: SOLID and phase-coloured, with a dot on top.
     for name, when in (onsets or {}).items():
         if when is None:
             continue
-        x = left + round(span * int(np.argmin(np.abs(times - when))) / total)
+        x = x_at(when)
         colour = _PHASE_COLOUR.get(name, _TEXT)
-        cv2.line(column, (x, 4), (x, height - 4), colour, 1, cv2.LINE_AA)
+        cv2.line(column, (x, 4), (x, plot_bottom), colour, 1, cv2.LINE_AA)
         cv2.circle(column, (x, 9), 3, colour, -1)
-        cv2.putText(
-            column,
-            name[:4],
-            (x + 3, height - 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.3,
-            colour,
-            1,
-            cv2.LINE_AA,
-        )
+        marks.append((x, name, colour))
+
+    for x, label, colour in sorted(marks, key=lambda mark: mark[0]):
+        mark_label(label, x, colour, plot_bottom - 4)
+
+    # The time axis, in seconds -- every panel shares it.
+    axis_y = plot_bottom + 12
+    end = float(times[-1]) if len(times) else 0.0
+    step = 5.0 if end > 15 else 1.0
+    tick = 0.0
+    while tick <= end + 1e-9:
+        x = x_at(tick)
+        cv2.line(column, (x, plot_bottom), (x, plot_bottom + 3), _MUTED, 1)
+        text(f"{tick:g}s", (x - 6, axis_y), _MUTED, 0.3)
+        tick += step
+    text("time", (6, axis_y), _MUTED, 0.3)
+
+    # The legend: what each kind of mark means, in the colour it is drawn in.
+    legend_y = plot_bottom + axis_height + 12
+    pieces = [
+        ("shaded span = window pass 1 searched", _MUTED),
+        ("solid line = pipeline's onset", _TEXT),
+        ("dashed white = hand label", _REFERENCE),
+    ]
+    x = 6
+    for words, colour in pieces:
+        text(words, (x, legend_y), colour, 0.3)
+        x += cv2.getTextSize(words, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)[0][0] + 14
+    text(
+        "dashed gold = Otsu level from calibrate    grey line = now",
+        (6, legend_y + 14),
+        _LEVEL,
+        0.3,
+    )
 
     if position is not None:
         x = left + round(span * position / total)
-        cv2.line(column, (x, 4), (x, height - 4), _PLAYHEAD, 1)
+        cv2.line(column, (x, 4), (x, plot_bottom), _PLAYHEAD, 1)
     return column
 
 

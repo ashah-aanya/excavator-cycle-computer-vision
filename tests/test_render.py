@@ -307,3 +307,19 @@ def test_the_windows_are_shaded(cache_with_features: Path):
     )
 
     assert int((_first_frame(bare) != _first_frame(shaded)).any(axis=2).sum()) > 0
+
+
+def test_the_calibrated_levels_are_drawn(cache_with_features: Path):
+    """`levels=` is the same shape of option as `reference=`, which was once
+    accepted, threaded and never drawn. So it gets the same pixel-count check."""
+    bare = cache_with_features / "nl.mp4"
+    drawn = cache_with_features / "l.mp4"
+    render(cache_with_features, out_path=bare, scale=1.0)
+    render(
+        cache_with_features,
+        out_path=drawn,
+        scale=1.0,
+        levels={"height": ("Otsu", 0.1), "truck_overlap": ("Otsu", 0.25)},
+    )
+
+    assert int((_first_frame(bare) != _first_frame(drawn)).any(axis=2).sum()) > 0

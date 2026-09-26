@@ -459,7 +459,7 @@ def _cmd_cycles(args: argparse.Namespace) -> int:
 
     truth = _read_labels(args.labels) if args.labels else {}
     _print_breakdown(cycles, onsets, truth)
-    _render_diagnostic(args, table, detections, onsets, truth)
+    _render_diagnostic(args, table, detections, onsets, truth, levels)
     return 0
 
 
@@ -475,7 +475,12 @@ def _read_labels(path: Path) -> dict[str, float]:
         "dumping": "dumping_begins",
         "swinging": "swinging_begins",
     }
-    return {name: labels["boundaries"][key] / fps for name, key in keys.items()}
+    truth = {name: labels["boundaries"][key] / fps for name, key in keys.items()}
+    # The closing dig, so both ends of the cycle are drawn. Keyed apart from the
+    # phases because `_print_breakdown` scores by phase name and must not see it.
+    if "cycle_ends" in labels["boundaries"]:
+        truth["cycle end"] = labels["boundaries"]["cycle_ends"] / fps
+    return truth
 
 
 def _print_breakdown(cycles, onsets, truth: dict[str, float]) -> None:
@@ -516,8 +521,21 @@ def _print_breakdown(cycles, onsets, truth: dict[str, float]) -> None:
             print(f"      {phase:9s} {seconds:6.2f} s")
 
 
-def _render_diagnostic(args, table, detections, onsets, truth) -> None:
+def _render_diagnostic(args, table, detections, onsets, truth, levels) -> None:
     from .render import render
+
+    # The line each trigger compares against, drawn on the signal it gates, so a
+    # window that fires late can be traced to where its level sits. A truck level
+    # too weak to time dumping is still drawn -- it is what the evidence check uses
+    # -- but labelled as switched off, so the picture does not overstate it.
+    truck = levels.over_truck_observed
+    truck_label = "Otsu" if levels.over_truck is not None else "Otsu (weak, off)"
+    drawn_levels = {
+        "height": ("Otsu", levels.low_height.threshold),
+        "speed_x": ("Otsu", levels.moving.threshold),
+    }
+    if truck is not None:
+        drawn_levels["truck_overlap"] = (truck_label, truck.threshold)
 
     times = table.time_seconds
     windows = [
@@ -537,10 +555,12 @@ def _render_diagnostic(args, table, detections, onsets, truth) -> None:
         windows=windows,
         onsets=predicted,
         reference=truth or None,
+        levels=drawn_levels,
     )
     print()
     print(f"  wrote {stats.output_path}  ({stats.frames_written} frames)")
     print("    shaded span   the window pass 1 searched")
     print("    solid line    the refined onset pass 2 returned")
+    print("    dashed gold   the calibrated (Otsu) level each trigger compares against")
     if truth:
         print("    dashed white  the hand-labelled truth")
