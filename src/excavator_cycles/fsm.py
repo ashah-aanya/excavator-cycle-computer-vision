@@ -289,10 +289,18 @@ def calibrate(table, config=None) -> Levels:
     # The question the data can answer is: at the samples where the bucket is most
     # over the bed, which side of the cabin is it on? The median sign of those is
     # the dump side. A median rather than a mean so a few bad boxes cannot flip it.
+    #
+    # Read from the level AS MEASURED, not only a trusted one. `for_evidence` puts a
+    # weak truck level back to COUNT cycles, and `trigger_dumping` multiplies by
+    # this sign there too -- so deriving it only when the level was trusted left
+    # the default +1 in force for exactly the weak case, and a mirrored clip with a
+    # weak truck level lost its dumping evidence and dropped `cycle_count` from 1
+    # to 0. "Which side is the bed on" is a THAT question, like the one
+    # `for_evidence` exists for; it does not need a level fit to say WHEN.
     dump_side = 1.0
-    if over_truck is not None:
+    if over_truck_observed is not None:
         overlap_finite = np.isfinite(overlap)
-        at_bed = overlap_finite & (overlap > over_truck.threshold)
+        at_bed = overlap_finite & (overlap > over_truck_observed.threshold)
         rel = np.asarray(table.rel_cabin_x, dtype=float)
         usable = rel[at_bed & np.isfinite(rel)]
         if usable.size:
@@ -492,6 +500,13 @@ def walk(
     strict = strict_hold_samples
 
     count = len(times)
+    # Which samples perception actually saw. A table without `found` -- the
+    # scripted tables the sequencing tests inject -- has no gaps to speak of.
+    measured = (
+        np.asarray(table.found, dtype=bool)
+        if hasattr(table, "found")
+        else np.ones(count, dtype=bool)
+    )
     state = MachineState()
     found: list[Detection] = []
     index = 0
@@ -569,9 +584,17 @@ def walk(
                 return 0
             if 2 * held < needed:
                 return 0
-        if require_edge and start > 0 and fires(phase, table, start - 1, levels, config):
+        # The edge is judged against the last sample perception actually SAW, not
+        # blindly against `start - 1`. A missing sample makes every trigger return
+        # False, so comparing against it turned a one-frame dropout into a rising
+        # edge: on the dev clip, one gap mid-dig produced an out-of-sequence dig
+        # there and moved the counted cycle's opening onset by seconds. A gap is
+        # unknown, not negative -- `_usable` says so -- and that has to hold for
+        # the edge as well as for the trigger.
+        before = last_measured_before(start)
+        if require_edge and before >= 0 and fires(phase, table, before, levels, config):
             return 0  # already true before this sample: not an edge
-        if not require_edge and start > 0 and not ever_false_before(phase, start):
+        if not require_edge and before >= 0 and not ever_false_before(phase, start):
             # The exemption is only for a condition that ROSE. One true from the
             # first frame is not evidence of a transition into anything.
             return 0
@@ -592,16 +615,25 @@ def walk(
     # edge rule is relaxed at exactly this sample; see `sustained`.
     looking_since = 0
 
+    def last_measured_before(start: int) -> int:
+        """The latest sample before ``start`` that perception saw, or -1 if none."""
+        index = start - 1
+        while index >= 0 and not measured[index]:
+            index -= 1
+        return index
+
     def ever_false_before(phase: str, start: int) -> bool:
-        """Was this phase's trigger false at any sample before ``start``?
+        """Was this phase's trigger false at any MEASURED sample before ``start``?
 
         Scans backward and stops at the first False, so it is cheap in the case that
         matters -- a condition that rose recently answers in one or two calls. Only
         consulted when the edge rule is being waived, which happens at most once per
-        detection.
+        detection. Unmeasured samples are skipped for the same reason as in
+        `sustained`: a dropout is not the condition going false.
         """
         return any(
-            not fires(phase, table, i, levels, config) for i in range(start - 1, -1, -1)
+            measured[i] and not fires(phase, table, i, levels, config)
+            for i in range(start - 1, -1, -1)
         )
 
     while index < count:

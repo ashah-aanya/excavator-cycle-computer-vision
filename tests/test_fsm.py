@@ -1758,3 +1758,142 @@ def test_arrives_does_not_return_the_window_edge_on_the_real_clip():
             f"{onset.phase} refined to its window's left edge ({edge:.4f}), which is "
             "the clipping rule's number and not a measurement"
         )
+
+
+# --- perception gaps are unknown, not negative -----------------------------
+
+
+def _gappy_walk_table(n=200, missing=()):
+    """`_walk_table` plus a `found` column, so a dropout can be placed exactly."""
+    table = _walk_table(n)
+    table.found = np.ones(n, bool)
+    table.found[list(missing)] = False
+    return table
+
+
+def test_a_one_sample_dropout_mid_phase_is_not_a_rising_edge():
+    """A missing sample makes every trigger False, so the sample AFTER it looked
+    like a fresh rise. Judged against `start - 1`, a single dropout inside a dig
+    became an out-of-sequence dig -- a spurious cycle boundary, and the real
+    cycle's opening onset moved by seconds. The edge is judged against the last
+    sample perception actually saw.
+    """
+    from excavator_cycles.fsm import walk
+
+    digging = set(range(10, 100)) - {
+        50
+    }  # the trigger is False on the gap, as `_usable` makes it
+    found = walk(
+        _gappy_walk_table(missing=[50]),
+        _levels(),
+        fires=_scripted({"digging": digging}),
+        hold_samples=3,
+        strict_hold_samples=6,
+    )
+    assert [(d.phase, d.fired_at) for d in found] == [("digging", 10)], found
+    assert not any(d.out_of_sequence for d in found)
+
+
+def test_a_rise_that_happens_across_a_gap_is_still_an_edge():
+    """The guard must not over-correct: false before the gap, true after it, is a
+    genuine rise -- it happened somewhere in the gap, and the first sample that
+    SAW it is where the evidence starts."""
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _gappy_walk_table(missing=[50]),
+        _levels(),
+        fires=_scripted({"digging": set(range(51, 100))}),
+        hold_samples=3,
+    )
+    assert [(d.phase, d.fired_at) for d in found] == [("digging", 51)], found
+
+
+def test_a_dropout_does_not_satisfy_the_edge_exemption_guard():
+    """`ever_false_before` guards the exemption against a condition true from the
+    first frame. A dropout is not the condition going false, so a gap must not
+    readmit the degenerate "true everywhere" case."""
+    from excavator_cycles.fsm import walk
+
+    everywhere = set(range(200)) - {5}
+    found = walk(
+        _gappy_walk_table(missing=[5]),
+        _levels(),
+        fires=_scripted({phase: everywhere for phase in ("digging", "hauling")}),
+        hold_samples=3,
+    )
+    assert [d.phase for d in found] == ["digging"], [d.phase for d in found]
+
+
+@pytest.mark.parametrize("seconds", [6.0, 7.0, 8.0, 9.0])
+def test_a_dropout_mid_dig_on_the_dev_clip_changes_no_detection(seconds):
+    """The measured failure, pinned on real data: one missing sample anywhere in
+    the dig (truth 4.17-10.74 s) added an out-of-sequence dig at that sample."""
+    import dataclasses
+
+    from excavator_cycles.config import Config
+    from excavator_cycles.features import load as load_features
+    from excavator_cycles.fsm import walk
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "dev_clip"
+    table, _scene = load_features(fixture)
+    config = Config()
+    baseline = walk(table, calibrate(table, config), config=config)
+
+    found = np.asarray(table.found, dtype=bool).copy()
+    found[int(np.argmin(np.abs(table.time_seconds - seconds)))] = False
+    gappy = dataclasses.replace(table, found=found)
+    detections = walk(gappy, calibrate(gappy, config), config=config)
+
+    assert [(d.phase, d.fired_at) for d in detections] == [
+        (d.phase, d.fired_at) for d in baseline
+    ]
+
+
+# --- the dump side must survive a weak truck level --------------------------
+
+
+def test_the_dump_side_is_read_even_when_the_truck_level_is_too_weak_to_trust(
+    monkeypatch,
+):
+    """`dump_side` was only derived for a TRUSTED truck level, so a weak one kept
+    the default +1 -- and `for_evidence` restores exactly that weak level to count
+    cycles. On a mirrored clip the evidence check then looked on the wrong side of
+    the cabin, found no dumping, and dropped the cycle from `cycle_count`.
+    """
+    from excavator_cycles import fsm
+
+    monkeypatch.setattr(fsm, "MIN_SEPARABILITY", 1.01)  # nothing is trustworthy
+    levels = fsm.calibrate(_dumpable_table(side=-1.0), None)
+    assert levels.over_truck is None, "precondition: the level must be the weak kind"
+    assert levels.over_truck_observed is not None
+    assert levels.dump_side == pytest.approx(-1.0), "read off the footage, not defaulted"
+
+
+def test_a_mirrored_dev_clip_with_a_weak_truck_level_still_counts_its_cycle(monkeypatch):
+    """The end-to-end form, on real data. The dev clip's truck level scores 0.82;
+    raising the bar to 0.83 is a slightly noisier video. Mirrored, that took
+    `cycle_count` from 1 to 0 -- the outcome `for_evidence` exists to prevent."""
+    from excavator_cycles import fsm
+    from excavator_cycles.config import Config
+    from excavator_cycles.cycles import assemble, summarise
+    from excavator_cycles.features import load as load_features
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "dev_clip"
+    table, _scene = load_features(fixture)
+    config = Config()
+    monkeypatch.setattr(fsm, "MIN_SEPARABILITY", 0.83)
+
+    counts = {}
+    for name, clip in (("original", table), ("mirrored", _mirror(table))):
+        levels = fsm.calibrate(clip, config)
+        assert levels.over_truck is None, "precondition: the truck level must be weak"
+        onsets = fsm.locate(fsm.walk(clip, levels, config=config), clip, config)
+        cycles = assemble(
+            onsets,
+            evidence=lambda s, e, clip=clip, levels=levels: fsm.evidence_within(
+                clip, levels, s, e
+            ),
+        )
+        counts[name] = summarise(cycles).cycle_count
+    assert counts == {"original": 1, "mirrored": 1}, counts
