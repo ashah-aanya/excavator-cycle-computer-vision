@@ -1897,3 +1897,55 @@ def test_a_mirrored_dev_clip_with_a_weak_truck_level_still_counts_its_cycle(monk
         )
         counts[name] = summarise(cycles).cycle_count
     assert counts == {"original": 1, "mirrored": 1}, counts
+
+
+# --- review follow-ups: clipping at min_side=1, and gaps inside pass 2 ------
+
+
+def test_min_side_one_clips_nothing_so_a_one_sample_excursion_survives():
+    """`max(1, ...)` forced one sample off each end even at min_side=1, where the
+    clipping rule allows zero. A 1-sample excursion -- exactly what min_side=1
+    says can fire -- was erased: threshold 0.0, separability 0.0."""
+    signal = np.zeros(200)
+    signal[100] = 10.0
+    split = split_of(signal, min_side=1)
+    assert 0.0 < split.threshold <= 10.0, split
+    assert split.above == 1, split
+    assert split.trustworthy, split
+
+
+def _gapped(before, after):
+    values = np.r_[np.full(10, before), np.full(3, np.nan), np.full(7, after)]
+    return values, np.arange(values.size) * 0.1
+
+
+def test_departs_never_walks_backward_through_a_gap():
+    """NaN compared False against the band, so it counted as MOVING, and the walk
+    back from the excursion crossed the gap and returned the time of a sample
+    nobody measured (10). The first sample that SAW motion is 13."""
+    from excavator_cycles.fsm import Window, refine
+
+    values, times = _gapped(before=0.0, after=1.0)
+    onset = refine(values, times, Window(0, values.size), "departs")
+    assert onset == pytest.approx(times[13]), onset
+    assert np.isfinite(values[round(onset / 0.1)]), "returned an unmeasured sample"
+
+
+def test_arrives_never_returns_the_time_of_an_unmeasured_sample():
+    """The sample after the last loud one was returned whatever it was -- here a
+    NaN at 10. The first sample actually seen at rest is 13."""
+    from excavator_cycles.fsm import Window, refine
+
+    values, times = _gapped(before=1.0, after=0.0)
+    onset = refine(values, times, Window(0, values.size), "arrives")
+    assert onset == pytest.approx(times[13]), onset
+
+
+def test_arrives_gives_up_when_only_a_gap_follows_the_motion():
+    """Moving, then nothing measured to the window's end: nothing was SEEN
+    arriving, so there is no onset to report."""
+    from excavator_cycles.fsm import Window, refine
+
+    values = np.r_[np.zeros(5), np.ones(10), np.full(5, np.nan)]
+    times = np.arange(values.size) * 0.1
+    assert refine(values, times, Window(0, values.size), "arrives") is None

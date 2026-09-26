@@ -126,11 +126,11 @@ def split_of(signal: np.ndarray, min_side: int = 1) -> Split:
     the signal's own central mass lets an outlier count towards the tallies while
     denying it the power to place the line.
 
-    How much is clipped is derived, not chosen: ``min_side`` samples from each end,
-    which is the hold requirement. No excursion long enough to be a transition is
-    ever clipped away, because an excursion shorter than the hold cannot become a
-    detection anyway. At 296 samples with a 3-sample hold that is the 1st and 99th
-    percentiles.
+    How much is clipped is derived, not chosen: ``min_side - 1`` samples from each
+    end, one short of the hold requirement, and none at all when ``min_side`` is 1.
+    No excursion long enough to be a transition is ever clipped away, because an
+    excursion shorter than the hold cannot become a detection anyway. At 296
+    samples with a 3-sample hold that is 2 samples from each end.
 
     ``separability`` and the two counts are computed on the UNCLIPPED data, so a
     heavy tail still reads as the poor split it is rather than being tidied away.
@@ -162,8 +162,13 @@ def split_of(signal: np.ndarray, min_side: int = 1) -> Split:
     # min_side=3: threshold 0.0005 and separability 0.072, against an unclipped
     # answer of 0.2594 and 0.970. The shortest excursion that must survive has
     # `min_side` samples, so the most that may be clipped is `min_side - 1`.
-    guard = max(1, min(int(min_side) - 1, (finite.size - 1) // 2))
-    if finite.size > 2 * guard:
+    #
+    # And no floor of 1. `max(1, ...)` forced one sample off each end even at
+    # min_side=1, where the rule above allows ZERO -- and a 1-sample excursion is
+    # exactly what min_side=1 says can fire. 199 zeros and one 10.0 came back as
+    # threshold 0.0, separability 0.0: the excursion erased and the split denied.
+    guard = max(0, min(int(min_side) - 1, (finite.size - 1) // 2))
+    if guard > 0 and finite.size > 2 * guard:
         keep = np.sort(finite)[guard:-guard]
         threshold = otsu_threshold(np.clip(finite, keep[0], keep[-1]))
     else:
@@ -943,15 +948,23 @@ def refine(
     band = _rest_band(inside[finite], sigma, floor_fraction)
     if band <= 0:
         return None
-    quiet = np.abs(inside) <= band
+    # THREE states, not two: loud, quiet, and unmeasured. `NaN <= band` is False,
+    # so `~quiet` used to call every unmeasured sample MOVING. `departs` then walked
+    # backward straight through a gap, and `arrives` could return the time of a
+    # sample nobody measured. The same rule as the walk's edge check: a gap is
+    # unknown, not evidence -- so it is never crossed and never returned. Only
+    # `loud` is needed below; quiet is `finite & ~loud`, and a gap is `~finite`.
+    magnitude = np.abs(np.where(finite, inside, 0.0))
+    loud = finite & (magnitude > band)
 
     if mode == "departs":
-        # Find the excursion, then walk BACK to where the quiet ended.
-        loud = np.flatnonzero(~quiet & finite)
-        if loud.size == 0:
+        # Find the excursion, then walk BACK to where the quiet ended -- stopping at
+        # a gap too, and crediting the onset to the first sample that saw motion.
+        moving = np.flatnonzero(loud)
+        if moving.size == 0:
             return None
-        cursor = int(loud[0])
-        while cursor > 0 and not quiet[cursor - 1]:
+        cursor = int(moving[0])
+        while cursor > 0 and loud[cursor - 1]:
             cursor -= 1
         return float(times[lo + cursor])
 
@@ -961,13 +974,16 @@ def refine(
         # LEFT EDGE whenever that sample happened to be quiet -- a number produced by
         # the window-clipping rule rather than measured from the signal, and one that
         # looks every bit as precise as a real one.
-        loud = np.flatnonzero(~quiet & finite)
-        if loud.size == 0:
+        moving = np.flatnonzero(loud)
+        if moving.size == 0:
             return None  # never moved, so nothing arrived
-        cursor = int(loud[-1])
-        if cursor + 1 >= quiet.size:
-            return None  # still moving when the window ended
-        return float(times[lo + cursor + 1])
+        # The first MEASURED sample after the last loud one. Every finite sample
+        # after `moving[-1]` is quiet by construction, so this is where the signal
+        # was first seen at rest; a gap in between is skipped rather than returned.
+        settled = np.flatnonzero(finite[int(moving[-1]) + 1 :])
+        if settled.size == 0:
+            return None  # still moving, or unmeasured, when the window ended
+        return float(times[lo + int(moving[-1]) + 1 + int(settled[0])])
 
     raise ValueError(f"unknown mode {mode!r}")
 
