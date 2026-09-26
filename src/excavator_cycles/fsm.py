@@ -42,7 +42,9 @@ arbitrary and the gate built on it should not be trusted.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from statistics import NormalDist
 from typing import Literal
 
 import numpy as np
@@ -683,6 +685,24 @@ def refine(
     raise ValueError(f"unknown mode {mode!r}")
 
 
+# Recovering a noise sigma from the low quantile of |successive differences|.
+#
+# Two corrections, both derived rather than looked up:
+#
+#   1. |X| for X ~ N(0, s) has its q-th quantile at s * Phi^-1((1+q)/2). So
+#      dividing the quantile by that factor inverts it. `inv_cdf` computes it, so
+#      changing _QUIET_QUANTILE automatically changes the scale with it.
+#   2. Differencing two independent samples of sd s gives sd s*sqrt(2), so the
+#      result is divided by sqrt(2) to get back to the per-sample noise.
+#
+# A LOW quantile rather than the median because a refinement window is mostly
+# moving by construction -- see the docstring below.
+_QUIET_QUANTILE = 0.25
+_QUANTILE_TO_SIGMA = 1.0 / (
+    math.sqrt(2.0) * NormalDist().inv_cdf((1.0 + _QUIET_QUANTILE) / 2.0)
+)
+
+
 def _rest_band(values: np.ndarray, sigma: float, floor_fraction: float = 0.02) -> float:
     """How far from zero still counts as "at rest".
 
@@ -699,11 +719,21 @@ def _rest_band(values: np.ndarray, sigma: float, floor_fraction: float = 0.02) -
     transition, the low quantile is 0, and a band of zero makes every sample an
     excursion. The floor is a small fraction of what the signal does across the
     window: rest cannot be defined more tightly than that.
+
+    **A third, found later: the scale factor was for a different statistic.** The
+    code multiplied the quantile by ``1.4826 / sqrt(2)``. 1.4826 is the famous
+    MAD-to-sigma constant and it is only valid for the MEDIAN of absolute
+    deviations -- reaching for it and applying it to the 0.25 quantile recovered
+    0.47 sigma where it claimed 1.00, so every band was 2.1x too tight. A band
+    that is too tight is the worse direction of error: a settled signal still
+    looks like it is moving, so ``arrives`` finds nothing and the onset is LOST
+    rather than merely misplaced. The factor below is derived from the quantile
+    instead of remembered, so the two cannot drift apart again.
     """
     if values.size < 3:
         return 0.0
     steps = np.abs(np.diff(values))
-    quiet = float(np.quantile(steps, 0.25)) * 1.4826 / np.sqrt(2)
+    quiet = float(np.quantile(steps, _QUIET_QUANTILE)) * _QUANTILE_TO_SIGMA
     return max(sigma * quiet, floor_fraction * float(np.ptp(values)))
 
 

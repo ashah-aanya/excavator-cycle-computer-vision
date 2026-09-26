@@ -890,3 +890,117 @@ def test_locate_reports_a_cue_that_found_nothing_instead_of_hiding_it():
     table = _CueTable(n=60)  # every signal is flat: nothing to find
     found = locate([Detection("digging", Window(10, 30), 20)], table, Config.load())
     assert [(o.phase, o.refined) for o in found] == [("digging", None)]
+
+
+# --- the rest band ------------------------------------------------------------
+#
+# `_rest_band` decides how far from zero still counts as "at rest", which decides
+# where `refine` puts every onset. It was wrong by a factor of 2.1 -- and a band
+# that is too NARROW makes a settled signal look like it is still moving, so
+# `arrives` finds nothing and the onset is lost entirely rather than misplaced.
+
+
+def test_the_rest_band_recovers_a_known_noise_level():
+    """The band must mean what it says: `sigma=1` is one standard deviation.
+
+    The old code multiplied the 0.25 quantile of |differences| by 1.4826/sqrt(2).
+    1.4826 is the MAD-to-sigma constant and it applies to the MEDIAN of absolute
+    deviations, not to some other quantile -- a familiar constant reached for and
+    applied to the wrong statistic. The result recovered 0.47 sigma instead of
+    1.00, so every band was 2.1x too tight.
+    """
+    from excavator_cycles.fsm import _rest_band
+
+    rng = np.random.default_rng(0)
+    for true_sigma in (0.01, 0.05, 0.2, 1.0):
+        noise = rng.normal(0.0, true_sigma, 100_000)
+        band = _rest_band(noise, sigma=1.0, floor_fraction=0.0)
+        assert band == pytest.approx(true_sigma, rel=0.05), (
+            f"sigma={true_sigma}: band {band:.5f} should be one sigma"
+        )
+
+
+def test_the_rest_band_scales_with_sigma():
+    """Three sigma must be three times one sigma, or the parameter is a fudge."""
+    from excavator_cycles.fsm import _rest_band
+
+    noise = np.random.default_rng(1).normal(0.0, 0.1, 100_000)
+    one = _rest_band(noise, sigma=1.0, floor_fraction=0.0)
+    assert _rest_band(noise, sigma=3.0, floor_fraction=0.0) == pytest.approx(3 * one, rel=1e-9)
+
+
+def test_the_rest_band_is_estimated_from_the_quiet_part_not_the_moving_part():
+    """The trap this function exists to avoid, tested as a comparison.
+
+    A refinement window is mostly MOVING by construction -- it was chosen because
+    it contains a transition. Estimating the band from the MEDIAN difference
+    therefore measures the motion, and on a clean synthetic ramp that estimate came
+    out at the ramp's own step size, swallowing the whole excursion and putting the
+    onset four samples late.
+
+    Asserted as a ratio between the two quantile choices on identical data, so no
+    absolute threshold needs tuning: the low quantile must stay below the ramp's
+    step size, and far below what the median would give.
+    """
+    from excavator_cycles.fsm import _QUANTILE_TO_SIGMA, _rest_band
+
+    rng = np.random.default_rng(2)
+    noise_sigma, ramp_step = 0.001, 0.05
+    # 40% at rest: above the 0.25 quantile so it measures the noise, below the
+    # 0.5 quantile so the median measures the motion. That gap IS the design
+    # choice, and a fixture either side of it is what demonstrates it.
+    quiet = rng.normal(0.0, noise_sigma, 120)
+    ramp = np.arange(180) * ramp_step  # steps 50x the noise, as a real cue is
+    mixed = np.r_[quiet, ramp]
+
+    band = _rest_band(mixed, sigma=3.0, floor_fraction=0.0)
+    median_band = 3.0 * float(np.quantile(np.abs(np.diff(mixed)), 0.5)) * _QUANTILE_TO_SIGMA
+
+    assert band < ramp_step, (
+        f"band {band:.5f} must not swallow a step of {ramp_step}, or the excursion "
+        "is invisible and the onset lands late"
+    )
+    assert median_band > ramp_step, "the median really is the trap being avoided"
+    assert band < median_band / 10, f"low quantile {band:.5f} vs median {median_band:.5f}"
+
+
+def test_the_rest_band_needs_a_quarter_of_the_window_to_be_quiet():
+    """A REAL LIMITATION, pinned so whoever sizes the windows knows about it.
+
+    The estimator reads the 0.25 quantile of |differences|, so it only measures
+    noise if MORE than a quarter of the window is actually at rest. Below that the
+    quantile falls inside the moving part and the band becomes a measure of the
+    motion -- the very failure the low quantile was chosen to avoid, reappearing
+    when the window is mostly excursion.
+
+    This bounds how wide a refinement window may be relative to the rest either
+    side of the transition. It is not currently enforced anywhere, which is worth
+    knowing while the cues are being fixed.
+    """
+    from excavator_cycles.fsm import _rest_band
+
+    rng = np.random.default_rng(3)
+    ramp_step = 0.05
+    quiet = rng.normal(0.0, 0.001, 60)
+    ramp = np.arange(240) * ramp_step  # only 20% of the window is at rest
+    band = _rest_band(np.r_[quiet, ramp], sigma=3.0, floor_fraction=0.0)
+    assert band > ramp_step, (
+        "documented behaviour: with under a quarter of the window quiet the band "
+        f"is set by the motion ({band:.4f} against a step of {ramp_step})"
+    )
+
+
+def test_the_rest_band_never_collapses_to_zero_on_a_flat_signal():
+    """A band of zero makes every sample an excursion, so the floor is load-bearing."""
+    from excavator_cycles.fsm import _rest_band
+
+    flat_then_step = np.r_[np.zeros(50), np.ones(50)]
+    band = _rest_band(flat_then_step, sigma=3.0, floor_fraction=0.02)
+    assert band == pytest.approx(0.02, rel=1e-9), "2% of the 0-to-1 range"
+
+
+def test_the_rest_band_needs_something_to_measure():
+    """Fewer than three samples yields no differences worth a quantile."""
+    from excavator_cycles.fsm import _rest_band
+
+    assert _rest_band(np.array([1.0, 2.0]), sigma=3.0) == 0.0
