@@ -1607,3 +1607,58 @@ def test_a_video_with_no_truck_at_all_has_nothing_to_fall_back_on():
     assert levels.over_truck_observed is None, "nothing was measured, so nothing is retained"
     assert levels.for_evidence is levels, "there is no permissive variant to build"
     assert "dumping" not in evidence_within(table, levels, 0.0, 20.0)
+
+
+def test_conditions_true_from_the_first_frame_do_not_march_the_machine_forward():
+    """The edge exemption, unguarded, manufactured cycles out of a constant signal.
+
+    Waiving the rising-edge rule at the first sample the walk looks for a phase
+    fixed a real permanent loss -- but unguarded it let already-true conditions
+    advance the state machine on no new evidence at all. With all four triggers true
+    everywhere, the walk produced 20 detections and `assemble` read four "complete"
+    cycles out of a signal that never changed.
+
+    The guard: the exempted phase must have been false at SOME earlier sample, so it
+    genuinely rose during the clip. The rise need not be recent -- insisting on that
+    is what lost the transition in the first place.
+    """
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(60),
+        _levels(),
+        fires=lambda phase, table, index, levels, config: True,
+        hold_samples=3,
+        strict_hold_samples=6,
+        lookback_samples=2,
+    )
+    # Digging at sample 0 is allowed and documented: the clip may open mid-dig, and
+    # there is no earlier sample to establish an edge against. Nothing may follow it
+    # on the strength of a condition that was never false.
+    assert [d.phase for d in found] == ["digging"], (
+        f"a constant signal must not produce a cycle; got {[(d.phase, d.fired_at) for d in found]}"
+    )
+
+
+def test_a_condition_that_genuinely_rises_is_still_exempted():
+    """The control, and the case the exemption exists for.
+
+    Both halves matter: if the guard rejected this, the permanent loss it was added
+    to fix would be back.
+    """
+    from excavator_cycles.fsm import walk
+
+    # Hauling is FALSE until it rises, at each of the four positions inside the span
+    # the walk skips after confirming digging.
+    for rise in (10, 11, 12, 13):
+        found = walk(
+            _walk_table(60),
+            _levels(),
+            fires=_scripted({"digging": set(range(10, 13)), "hauling": set(range(rise, 60))}),
+            hold_samples=3,
+            strict_hold_samples=6,
+            lookback_samples=2,
+        )
+        assert [d.phase for d in found] == ["digging", "hauling"], (
+            f"hauling rising at {rise} must still be found"
+        )

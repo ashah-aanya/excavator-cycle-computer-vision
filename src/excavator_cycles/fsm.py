@@ -529,6 +529,17 @@ def walk(
         EXPECTING: an out-of-sequence dig always needs a genuine edge, since
         unexpected evidence should stay expensive.
 
+        The exemption is itself guarded, because unguarded it let already-true
+        conditions MARCH the state machine forward on no new evidence: with all four
+        triggers true everywhere, the walk produced 20 detections and four
+        "complete" cycles out of a signal that never changed. So the exempted phase
+        must still have been false at SOME earlier sample -- it must genuinely have
+        risen during the clip rather than having been true from the first frame.
+        That readmits the contiguous-phase case, where hauling was false right up to
+        digging's onset, and refuses the degenerate one, where it was never false at
+        all. The rise is not required to be recent: insisting on that is what lost
+        the transition in the first place.
+
         Returns a COUNT rather than a bool so the caller can size the window to
         the evidence that actually exists. At the end of the clip fewer than
         ``needed`` samples remain, and refusing on that ground alone silently
@@ -560,6 +571,10 @@ def walk(
                 return 0
         if require_edge and start > 0 and fires(phase, table, start - 1, levels, config):
             return 0  # already true before this sample: not an edge
+        if not require_edge and start > 0 and not ever_false_before(phase, start):
+            # The exemption is only for a condition that ROSE. One true from the
+            # first frame is not evidence of a transition into anything.
+            return 0
         if not all(fires(phase, table, i, levels, config) for i in range(start, start + held)):
             return 0
         if held < needed:
@@ -576,6 +591,18 @@ def walk(
     # The sample from which the walk started looking for the CURRENT target. The
     # edge rule is relaxed at exactly this sample; see `sustained`.
     looking_since = 0
+
+    def ever_false_before(phase: str, start: int) -> bool:
+        """Was this phase's trigger false at any sample before ``start``?
+
+        Scans backward and stops at the first False, so it is cheap in the case that
+        matters -- a condition that rose recently answers in one or two calls. Only
+        consulted when the edge rule is being waived, which happens at most once per
+        detection.
+        """
+        return any(
+            not fires(phase, table, i, levels, config) for i in range(start - 1, -1, -1)
+        )
 
     while index < count:
         target = state.looking_for
