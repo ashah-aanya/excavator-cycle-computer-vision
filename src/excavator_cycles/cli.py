@@ -305,36 +305,64 @@ def _cmd_run(args: argparse.Namespace) -> int:
     path that can drift from it.
     """
     work_dir = args.work_dir or Path("outputs/track") / Path(args.video).stem
+    cached = work_dir / "answer.json"
 
+    # `cycles` writes to the work directory unconditionally, so the cache stays
+    # self-contained, and the answer is copied to `--out` afterwards. Passing
+    # `--out` down to the stage instead would have it write the right file and then
+    # be overwritten by the copy -- which is exactly the bug this shape avoids.
     stages = (
         ("track", work_dir / "masks.npz", _cmd_track, {"out": work_dir}),
         ("features", work_dir / "features.npz", _cmd_features, {"no_plots": False}),
-        ("cycles", None, _cmd_cycles, {}),
+        ("cycles", None, _cmd_cycles, {"out": cached}),
     )
+
+    # A QA verdict is ADVISORY here, and only for `track`. `track` returns non-zero
+    # when `evaluate_quality` flags anything -- including soft observations like
+    # "only X% of samples have a mask" -- but it has still written the masks, so the
+    # remaining stages can run and the task asks for an answer. Aborting turned one
+    # tracker wobble on a hidden video into zero for every field, which is strictly
+    # worse than a flagged answer. A genuine failure raises rather than returning.
+    #
+    # The concern is not swallowed: it is logged, printed beside the answer, and
+    # returned as this command's own exit code, so a caller checking the status
+    # still learns about it.
+    concerns: list[str] = []
     for name, product, run_stage, extra in stages:
         if args.reuse and product is not None and product.exists():
             log.info("%s: reusing %s", name, product)
             continue
         log.info("%s: running", name)
-        # A copy per stage, so one stage's defaults cannot leak into the next.
+        # A copy per stage, so one stage's arguments cannot leak into the next.
         stage_args = argparse.Namespace(**vars(args))
         stage_args.track_dir = work_dir
         for key, value in extra.items():
             setattr(stage_args, key, value)
         status = run_stage(stage_args)
-        if status != 0:
-            log.error("%s failed with status %d; stopping", name, status)
-            return status
+        if status == 0:
+            continue
+        if name == "track":
+            log.warning(
+                "track reported a QA concern (status %d). The masks were written, so "
+                "the run continues -- but treat this answer as suspect.",
+                status,
+            )
+            concerns.append("track QA flagged this run; see the QA lines above")
+            continue
+        log.error("%s failed with status %d; stopping", name, status)
+        return status
 
-    answer = args.out or work_dir / "answer.json"
-    if answer != work_dir / "answer.json":
+    answer = Path(args.out) if args.out else cached
+    if answer != cached:
         import shutil
 
-        shutil.copyfile(work_dir / "answer.json", answer)
+        shutil.copyfile(cached, answer)
         log.info("copied the answer to %s", answer)
     print()
     print(f"  ANSWER: {answer}")
-    return 0
+    for concern in concerns:
+        print(f"  CONCERN: {concern}")
+    return 1 if concerns else 0
 
 
 def _cmd_features(args: argparse.Namespace) -> int:
