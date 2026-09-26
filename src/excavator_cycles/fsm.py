@@ -450,7 +450,14 @@ def walk(
         hold_samples = samples_for(duration("hold_seconds"), times)
     if lookback_samples is None:
         lookback_samples = samples_for(duration("lookback_seconds"), times)
-    strict = strict_hold_samples if strict_hold_samples is not None else hold_samples * 2
+    if strict_hold_samples is None:
+        # Read from config, not derived as `hold_samples * 2`. Deriving it left
+        # `strict_hold_seconds` in `config.py` and `default.yaml` with no reader in
+        # `src/` while both files documented it as live -- dead config, the exact
+        # defect class this branch has been removing. `FSMConfig`'s own docstring
+        # settles which model is right: "Every one is a DURATION, never a count."
+        strict_hold_samples = samples_for(duration("strict_hold_seconds"), times)
+    strict = strict_hold_samples
 
     count = len(times)
     state = MachineState()

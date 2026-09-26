@@ -710,13 +710,67 @@ def test_the_first_window_has_nothing_to_clip_against():
 
 def test_walk_parameters_come_from_config_in_seconds():
     """A window given in SAMPLES means something different at every frame rate.
-    The config holds durations; the conversion happens once, at the boundary."""
-    from excavator_cycles.config import Config
+    The config holds durations; the conversion happens once, at the boundary.
 
-    fsm = Config.load().fsm
-    for field in ("hold_seconds", "strict_hold_seconds", "lookback_seconds"):
-        assert hasattr(fsm, field), f"FSMConfig is missing {field}"
-        assert isinstance(getattr(fsm, field), float)
+    This test used to assert only `hasattr` and `isinstance(float)`, which cannot
+    fail while the field exists -- and it did not fail when `strict_hold_seconds`
+    stopped being READ, leaving `config.py` and `default.yaml` both documenting a
+    live parameter that nothing consulted. Each duration is now asserted to CHANGE
+    THE WALK, which is the only claim worth making about a config value.
+    """
+    import dataclasses
+
+    from excavator_cycles.config import Config
+    from excavator_cycles.fsm import walk
+
+    def phases(**overrides) -> list[tuple[str, int]]:
+        config = Config.load()
+        config = dataclasses.replace(config, fsm=dataclasses.replace(config.fsm, **overrides))
+        found = walk(
+            _walk_table(60),
+            _levels(),
+            # digging 10-13, then hauling far later, then a long mid-cycle dig that
+            # only a LOW strict bar will accept as out-of-sequence.
+            fires=_scripted(
+                {
+                    "digging": set(range(10, 14)) | set(range(30, 34)),
+                    "hauling": set(range(20, 28)),
+                }
+            ),
+            config=config,
+        )
+        return [(d.phase, d.fired_at) for d in found]
+
+    baseline = phases()
+    assert baseline, "the fixture must detect something or nothing below is measurable"
+
+    # `hold_seconds`: a longer hold than the evidence rejects the transition.
+    assert phases(hold_seconds=2.0) != baseline, "hold_seconds does not reach the walk"
+    # `lookback_seconds`: changes where each window starts.
+    windows_short = walk(
+        _walk_table(60),
+        _levels(),
+        fires=_scripted({"digging": set(range(10, 14))}),
+        hold_samples=3,
+        strict_hold_samples=6,
+        lookback_samples=1,
+    )[0].window.lo
+    windows_long = walk(
+        _walk_table(60),
+        _levels(),
+        fires=_scripted({"digging": set(range(10, 14))}),
+        hold_samples=3,
+        strict_hold_samples=6,
+        lookback_samples=8,
+    )[0].window.lo
+    assert windows_short != windows_long, "lookback does not reach the window"
+    # `strict_hold_seconds`: the bar for an out-of-turn dig. A low bar admits the
+    # mid-cycle dig; a high one does not.
+    lenient = phases(strict_hold_seconds=0.2)
+    strictest = phases(strict_hold_seconds=5.0)
+    assert lenient != strictest, (
+        f"strict_hold_seconds does not reach the walk: {lenient} == {strictest}"
+    )
 
 
 def test_the_same_duration_is_more_samples_at_a_higher_rate():
