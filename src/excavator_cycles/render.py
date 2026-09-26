@@ -49,6 +49,8 @@ _SURFACE = (60, 140, 255)
 _DIG = (90, 230, 120)
 _DUMP = (250, 180, 80)
 _TRACE = (220, 220, 220)
+_EDGE = (60, 60, 60)
+_PLAYHEAD = (160, 160, 160)
 
 
 @dataclass
@@ -104,14 +106,18 @@ def render(
     # The writer accepts exactly one frame size and silently DROPS anything
     # else, so the total height has to account for every panel we stack --
     # including the signal strip, whose presence depends on stage 3 having run.
-    strip_height = strip.shape[0] if strip is not None else 0
-    canvas_height = height + panel_height + strip_height
+    # Layout: the video on the left with a thin status bar under it, and the
+    # signals in a column down the right. Stacking the signals underneath made
+    # the canvas nearly square and gave half the frame to the graphs.
+    graph_width = round(width * 0.62) if strip is not None else 0
+    canvas_height = height + panel_height
+    canvas_width = width + graph_width
 
     writer = cv2.VideoWriter(
         str(out_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
         info.fps,
-        (width, canvas_height),
+        (canvas_width, canvas_height),
     )
     if not writer.isOpened():
         raise RuntimeError(f"could not open video writer for {out_path}")
@@ -139,28 +145,33 @@ def render(
             canvas = _draw_frame(frame, mask, record, result, scale, draw_boxes)
             if table is not None and sample_position is not None:
                 canvas = _draw_physics(canvas, mask, table, scene, sample_position, scale)
-            panels = [
-                canvas,
-                _draw_panel(
-                    record,
-                    result,
-                    width,
-                    panel_height,
-                    frame_index,
-                    info.fps,
-                    table,
-                    sample_position,
-                ),
-            ]
-            if strip is not None:
-                panels.append(_blit_strip(strip, table, sample_position, width))
-            canvas = np.vstack(panels)
-            if canvas.shape[:2] != (canvas_height, width):
+            left = np.vstack(
+                [
+                    canvas,
+                    _draw_panel(
+                        record,
+                        result,
+                        width,
+                        panel_height,
+                        frame_index,
+                        info.fps,
+                        table,
+                        sample_position,
+                    ),
+                ]
+            )
+            if graph_width:
+                canvas = np.hstack(
+                    [left, _graph_column(table, sample_position, graph_width, canvas_height)]
+                )
+            else:
+                canvas = left
+            if canvas.shape[:2] != (canvas_height, canvas_width):
                 # Without this the writer drops the frame and returns nothing,
                 # and the run reports success while producing an empty file.
                 raise RuntimeError(
                     f"frame is {canvas.shape[1]}x{canvas.shape[0]}, "
-                    f"writer expects {width}x{canvas_height}"
+                    f"writer expects {canvas_width}x{canvas_height}"
                 )
             writer.write(canvas)
             written += 1
@@ -275,45 +286,70 @@ def _draw_physics(canvas, mask, table, scene, position: int, scale: float):
     return canvas
 
 
-def _signal_strip(table, scene, height: int = 96):
-    """A strip of the three signals that decide the phase boundaries."""
+# Which signals ride along with the video, and in what order. Six rather than
+# all thirteen: these are the ones a phase boundary will be read off, and a
+# panel too short to see a shape in is worse than no panel.
+_GRAPHS = (
+    ("height  (up +)", "height", _SURFACE),
+    ("dh/dt", "dh_dt", _DIG),
+    ("d2h/dt2", "d2h_dt2", (120, 200, 255)),
+    ("|dx/dt|", "speed_x", (120, 235, 140)),
+    ("truck overlap", "truck_overlap", _DUMP),
+    ("aspect ratio", "aspect_ratio", (230, 160, 240)),
+)
 
-    rows = [
-        ("height (up +)", table.height, _SURFACE),
-        ("|dx/dt|", table.speed_x, _DIG),
-        ("truck overlap", table.truck_overlap, _DUMP),
-    ]
-    width = max(len(table.time_seconds), 2)
-    strip = np.full((height * len(rows), width, 3), _PANEL, dtype=np.uint8)
-    for index, (label, values, colour) in enumerate(rows):
-        top = index * height
-        values = np.asarray(values, dtype=float)
+
+def _signal_strip(table, scene, height: int = 0):
+    """Kept so `render` can test whether stage 3 ran; the drawing is per-frame."""
+    return table
+
+
+def _graph_column(table, position: int | None, width: int, height: int):
+    """The signals, stacked down the right-hand side, with a shared playhead.
+
+    Drawn fresh each frame rather than blitted from a pre-rendered strip,
+    because the playhead and the live value both move -- and at this width the
+    whole column is a few thousand line segments, which is cheap.
+    """
+    column = np.full((height, width, 3), _PANEL, dtype=np.uint8)
+    rows = len(_GRAPHS)
+    each = height // rows
+    left, right = 56, width - 8  # room for the label on the left
+    span = max(right - left, 1)
+    total = max(len(table.time_seconds) - 1, 1)
+
+    for index, (label, field, colour) in enumerate(_GRAPHS):
+        top = index * each
+        base, ceiling = top + each - 10, top + 8
+        values = np.asarray(getattr(table, field), dtype=float)
         finite = values[np.isfinite(values)]
         if finite.size == 0:
             continue
         low, high = float(finite.min()), float(finite.max())
-        span = max(high - low, np.finfo(float).eps)
+        scale = max(high - low, float(np.finfo(float).eps))
+
+        cv2.line(column, (left, base + 4), (right, base + 4), _EDGE, 1)
         previous = None
-        for x, value in enumerate(values):
+        for i, value in enumerate(values):
             if not np.isfinite(value):
                 previous = None
                 continue
-            y = top + int((1 - (value - low) / span) * (height - 10)) + 5
+            x = left + round(span * i / total)
+            y = base - round((value - low) / scale * (base - ceiling))
             if previous is not None:
-                cv2.line(strip, previous, (x, y), colour, 1)
+                cv2.line(column, previous, (x, y), colour, 1, cv2.LINE_AA)
             previous = (x, y)
-        _label(strip, label, (4, top + 12), colour)
-    return strip
 
+        cv2.putText(column, label, (6, top + 16), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.33, colour, 1, cv2.LINE_AA)
+        if position is not None and np.isfinite(values[position]):
+            cv2.putText(column, f"{values[position]:+.3f}", (6, top + 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.30, _TEXT, 1, cv2.LINE_AA)
 
-def _blit_strip(strip, table, position: int | None, width: int):
-    """The signal strip scaled to the frame width, with a playhead."""
-
-    out = cv2.resize(strip, (width, strip.shape[0]), interpolation=cv2.INTER_AREA)
-    if position is not None and len(table.time_seconds) > 1:
-        x = int(position / (len(table.time_seconds) - 1) * (width - 1))
-        cv2.line(out, (x, 0), (x, out.shape[0]), (255, 255, 255), 1)
-    return out
+    if position is not None:
+        x = left + round(span * position / total)
+        cv2.line(column, (x, 4), (x, height - 4), _PLAYHEAD, 1)
+    return column
 
 
 def _draw_panel(
@@ -328,7 +364,9 @@ def _draw_panel(
 ):
     """A readout strip: time, and the numbers QA judges the masks by."""
     panel = np.full((height, width, 3), _PANEL, dtype=np.uint8)
-    scale = max(0.35, height / 130)
+    # Sized against the video's width, not the panel's height: the panel is a
+    # thin status bar now that the signals live in their own column.
+    scale = max(0.42, width / 1500)
     line = int(height * 0.42)
 
     seconds = frame_index / fps if fps else 0.0
@@ -359,7 +397,7 @@ def _draw_panel(
         right,
         (width - text_width - 10, line),
         cv2.FONT_HERSHEY_SIMPLEX,
-        scale,
+        scale * 0.62,
         colour,
         1,
         cv2.LINE_AA,
@@ -431,7 +469,9 @@ def _dashed_box(canvas, box, colour, dash: int = 6):
 
 
 def _label(canvas, text, origin, colour):
-    font_scale = max(0.3, canvas.shape[0] / 900)
+    # Against the canvas WIDTH: the overlay labels sit on the video, which is
+    # wide and short, and sizing them off its height made them shout.
+    font_scale = max(0.28, canvas.shape[1] / 2600)
     (text_width, text_height), baseline = cv2.getTextSize(
         text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1
     )
