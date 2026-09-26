@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>State Machine — Excavator Cycle Pipeline</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+    
+    .container {
+      max-width: 1360px;
+      margin: 0 auto;
+    }
+    
+    .header {
+      margin-bottom: 2rem;
+    }
+    
+    .header-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    .pulse-dot {
+      width: 12px;
+      height: 12px;
+      background: #22d3ee;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+    }
+    
+    .subtitle {
+      color: #94a3b8;
+      font-size: 0.875rem;
+      margin-left: 1.75rem;
+    }
+    
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+    
+    svg {
+      width: 100%;
+      min-width: 900px;
+      display: block;
+    }
+    
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+    
+    .card {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 0.75rem;
+      border: 1px solid #1e293b;
+      padding: 1.25rem;
+    }
+    
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    
+    .card-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    
+    .card h3 {
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+    
+    .card ul {
+      list-style: none;
+      color: #94a3b8;
+      font-size: 0.75rem;
+    }
+    
+    .card li {
+      margin-bottom: 0.375rem;
+    }
+    
+    .footer {
+      text-align: center;
+      margin-top: 1.5rem;
+      color: #475569;
+      font-size: 0.75rem;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 0.5rem;
+      margin-left: auto;
+      flex-shrink: 0;
+      align-items: center;
+    }
+    .toolbar-toggle {
+      background: transparent;
+      border: none;
+      color: #475569;
+      cursor: pointer;
+      font-size: 1.25rem;
+      line-height: 1;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.375rem;
+      transition: color 0.2s, background 0.2s;
+    }
+    .toolbar-toggle:hover { color: #94a3b8; background: rgba(30, 41, 59, 0.5); }
+    .toolbar-actions {
+      display: none;
+      gap: 0.5rem;
+    }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button {
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid #334155;
+      color: #94a3b8;
+      padding: 0.375rem 0.75rem;
+      border-radius: 0.375rem;
+      font-family: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .toolbar-actions button:hover {
+      background: rgba(51, 65, 85, 0.8);
+      color: white;
+      border-color: #475569;
+    }
+
+    @media print {
+      body { background: #020617; padding: 1rem; }
+      .toolbar { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>The State Machine</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">Two passes, four swappable cues, one loop · <strong>not yet built</strong> — this is the design</p>
+    </div>
+
+    <!-- Main Diagram -->
+    <div class="diagram-container">
+      <svg viewBox="0 0 1280 1150">
+        <defs>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
+        </defs>
+        <rect width="1280" height="1150" fill="url(#grid)"/>
+        <line x1="340" y1="205" x2="340" y2="290" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="340.0" y="240.5" fill="#64748b" font-size="7.5" text-anchor="middle">arrays</text>
+        <line x1="1090" y1="205" x2="1090" y2="290" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="1090.0" y="240.5" fill="#64748b" font-size="7.5" text-anchor="middle">min durations</text>
+        <line x1="340" y1="375" x2="340" y2="470" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="340.0" y="415.5" fill="#64748b" font-size="7.5" text-anchor="middle">list[Interval]  (seconds)</text>
+        <line x1="380" y1="565" x2="440" y2="565" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="410.0" y="558.0" fill="#64748b" font-size="7.5" text-anchor="middle">looking_for</text>
+        <line x1="800" y1="565" x2="860" y2="565" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="830.0" y="558.0" fill="#64748b" font-size="7.5" text-anchor="middle">Window</text>
+        <polyline points="1040,680 1040,745 220,745 220,680" fill="none" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="630" y="740" fill="#64748b" font-size="7.5" text-anchor="middle">state.advance(phase, when)   ->  loop</text>
+        <line x1="220" y1="690" x2="220" y2="925" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="220.0" y="800.5" fill="#64748b" font-size="7.5" text-anchor="middle">on the 4th onset: close_cycle()</text>
+        <line x1="380" y1="990" x2="440" y2="990" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="410.0" y="983.0" fill="#64748b" font-size="7.5" text-anchor="middle">list[Cycle]</text>
+        <line x1="800" y1="990" x2="860" y2="990" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="830.0" y="983.0" fill="#64748b" font-size="7.5" text-anchor="middle">Answer</text>
+        <rect x="40" y="60" width="1200" height="160" rx="12" fill="none" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="80" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="1">INPUT  ·  everything is a numpy array of length n</text>
+<text x="56" y="94" fill="#64748b" font-size="8">one row per sample  ·  n = 296 on the development clip, 10 Hz</text>
+        <rect x="60" y="100" width="560" height="105" rx="6" fill="#0f172a"/>
+<rect x="60" y="100" width="560" height="105" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="340.0" y="119" fill="white" font-size="12" font-weight="600" text-anchor="middle">FeatureTable</text>
+<text x="340.0" y="133" fill="#94a3b8" font-size="8" text-anchor="middle">features.npz  ·  13 columns, all length n</text>
+<text x="72" y="150" fill="#fbbf24" font-size="7.5">time_seconds[n]  float64   decoder seconds, NOT index/fps</text>
+<text x="72" y="162" fill="#fbbf24" font-size="7.5">height[n] dh_dt[n] d2h_dt2[n]   L and L/s, UP-positive</text>
+<text x="72" y="174" fill="#fbbf24" font-size="7.5">speed_x[n] = |dx_dt|            L/s</text>
+<text x="72" y="186" fill="#fbbf24" font-size="7.5">truck_overlap[n]  aspect_ratio[n]  rel_cabin_*[n]</text>
+<text x="72" y="198" fill="#fbbf24" font-size="7.5">found[n]  bool   was there a mask BEFORE smoothing</text>
+        <rect x="660" y="100" width="250" height="105" rx="6" fill="#0f172a"/>
+<rect x="660" y="100" width="250" height="105" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="785.0" y="119" fill="white" font-size="12" font-weight="600" text-anchor="middle">Scene</text>
+<text x="785.0" y="133" fill="#94a3b8" font-size="8" text-anchor="middle">derived per video</text>
+<text x="672" y="150" fill="#fbbf24" font-size="7.5">pivot   (x, y) px</text>
+<text x="672" y="162" fill="#fbbf24" font-size="7.5">scale   L, px</text>
+<text x="672" y="174" fill="#fbbf24" font-size="7.5">truck_box  or None</text>
+        <rect x="950" y="100" width="290" height="105" rx="6" fill="#0f172a"/>
+<rect x="950" y="100" width="290" height="105" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="1095.0" y="119" fill="white" font-size="12" font-weight="600" text-anchor="middle">Config</text>
+<text x="1095.0" y="133" fill="#94a3b8" font-size="8" text-anchor="middle">configs/default.yaml</text>
+<text x="962" y="150" fill="#fbbf24" font-size="7.5">min episode durations (s)</text>
+<text x="962" y="162" fill="#fbbf24" font-size="7.5">lookback margin (s)</text>
+<text x="962" y="174" fill="#fbbf24" font-size="7.5">cue parameters</text>
+        <rect x="40" y="250" width="1200" height="140" rx="12" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="270" fill="#34d399" font-size="11" font-weight="700" letter-spacing="1">PASS 1a  ·  BRACKET THE WHOLE VIDEO, ONCE</text>
+<text x="56" y="284" fill="#64748b" font-size="8">Otsu on this video's own distribution  ·  no tuned threshold anywhere</text>
+        <rect x="60" y="288" width="280" height="92" rx="6" fill="#0f172a"/>
+<rect x="60" y="288" width="280" height="92" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="200.0" y="307" fill="white" font-size="12" font-weight="600" text-anchor="middle">episodes()</text>
+<text x="200.0" y="321" fill="#94a3b8" font-size="8" text-anchor="middle">generic: flag -> intervals</text>
+<text x="72" y="338" fill="#34d399" font-size="7.5">(flag[n], times[n], min_s)</text>
+<text x="72" y="349" fill="#34d399" font-size="7.5">  -> list[Interval]</text>
+<text x="72" y="360" fill="#34d399" font-size="7.5">runs of True, long enough</text>
+        <rect x="380" y="288" width="270" height="92" rx="6" fill="#0f172a"/>
+<rect x="380" y="288" width="270" height="92" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="515.0" y="307" fill="white" font-size="12" font-weight="600" text-anchor="middle">dig_episodes</text>
+<text x="515.0" y="321" fill="#94a3b8" font-size="8" text-anchor="middle">height < otsu(height)</text>
+<text x="392" y="338" fill="#34d399" font-size="7.5">the bucket is down</text>
+<text x="392" y="349" fill="#34d399" font-size="7.5">in the material</text>
+<text x="392" y="360" fill="#34d399" font-size="7.5">-> cycle boundaries</text>
+        <rect x="690" y="288" width="270" height="92" rx="6" fill="#0f172a"/>
+<rect x="690" y="288" width="270" height="92" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="825.0" y="307" fill="white" font-size="12" font-weight="600" text-anchor="middle">truck_episodes</text>
+<text x="825.0" y="321" fill="#94a3b8" font-size="8" text-anchor="middle">overlap > otsu(overlap)</text>
+<text x="702" y="338" fill="#34d399" font-size="7.5">the bucket is over</text>
+<text x="702" y="349" fill="#34d399" font-size="7.5">the bed</text>
+<text x="702" y="360" fill="#34d399" font-size="7.5">-> gates dumping</text>
+        <rect x="1000" y="288" width="240" height="92" rx="6" fill="#0f172a"/>
+<rect x="1000" y="288" width="240" height="92" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="1120.0" y="307" fill="white" font-size="12" font-weight="600" text-anchor="middle">move_episodes</text>
+<text x="1120.0" y="321" fill="#94a3b8" font-size="8" text-anchor="middle">|dx/dt| > otsu(|dx/dt|)</text>
+<text x="1012" y="338" fill="#34d399" font-size="7.5">the machine is</text>
+<text x="1012" y="349" fill="#34d399" font-size="7.5">traversing</text>
+<text x="1012" y="360" fill="#34d399" font-size="7.5">-> gates swinging</text>
+        <rect x="40" y="420" width="1200" height="340" rx="12" fill="none" stroke="#22d3ee" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="440" fill="#22d3ee" font-size="11" font-weight="700" letter-spacing="1">THE MACHINE  ·  one transition at a time</text>
+<text x="56" y="454" fill="#64748b" font-size="8">it only ever looks for the ONE transition that can legally come next</text>
+        <rect x="60" y="470" width="320" height="210" rx="6" fill="#0f172a"/>
+<rect x="60" y="470" width="320" height="210" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="220.0" y="489" fill="white" font-size="12" font-weight="600" text-anchor="middle">MachineState</text>
+<text x="220.0" y="503" fill="#94a3b8" font-size="8" text-anchor="middle">what it remembers</text>
+<text x="72" y="520" fill="#22d3ee" font-size="7.2">current: str | None      the phase we are in</text>
+<text x="72" y="532.5" fill="#22d3ee" font-size="7.2">since: float            when it started</text>
+<text x="72" y="545.0" fill="#22d3ee" font-size="7.2">pending: dict[str,float]  this cycle's onsets</text>
+<text x="72" y="557.5" fill="#22d3ee" font-size="7.2">cycles: list[Cycle]     closed, complete</text>
+<text x="72" y="570.0" fill="#22d3ee" font-size="7.2">rejected: list[Cycle]   closed, with a reason</text>
+<text x="72" y="582.5" fill="#22d3ee" font-size="7.2"></text>
+<text x="72" y="595.0" fill="#22d3ee" font-size="7.2">@property looking_for -> str</text>
+<text x="72" y="607.5" fill="#22d3ee" font-size="7.2">  PHASES[(i + 1) % 4]</text>
+<text x="72" y="620.0" fill="#22d3ee" font-size="7.2">  dig -> haul -> dump -> swing -> dig</text>
+<text x="72" y="632.5" fill="#22d3ee" font-size="7.2"></text>
+<text x="72" y="645.0" fill="#22d3ee" font-size="7.2">cold start: scan for the first digging onset;</text>
+<text x="72" y="657.5" fill="#22d3ee" font-size="7.2">everything before it is the ignored partial</text>
+        <rect x="440" y="470" width="360" height="210" rx="6" fill="#0f172a"/>
+<rect x="440" y="470" width="360" height="210" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="620.0" y="489" fill="white" font-size="12" font-weight="600" text-anchor="middle">PASS 1b  ·  window_for()</text>
+<text x="620.0" y="503" fill="#94a3b8" font-size="8" text-anchor="middle">WHERE did it happen?</text>
+<text x="452" y="520" fill="#22d3ee" font-size="7.2">window_for(transition, state, table,</text>
+<text x="452" y="531.6" fill="#22d3ee" font-size="7.2">           brackets, config) -> Window | None</text>
+<text x="452" y="543.2" fill="#22d3ee" font-size="7.2"></text>
+<text x="452" y="554.8000000000001" fill="#22d3ee" font-size="7.2">Window = (lo: int, hi: int)   SAMPLE INDICES</text>
+<text x="452" y="566.4000000000001" fill="#22d3ee" font-size="7.2">  lo = searchsorted(times, t_lo)</text>
+<text x="452" y="578.0000000000001" fill="#22d3ee" font-size="7.2"></text>
+<text x="452" y="589.6000000000001" fill="#22d3ee" font-size="7.2">bounds come from the brackets, then:</text>
+<text x="452" y="601.2000000000002" fill="#22d3ee" font-size="7.2">  lo = max(lo, index(state.since) - lookback)</text>
+<text x="452" y="612.8000000000002" fill="#22d3ee" font-size="7.2">  hi = min(hi, start of the next bracket)</text>
+<text x="452" y="624.4000000000002" fill="#22d3ee" font-size="7.2"></text>
+<text x="452" y="636.0000000000002" fill="#22d3ee" font-size="7.2">DELIBERATELY WIDE. Missing the truth is</text>
+<text x="452" y="647.6000000000003" fill="#22d3ee" font-size="7.2">fatal; a loose window only costs pass 2</text>
+<text x="452" y="659.2000000000003" fill="#22d3ee" font-size="7.2">a little more to search.</text>
+<text x="452" y="670.8000000000003" fill="#22d3ee" font-size="7.2"></text>
+<text x="452" y="682.4000000000003" fill="#22d3ee" font-size="7.2">lookback lets it see BEFORE the current</text>
+<text x="452" y="694.0000000000003" fill="#22d3ee" font-size="7.2">phase began -- a departure has to be</text>
+<text x="452" y="705.6000000000004" fill="#22d3ee" font-size="7.2">walked back to.</text>
+        <rect x="860" y="470" width="380" height="210" rx="6" fill="#0f172a"/>
+<rect x="860" y="470" width="380" height="210" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="1050.0" y="489" fill="white" font-size="12" font-weight="600" text-anchor="middle">PASS 2  ·  frame_for()</text>
+<text x="1050.0" y="503" fill="#94a3b8" font-size="8" text-anchor="middle">exactly WHEN, inside that window</text>
+<text x="872" y="520" fill="#22d3ee" font-size="7.2">frame_for(transition, window, table,</text>
+<text x="872" y="531.6" fill="#22d3ee" font-size="7.2">          config) -> float | None</text>
+<text x="872" y="543.2" fill="#22d3ee" font-size="7.2"></text>
+<text x="872" y="554.8000000000001" fill="#22d3ee" font-size="7.2">slices the arrays:  table.dh_dt[lo:hi]</text>
+<text x="872" y="566.4000000000001" fill="#22d3ee" font-size="7.2"></text>
+<text x="872" y="578.0000000000001" fill="#22d3ee" font-size="7.2">the four cues, swappable, one signature:</text>
+<text x="872" y="589.6000000000001" fill="#22d3ee" font-size="7.2">  digging   dh_dt ARRIVES at 0</text>
+<text x="872" y="601.2000000000002" fill="#22d3ee" font-size="7.2">  hauling   d2h_dt2 ARRIVES at 0</text>
+<text x="872" y="612.8000000000002" fill="#22d3ee" font-size="7.2">  dumping   argmax(aspect_ratio)</text>
+<text x="872" y="624.4000000000002" fill="#22d3ee" font-size="7.2">  swinging  speed_x DEPARTS 0</text>
+<text x="872" y="636.0000000000002" fill="#22d3ee" font-size="7.2"></text>
+<text x="872" y="647.6000000000003" fill="#22d3ee" font-size="7.2">arrives/departs walk BACKWARD from the</text>
+<text x="872" y="659.2000000000003" fill="#22d3ee" font-size="7.2">excursion to where the signal left rest</text>
+<text x="872" y="670.8000000000003" fill="#22d3ee" font-size="7.2">  -> onsets.motion_boundary()</text>
+<text x="872" y="682.4000000000003" fill="#22d3ee" font-size="7.2"></text>
+<text x="872" y="694.0000000000003" fill="#22d3ee" font-size="7.2">None = the cue never fired. Information,</text>
+<text x="872" y="705.6000000000004" fill="#22d3ee" font-size="7.2">not a crash.</text>
+        <rect x="40" y="880" width="1200" height="180" rx="12" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="900" fill="#a78bfa" font-size="11" font-weight="700" letter-spacing="1">STORAGE  ·  what comes out</text>
+<text x="56" y="914" fill="#64748b" font-size="8">averaged over COMPLETE cycles only</text>
+        <rect x="60" y="915" width="320" height="130" rx="6" fill="#0f172a"/>
+<rect x="60" y="915" width="320" height="130" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="220.0" y="934" fill="white" font-size="12" font-weight="600" text-anchor="middle">Cycle</text>
+<text x="220.0" y="948" fill="#94a3b8" font-size="8" text-anchor="middle">one per dig-onset -> dig-onset span</text>
+<text x="72" y="965" fill="#a78bfa" font-size="7.2">onsets: dict[str, float]   the four</text>
+<text x="72" y="976.5" fill="#a78bfa" font-size="7.2">ends: float                next digging onset</text>
+<text x="72" y="988.0" fill="#a78bfa" font-size="7.2">complete: bool</text>
+<text x="72" y="999.5" fill="#a78bfa" font-size="7.2">reason: str | None</text>
+<text x="72" y="1011.0" fill="#a78bfa" font-size="7.2">  "no dumping onset"  "T3 before T2"</text>
+<text x="72" y="1022.5" fill="#a78bfa" font-size="7.2">incomplete -> excluded from BOTH the</text>
+<text x="72" y="1034.0" fill="#a78bfa" font-size="7.2">count and every average</text>
+        <rect x="440" y="915" width="360" height="130" rx="6" fill="#0f172a"/>
+<rect x="440" y="915" width="360" height="130" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="620.0" y="934" fill="white" font-size="12" font-weight="600" text-anchor="middle">Answer</text>
+<text x="620.0" y="948" fill="#94a3b8" font-size="8" text-anchor="middle">the required schema, exactly</text>
+<text x="452" y="965" fill="#a78bfa" font-size="7.2">cycle_count: int</text>
+<text x="452" y="976.5" fill="#a78bfa" font-size="7.2">average_cycle_duration_seconds: float</text>
+<text x="452" y="988.0" fill="#a78bfa" font-size="7.2">average_phase_duration_seconds: dict</text>
+<text x="452" y="999.5" fill="#a78bfa" font-size="7.2">  digging = mean(T2 - T1)</text>
+<text x="452" y="1011.0" fill="#a78bfa" font-size="7.2">  hauling = mean(T3 - T2)</text>
+<text x="452" y="1022.5" fill="#a78bfa" font-size="7.2">  dumping = mean(T4 - T3)</text>
+<text x="452" y="1034.0" fill="#a78bfa" font-size="7.2">  swinging = mean(next T1 - T4)</text>
+        <rect x="860" y="915" width="380" height="130" rx="6" fill="#0f172a"/>
+<rect x="860" y="915" width="380" height="130" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="1050.0" y="934" fill="white" font-size="12" font-weight="600" text-anchor="middle">artifacts</text>
+<text x="872" y="965" fill="#a78bfa" font-size="7.2">answer.json              the deliverable</text>
+<text x="872" y="976.5" fill="#a78bfa" font-size="7.2">annotated.mp4            render(onsets=...)</text>
+<text x="872" y="988.0" fill="#a78bfa" font-size="7.2">                         -> phase banner + markers</text>
+<text x="872" y="999.5" fill="#a78bfa" font-size="7.2">features.png             the 13 panels</text>
+<text x="872" y="1011.0" fill="#a78bfa" font-size="7.2"></text>
+<text x="872" y="1022.5" fill="#a78bfa" font-size="7.2">eval/annotate_solution.py renders the SAME</text>
+<text x="872" y="1034.0" fill="#a78bfa" font-size="7.2">video from the hand labels -- the difference</text>
+<text x="872" y="1045.5" fill="#a78bfa" font-size="7.2">between the two IS the error, visibly</text>
+        <text x="640" y="1100" fill="#64748b" font-size="8" text-anchor="middle">ordering is enforced by construction: window_for is bounded by state.since, so dumping cannot be found before hauling  ·  multi-cycle falls out of the loop  ·  head and tail partials are in no cycle at all</text>
+      </svg>
+    </div>
+
+    <!-- Info Cards -->
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><div class="card-dot cyan"></div><h3>Why two passes</h3></div>
+        <ul>
+          <li>• A cue that fails on the whole video can work inside a window. The prior session's <code>d&sup2;h/dt&sup2;</code> cue landed <strong>6.14 s early</strong> searching a 14-second bracket &mdash; it found a louder event elsewhere.</li>
+          <li>• Pass 1 is <strong>deliberately generous</strong>: missing the truth is fatal, a loose window just costs pass 2 more searching.</li>
+          <li>• Pass 2 is <strong>precise and local</strong>: it only finds the best instant in a region it was told contains one.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot emerald"></div><h3>Forward and backward</h3></div>
+        <ul>
+          <li>• The search is <strong>not forward-only</strong>. An onset is where a signal left rest, which you find by spotting the excursion and <strong>walking back</strong> to its start.</li>
+          <li>• So <code>window_for</code> extends a configurable <strong>lookback</strong> before the current phase began, and <code>frame_for</code> searches whichever direction the cue needs.</li>
+          <li>• <code>onsets.motion_boundary(mode="arrives"|"departs")</code> already does this walk and is tested &mdash; it just has no caller yet.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot rose"></div><h3>Three properties that are free</h3></div>
+        <ul>
+          <li>• <strong>Ordering</strong> &mdash; <code>window_for</code> is lower-bounded by <code>state.since</code>, so dumping cannot be found before hauling. Not a check; an impossibility.</li>
+          <li>• <strong>Multi-cycle</strong> &mdash; the loop simply keeps going. Nothing is written per-cycle.</li>
+          <li>• <strong>Head and tail partials</strong> &mdash; a cycle is dig-onset to dig-onset, so footage outside that is in no cycle.</li>
+          <li>• Not free: a mid-video <strong>re-dig</strong>. The machine sits in hauling looking for dumping, never finds it, and abandons with a reason.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="footer">design only · fsm.py and cycles.py do not exist yet · the pass-2 primitives (motion_boundary, otsu_threshold) are built and tested</p>
+  </div>
+
+  <script>
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPNG(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const link = document.createElement('a');
+        link.download = 'diagram.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPDF(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const orientation = canvas.width > canvas.height ? 'landscape' : 'portrait';
+        const pdf = new jsPDF({ orientation, unit: 'px', format: [canvas.width, canvas.height], hotfixes: ['px_scaling'] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('diagram.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+  </script>
+</body>
+</html>
