@@ -440,11 +440,19 @@ def _print_breakdown(cycles, onsets, truth: dict[str, float]) -> None:
         header += f"{'truth':>9}{'err':>8}"
     print(header)
     seen: set[str] = set()
-    for phase, when in onsets:
-        line = f"  {phase:10}{when:>11.2f}"
-        if truth and phase not in seen:
-            line += f"{truth[phase]:>9.2f}{when - truth[phase]:>+8.2f}"
-        seen.add(phase)
+    for onset in onsets:
+        # An onset with no refined time is the interesting case, not one to skip:
+        # the cycle is still counted, and the coarse time shows where pass 1 was.
+        if onset.refined is None:
+            line = f"  {onset.phase:10}{'--':>11}   (pass 2 found nothing; "
+            line += f"pass 1 fired at {onset.coarse:.2f}s)"
+            print(line)
+            seen.add(onset.phase)
+            continue
+        line = f"  {onset.phase:10}{onset.refined:>11.2f}"
+        if truth and onset.phase not in seen:
+            line += f"{truth[onset.phase]:>9.2f}{onset.refined - truth[onset.phase]:>+8.2f}"
+        seen.add(onset.phase)
         print(line)
 
     print()
@@ -467,8 +475,9 @@ def _render_diagnostic(args, table, detections, onsets, truth) -> None:
         for d in detections
     ]
     predicted: dict[str, float] = {}
-    for phase, when in onsets:
-        predicted.setdefault(phase, when)
+    for onset in onsets:
+        if onset.refined is not None:
+            predicted.setdefault(onset.phase, onset.refined)
 
     out = args.track_dir / "cycles.mp4"
     stats = render(
