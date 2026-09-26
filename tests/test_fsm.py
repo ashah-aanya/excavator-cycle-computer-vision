@@ -166,3 +166,89 @@ def test_separability_tells_one_population_from_two():
         assert split_of(signal).separability < MIN_SEPARABILITY, f"{name} should look weak"
     for name, signal in two_populations.items():
         assert split_of(signal).separability >= MIN_SEPARABILITY, f"{name} should look real"
+
+
+# --- the thing that remembers ---------------------------------------------
+
+
+def test_it_starts_in_swinging_so_the_first_thing_it_seeks_is_digging():
+    """Starting anywhere else would mean guessing what the machine was doing
+    before the clip began. Starting in swinging costs nothing: the leading
+    partial cycle is discarded either way, because a cycle is dig-onset to
+    dig-onset."""
+    from excavator_cycles.fsm import MachineState
+
+    state = MachineState()
+    assert state.curr_stage == "swinging"
+    assert state.looking_for == "digging"
+
+
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        ("swinging", "digging"),
+        ("digging", "hauling"),
+        ("hauling", "dumping"),
+        ("dumping", "swinging"),
+    ],
+)
+def test_looking_for_walks_the_fixed_cycle(current, expected):
+    from excavator_cycles.fsm import MachineState
+
+    assert MachineState(curr_stage=current).looking_for == expected
+
+
+def test_advancing_records_the_onset_and_moves_on():
+    from excavator_cycles.fsm import MachineState
+
+    state = MachineState()
+    state.advance("digging", 4.2)
+    assert state.curr_stage == "digging"
+    assert state.since == 4.2
+    assert state.pending["digging"] == 4.2
+    assert state.looking_for == "hauling"
+
+
+def test_advancing_out_of_order_is_refused():
+    """Ordering is meant to be impossible to violate, not merely checked later.
+    If this ever passes silently, the walk has a bug that would show up as a
+    nonsense duration rather than as an error."""
+    from excavator_cycles.fsm import MachineState
+
+    state = MachineState()
+    with pytest.raises(ValueError, match="looking for digging"):
+        state.advance("dumping", 4.2)
+
+
+def test_time_must_move_forward():
+    from excavator_cycles.fsm import MachineState
+
+    state = MachineState()
+    state.advance("digging", 4.2)
+    with pytest.raises(ValueError, match="backwards"):
+        state.advance("hauling", 3.0)
+
+
+def test_a_phase_can_be_noted_as_having_happened_without_an_onset():
+    """The weak second check. This is what separates "we missed a cue" from "no
+    cycle happened" when a cycle is closed."""
+    from excavator_cycles.fsm import MachineState
+
+    state = MachineState()
+    state.note_occurred("dumping")
+    assert "dumping" in state.occurred
+    assert "dumping" not in state.pending, "occurring is not the same as being located"
+
+
+def test_elapsed_reports_how_long_we_have_been_in_this_phase():
+    from excavator_cycles.fsm import MachineState
+
+    state = MachineState()
+    state.advance("digging", 4.0)
+    assert state.elapsed(6.5) == pytest.approx(2.5)
+
+
+def test_elapsed_before_anything_has_started_is_none():
+    from excavator_cycles.fsm import MachineState
+
+    assert MachineState().elapsed(3.0) is None

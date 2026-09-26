@@ -42,7 +42,7 @@ arbitrary and the gate built on it should not be trusted.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -181,3 +181,66 @@ def calibrate(table) -> Levels:
                 split.describe(),
             )
     return levels
+
+
+# The cycle, in order. Fixed by the task definition, not by this video: digging,
+# hauling, dumping, swinging, and round again.
+PHASES = ("digging", "hauling", "dumping", "swinging")
+
+
+@dataclass
+class MachineState:
+    """Where the walk is, and what it has collected.
+
+    Starts in ``swinging`` so the first thing it looks for is ``digging``.
+    Starting anywhere else would mean guessing what the machine was doing before
+    the clip began, and it costs nothing: a cycle runs from one digging onset to
+    the next, so a leading partial is discarded either way.
+    """
+
+    curr_stage: str = "swinging"
+    since: float | None = None
+
+    # Onsets located in the cycle currently being built.
+    pending: dict[str, float] = field(default_factory=dict)
+    # Phases that left evidence of having happened, whether or not an onset was
+    # located for them. This is the weak second check, and it is what separates
+    # "the cue failed" from "no cycle happened" when a cycle is closed.
+    occurred: set[str] = field(default_factory=set)
+
+    @property
+    def looking_for(self) -> str:
+        """The one transition that can legally come next."""
+        return PHASES[(PHASES.index(self.curr_stage) + 1) % len(PHASES)]
+
+    def elapsed(self, now: float) -> float | None:
+        """How long we have been in this phase. ``None`` before the first onset."""
+        return None if self.since is None else now - self.since
+
+    def advance(self, phase: str, when: float) -> None:
+        """Accept a located onset and move into that phase.
+
+        Refuses anything out of order. Ordering is meant to be impossible to
+        violate rather than checked after the fact -- a transition accepted out
+        of sequence would surface later as a nonsense duration rather than as an
+        error, which is far harder to notice.
+        """
+        if phase != self.looking_for:
+            raise ValueError(
+                f"looking for {self.looking_for}, not {phase} (currently in {self.curr_stage})"
+            )
+        if self.since is not None and when < self.since:
+            raise ValueError(f"onset at {when:.3f}s runs backwards from {self.since:.3f}s")
+        self.pending[phase] = when
+        self.occurred.add(phase)
+        self.curr_stage = phase
+        self.since = when
+
+    def note_occurred(self, phase: str) -> None:
+        """Record that a phase happened, without claiming to know when.
+
+        Weaker than an onset on purpose: "the bucket was over the bed at some
+        point in this span" is enough to say dumping occurred, and nowhere near
+        enough to say when it started.
+        """
+        self.occurred.add(phase)
