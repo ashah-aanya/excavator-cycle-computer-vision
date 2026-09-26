@@ -171,6 +171,17 @@ swinging +2.67 s, closing dig -1.23 s, against a +/-0.6 s tolerance). So
 
 ---
 
+## The diagrams
+
+| File | What it shows |
+|---|---|
+| `docs/architecture-current.html` | **Read first.** Every module and function as built, with what works and what does not. |
+| `docs/state-machine-current.html` | `fsm.py` in detail: the two passes, every function, the types between them, and the five windows that miss. |
+| `docs/architecture.html` | Superseded. The design as planned. |
+| `docs/state-machine-design.html` | Superseded. The original state-machine design; its footer lists where the code diverged. |
+
+---
+
 ## Ground truth has a known flaw
 
 `eval/labels.json` was hand-made frame by frame. Commit `3097f50` records that the

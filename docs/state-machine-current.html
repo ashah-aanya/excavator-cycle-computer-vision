@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>State Machine — fsm.py in Detail</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'JetBrains Mono', monospace; background: #020617; min-height: 100vh; padding: 2rem; color: white; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #a78bfa; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container { background: rgba(15, 23, 42, 0.5); border-radius: 1rem; border: 1px solid #1e293b; padding: 1.5rem; overflow-x: auto; margin-bottom: 1.5rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: rgba(15, 23, 42, 0.5); border-radius: 0.75rem; border: 1px solid #1e293b; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; } .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; } .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .card code { color: #cbd5e1; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+    .toolbar { display: flex; gap: 0.5rem; margin-left: auto; flex-shrink: 0; align-items: center; }
+    .toolbar-toggle { background: transparent; border: none; color: #475569; cursor: pointer; font-size: 1.25rem; line-height: 1; padding: 0.25rem 0.5rem; border-radius: 0.375rem; transition: color 0.2s, background 0.2s; }
+    .toolbar-toggle:hover { color: #94a3b8; background: rgba(30, 41, 59, 0.5); }
+    .toolbar-actions { display: none; gap: 0.5rem; }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button { background: rgba(30, 41, 59, 0.8); border: 1px solid #334155; color: #94a3b8; padding: 0.375rem 0.75rem; border-radius: 0.375rem; font-family: inherit; font-size: 0.75rem; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+    .toolbar-actions button:hover { background: rgba(51, 65, 85, 0.8); color: white; border-color: #475569; }
+    @media print { body { background: #020617; padding: 1rem; } .toolbar { display: none !important; } }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>State Machine — <code>fsm.py</code> in Detail</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">Calibrate globally · search locally · two passes · every function and the type it returns</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1000 1500">
+        <defs>
+          <pattern id="grid2" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+          <marker id="ah" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+          </marker>
+          <marker id="ahr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185"/>
+          </marker>
+          <marker id="aha" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24"/>
+          </marker>
+        </defs>
+        <rect width="1000" height="1500" fill="url(#grid2)"/>
+
+        <!-- ARROWS FIRST -->
+        <line x1="22" y1="150" x2="22" y2="196" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="22" y1="366" x2="22" y2="412" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="22" y1="742" x2="22" y2="788" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="22" y1="1000" x2="22" y2="1046" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="22" y1="1246" x2="22" y2="1292" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- levels feed the triggers AND the evidence check -->
+        <path d="M 948 350 L 988 350 L 988 1094 L 900 1094" fill="none" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#aha)"/>
+        <text x="972" y="700" fill="#fbbf24" font-size="7.5" transform="rotate(90 972 700)">Levels also feed evidence_within()</text>
+
+        <!-- ============ INPUT ============ -->
+        <text x="40" y="36" fill="#94a3b8" font-size="11" font-weight="700" letter-spacing="1">INPUT</text>
+        <rect x="40" y="48" width="450" height="102" rx="6" fill="#0f172a"/>
+        <rect x="40" y="48" width="450" height="102" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="265" y="68" fill="white" font-size="12" font-weight="600" text-anchor="middle">FeatureTable — 296 rows × 17 columns</text>
+        <text x="50" y="85" fill="#94a3b8" font-size="7.5">time_seconds   from the decoder, never t0 + i·dt</text>
+        <text x="50" y="97" fill="#34d399" font-size="7.5">height  dh_dt  d2h_dt2      ← the vertical story</text>
+        <text x="50" y="109" fill="#34d399" font-size="7.5">dx_dt  speed_x = |dx_dt|     ← the horizontal story</text>
+        <text x="50" y="121" fill="#34d399" font-size="7.5">truck_overlap  rel_cabin_x   ← where, relative to what</text>
+        <text x="50" y="133" fill="#94a3b8" font-size="7.5">aspect_ratio  radius  found  bucket_box  cabin_box</text>
+        <text x="50" y="145" fill="#64748b" font-size="7.5">lengths ÷ L (arm reach) · rates per second · unitless</text>
+
+        <rect x="510" y="48" width="450" height="102" rx="6" fill="#0f172a"/>
+        <rect x="510" y="48" width="450" height="102" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="735" y="68" fill="white" font-size="12" font-weight="600" text-anchor="middle">FSMConfig — five DURATIONS, never counts</text>
+        <text x="520" y="85" fill="#94a3b8" font-size="7.5">hold_seconds        0.30   evidence must persist this long</text>
+        <text x="520" y="97" fill="#94a3b8" font-size="7.5">strict_hold_seconds 0.60   the bar for an out-of-turn dig</text>
+        <text x="520" y="109" fill="#94a3b8" font-size="7.5">lookback_seconds    0.80   how far a window reaches back</text>
+        <text x="520" y="121" fill="#94a3b8" font-size="7.5">rest_sigma          3.0    pass 2: multiples of window noise</text>
+        <text x="520" y="133" fill="#94a3b8" font-size="7.5">rest_floor_fraction 0.02   …floored at 2% of its range</text>
+        <text x="520" y="145" fill="#fbbf24" font-size="7.5">samples_for(seconds, times) converts ONCE, at the boundary</text>
+
+        <!-- ============ CALIBRATE ============ -->
+        <text x="40" y="188" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="1">CALIBRATE — what the words mean, on THIS video. One pass. Nothing here looks at time.</text>
+        <rect x="40" y="196" width="920" height="170" rx="12" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="8,4"/>
+
+        <rect x="56" y="216" width="288" height="134" rx="6" fill="#0f172a"/>
+        <rect x="56" y="216" width="288" height="134" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="200" y="234" fill="white" font-size="11" font-weight="600" text-anchor="middle">split_of(signal, min_side) → Split</text>
+        <text x="66" y="251" fill="#94a3b8" font-size="7.5">1. clip to the central mass (min_side−1</text>
+        <text x="66" y="262" fill="#94a3b8" font-size="7.5">   from each end) so ONE glitched frame</text>
+        <text x="66" y="273" fill="#94a3b8" font-size="7.5">   cannot place the line</text>
+        <text x="66" y="285" fill="#94a3b8" font-size="7.5">2. geometry.otsu_threshold(clipped)</text>
+        <text x="66" y="297" fill="#94a3b8" font-size="7.5">3. separability + counts on the RAW data</text>
+        <text x="66" y="314" fill="#22d3ee" font-size="7.5">Split(threshold, separability,</text>
+        <text x="66" y="325" fill="#22d3ee" font-size="7.5">      below, above, min_side)</text>
+        <text x="66" y="341" fill="#64748b" font-size="7.5">.trustworthy = sep ≥ 0.80 AND both sides ≥ min_side</text>
+
+        <rect x="360" y="216" width="288" height="134" rx="6" fill="#0f172a"/>
+        <rect x="360" y="216" width="288" height="134" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="504" y="234" fill="white" font-size="11" font-weight="600" text-anchor="middle">calibrate(table, config) → Levels</text>
+        <text x="370" y="251" fill="#94a3b8" font-size="7.5">min_side = samples_for(hold_seconds)</text>
+        <text x="370" y="263" fill="#34d399" font-size="7.5">low_height  = split_of(height)     0.0921</text>
+        <text x="370" y="275" fill="#34d399" font-size="7.5">over_truck  = split_of(truck_overlap) 0.1016</text>
+        <text x="370" y="287" fill="#34d399" font-size="7.5">moving      = split_of(speed_x)    0.3415</text>
+        <text x="370" y="299" fill="#34d399" font-size="7.5">dump_side   = median sign of rel_cabin_x</text>
+        <text x="370" y="310" fill="#64748b" font-size="7.5">              where the bucket is over the bed</text>
+        <text x="370" y="327" fill="#fb7185" font-size="7.5">untrustworthy over_truck → None (gate off)</text>
+        <text x="370" y="339" fill="#fb7185" font-size="7.5">…but kept as over_truck_observed for evidence</text>
+
+        <rect x="664" y="216" width="280" height="134" rx="6" fill="#0f172a"/>
+        <rect x="664" y="216" width="280" height="134" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="804" y="234" fill="white" font-size="11" font-weight="600" text-anchor="middle">Levels  (a LEVEL, never an interval)</text>
+        <text x="674" y="253" fill="#a78bfa" font-size="7.5">low_height          : Split</text>
+        <text x="674" y="265" fill="#a78bfa" font-size="7.5">over_truck          : Split | None</text>
+        <text x="674" y="277" fill="#a78bfa" font-size="7.5">moving              : Split</text>
+        <text x="674" y="289" fill="#a78bfa" font-size="7.5">dump_side           : float  ±1</text>
+        <text x="674" y="301" fill="#a78bfa" font-size="7.5">over_truck_observed : Split | None</text>
+        <text x="674" y="318" fill="#94a3b8" font-size="7.5">.for_evidence  readmits a weak truck</text>
+        <text x="674" y="329" fill="#94a3b8" font-size="7.5">level, so a gate that is off for</text>
+        <text x="674" y="340" fill="#94a3b8" font-size="7.5">MEASURING does not erase COUNTING</text>
+
+        <!-- ============ PASS 1 ============ -->
+        <text x="40" y="404" fill="#34d399" font-size="11" font-weight="700" letter-spacing="1">PASS 1 · walk() → list[Detection]   —   &quot;the transition is somewhere in HERE&quot;</text>
+        <rect x="40" y="412" width="920" height="330" rx="12" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="8,4"/>
+
+        <rect x="56" y="432" width="300" height="140" rx="6" fill="#0f172a"/>
+        <rect x="56" y="432" width="300" height="140" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="206" y="450" fill="white" font-size="11" font-weight="600" text-anchor="middle">MachineState — where the walk is</text>
+        <text x="66" y="468" fill="#94a3b8" font-size="7.5">curr_stage : str   starts &quot;swinging&quot;, so the</text>
+        <text x="66" y="479" fill="#64748b" font-size="7.5">                   first thing sought is digging</text>
+        <text x="66" y="491" fill="#94a3b8" font-size="7.5">since      : float | None</text>
+        <text x="66" y="508" fill="#94a3b8" font-size="7.5">.looking_for  the ONE transition that can</text>
+        <text x="66" y="519" fill="#64748b" font-size="7.5">              legally come next</text>
+        <text x="66" y="531" fill="#94a3b8" font-size="7.5">.advance(phase, when)  refuses out of order,</text>
+        <text x="66" y="542" fill="#64748b" font-size="7.5">   refuses time running backwards, ATOMIC —</text>
+        <text x="66" y="553" fill="#64748b" font-size="7.5">   both checks before any mutation</text>
+        <text x="66" y="566" fill="#fbbf24" font-size="7.5">carries no cycle bookkeeping — that lives in cycles.py</text>
+
+        <rect x="372" y="432" width="300" height="140" rx="6" fill="#0f172a"/>
+        <rect x="372" y="432" width="300" height="140" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="522" y="450" fill="white" font-size="11" font-weight="600" text-anchor="middle">sustained(phase, start, needed) → int</text>
+        <text x="382" y="468" fill="#94a3b8" font-size="7.5">Did the trigger RISE here and then hold?</text>
+        <text x="382" y="485" fill="#94a3b8" font-size="7.5">· a rising EDGE, not a level — a condition</text>
+        <text x="382" y="496" fill="#64748b" font-size="7.5">  is true for a whole phase, not just its start</text>
+        <text x="382" y="508" fill="#94a3b8" font-size="7.5">· edge waived at the first sample the walk</text>
+        <text x="382" y="519" fill="#64748b" font-size="7.5">  looks for a phase (phases are CONTIGUOUS)…</text>
+        <text x="382" y="531" fill="#94a3b8" font-size="7.5">· …but only if ever_false_before() — else a</text>
+        <text x="382" y="542" fill="#64748b" font-size="7.5">  constant signal marches the machine forward</text>
+        <text x="382" y="554" fill="#94a3b8" font-size="7.5">· returns a COUNT: a clip ending early keeps</text>
+        <text x="382" y="565" fill="#64748b" font-size="7.5">  its transition, floored at half the hold</text>
+
+        <rect x="688" y="432" width="256" height="140" rx="6" fill="#0f172a"/>
+        <rect x="688" y="432" width="256" height="140" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="816" y="450" fill="white" font-size="11" font-weight="600" text-anchor="middle">_detect() → Detection</text>
+        <text x="698" y="468" fill="#94a3b8" font-size="7.5">lo = max(0, index − lookback)</text>
+        <text x="698" y="480" fill="#fb7185" font-size="7.5">lo = max(lo, previous_window.hi)</text>
+        <text x="698" y="492" fill="#94a3b8" font-size="7.5">hi = min(n, index + held)</text>
+        <text x="698" y="509" fill="#64748b" font-size="7.5">Clipping to the previous WINDOW, not</text>
+        <text x="698" y="520" fill="#64748b" font-size="7.5">its trigger: a window extends past its</text>
+        <text x="698" y="531" fill="#64748b" font-size="7.5">own trigger, so clipping to the trigger</text>
+        <text x="698" y="542" fill="#64748b" font-size="7.5">still overlapped by exactly `held`.</text>
+        <text x="698" y="559" fill="#a78bfa" font-size="7.5">Detection(phase, Window(lo,hi),</text>
+        <text x="698" y="568" fill="#a78bfa" font-size="7.5">          fired_at, out_of_sequence)</text>
+
+        <rect x="56" y="592" width="620" height="134" rx="6" fill="#0f172a"/>
+        <rect x="56" y="592" width="620" height="134" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="366" y="610" fill="white" font-size="11" font-weight="600" text-anchor="middle">THE FOUR TRIGGERS — every threshold comes from Levels, never a constant</text>
+        <text x="66" y="629" fill="#fb7185" font-size="7.5">trigger_digging   height &lt; low_height  AND  speed_x &lt; moving</text>
+        <text x="66" y="640" fill="#64748b" font-size="7">                  &quot;down in the material and not traversing&quot;                               −0.77 s</text>
+        <text x="66" y="655" fill="#fb7185" font-size="7.5">trigger_hauling   height &gt; low_height  AND  dh_dt &gt; 0</text>
+        <text x="66" y="666" fill="#64748b" font-size="7">                  &quot;above the material and RISING&quot; — direction, not position          +1.97 s</text>
+        <text x="66" y="681" fill="#fb7185" font-size="7.5">trigger_dumping   truck_overlap &gt; over_truck  AND  rel_cabin_x × dump_side &gt; 0</text>
+        <text x="66" y="692" fill="#64748b" font-size="7">                  position where the spec requires TIPPING — fires while still hauling  −5.14 s</text>
+        <text x="66" y="707" fill="#fb7185" font-size="7.5">trigger_swinging  speed_x &gt; moving  AND  dh_dt &lt; 0</text>
+        <text x="66" y="718" fill="#64748b" font-size="7">                  &quot;traversing and DESCENDING&quot; — the vertical sign separates it from hauling  +2.67 s</text>
+
+        <rect x="692" y="592" width="252" height="134" rx="6" fill="#0f172a"/>
+        <rect x="692" y="592" width="252" height="134" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="818" y="610" fill="white" font-size="11" font-weight="600" text-anchor="middle">the loop, per sample</text>
+        <text x="702" y="628" fill="#94a3b8" font-size="7.5">target = state.looking_for</text>
+        <text x="702" y="641" fill="#34d399" font-size="7.5">if sustained(target, …):</text>
+        <text x="702" y="652" fill="#64748b" font-size="7.5">    _detect → advance → skip held</text>
+        <text x="702" y="666" fill="#fbbf24" font-size="7.5">elif sustained(&quot;digging&quot;, strict):</text>
+        <text x="702" y="677" fill="#64748b" font-size="7.5">    abandon the cycle, restart</text>
+        <text x="702" y="688" fill="#64748b" font-size="7.5">    (no truncation allowance —</text>
+        <text x="702" y="699" fill="#64748b" font-size="7.5">     unexpected evidence is dear)</text>
+        <text x="702" y="713" fill="#94a3b8" font-size="7.5">else: index += 1</text>
+        <text x="702" y="724" fill="#64748b" font-size="7">_usable() guards every column read</text>
+
+        <!-- ============ PASS 2 ============ -->
+        <text x="40" y="780" fill="#22d3ee" font-size="11" font-weight="700" letter-spacing="1">PASS 2 · locate() → list[Onset]   —   &quot;exactly WHEN, inside the window pass 1 chose&quot;</text>
+        <rect x="40" y="788" width="920" height="212" rx="12" fill="none" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="8,4"/>
+
+        <rect x="56" y="808" width="300" height="176" rx="6" fill="#0f172a"/>
+        <rect x="56" y="808" width="300" height="176" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="206" y="826" fill="white" font-size="11" font-weight="600" text-anchor="middle">refine(signal, times, window, mode)</text>
+        <text x="66" y="845" fill="#22d3ee" font-size="7.5">departs  the signal LEAVES rest</text>
+        <text x="66" y="856" fill="#64748b" font-size="7">  find the excursion, walk BACKWARD. You cannot</text>
+        <text x="66" y="866" fill="#64748b" font-size="7">  spot a departure going forwards — a signal at</text>
+        <text x="66" y="876" fill="#64748b" font-size="7">  rest looks just like one about to move.</text>
+        <text x="66" y="891" fill="#22d3ee" font-size="7.5">arrives  the signal SETTLES into rest</text>
+        <text x="66" y="902" fill="#64748b" font-size="7">  the true mirror: find the excursion, walk</text>
+        <text x="66" y="912" fill="#64748b" font-size="7">  FORWARD to where it ends</text>
+        <text x="66" y="927" fill="#22d3ee" font-size="7.5">peak     a turning point (argmax)</text>
+        <text x="66" y="938" fill="#64748b" font-size="7">  an extremum is unmoved by symmetric smoothing</text>
+        <text x="66" y="954" fill="#fbbf24" font-size="7.5">Returns None when nothing qualifies —</text>
+        <text x="66" y="965" fill="#fbbf24" font-size="7.5">that is information, not an error.</text>
+        <text x="66" y="978" fill="#64748b" font-size="7">Every time read from times[]; never t0 + i·dt</text>
+
+        <rect x="372" y="808" width="270" height="176" rx="6" fill="#0f172a"/>
+        <rect x="372" y="808" width="270" height="176" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="507" y="826" fill="white" font-size="11" font-weight="600" text-anchor="middle">_rest_band() — how far from 0 is &quot;still&quot;</text>
+        <text x="382" y="845" fill="#94a3b8" font-size="7.5">Rest for a RATE is zero, absolutely.</text>
+        <text x="382" y="856" fill="#94a3b8" font-size="7.5">Only its WIDTH has to be estimated.</text>
+        <text x="382" y="873" fill="#94a3b8" font-size="7.5">band = max(</text>
+        <text x="382" y="884" fill="#94a3b8" font-size="7.5">  σ · q₂₅(|Δsignal|) · QUANTILE_TO_SIGMA,</text>
+        <text x="382" y="895" fill="#94a3b8" font-size="7.5">  floor · ptp(window))</text>
+        <text x="382" y="912" fill="#64748b" font-size="7">A LOW quantile, not the median: a refinement</text>
+        <text x="382" y="922" fill="#64748b" font-size="7">window is mostly MOVING by construction, so the</text>
+        <text x="382" y="932" fill="#64748b" font-size="7">median measures the motion and swallows the event.</text>
+        <text x="382" y="948" fill="#fbbf24" font-size="7">QUANTILE_TO_SIGMA is DERIVED — NormalDist().inv_cdf</text>
+        <text x="382" y="958" fill="#fbbf24" font-size="7">— not the remembered MAD constant 1.4826, which</text>
+        <text x="382" y="968" fill="#fbbf24" font-size="7">applies to the median and recovered 0.47σ here.</text>
+        <text x="382" y="980" fill="#64748b" font-size="7">Needs &gt;¼ of the window at rest to mean anything.</text>
+
+        <rect x="658" y="808" width="286" height="176" rx="6" fill="#0f172a"/>
+        <rect x="658" y="808" width="286" height="176" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="801" y="826" fill="white" font-size="11" font-weight="600" text-anchor="middle">REFINEMENTS — signal + shape per phase</text>
+        <text x="668" y="846" fill="#a78bfa" font-size="7.5">digging  → dh_dt        arrives</text>
+        <text x="668" y="857" fill="#64748b" font-size="7">   the bucket stops descending = contact</text>
+        <text x="668" y="871" fill="#a78bfa" font-size="7.5">hauling  → d2h_dt2      arrives</text>
+        <text x="668" y="882" fill="#64748b" font-size="7">   the kink where scooping becomes lifting</text>
+        <text x="668" y="896" fill="#a78bfa" font-size="7.5">dumping  → aspect_ratio peak</text>
+        <text x="668" y="907" fill="#64748b" font-size="7">   the silhouette at its most stretched —</text>
+        <text x="668" y="917" fill="#64748b" font-size="7">   the closest thing to &quot;it has tipped&quot;</text>
+        <text x="668" y="931" fill="#a78bfa" font-size="7.5">swinging → speed_x      departs</text>
+        <text x="668" y="942" fill="#64748b" font-size="7">   the machine leaving rest</text>
+        <text x="668" y="959" fill="#34d399" font-size="7.5">Onset(phase, refined | None, coarse)</text>
+        <text x="668" y="972" fill="#64748b" font-size="7">coarse always exists and BOUNDS the cycle;</text>
+        <text x="668" y="981" fill="#64748b" font-size="7">refined may be None and MEASURES it.</text>
+
+        <!-- ============ CYCLES ============ -->
+        <text x="40" y="1038" fill="#a78bfa" font-size="11" font-weight="700" letter-spacing="1">CYCLES — counting and measuring are different questions</text>
+        <rect x="40" y="1046" width="920" height="200" rx="12" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="8,4"/>
+
+        <rect x="56" y="1066" width="292" height="162" rx="6" fill="#0f172a"/>
+        <rect x="56" y="1066" width="292" height="162" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="202" y="1084" fill="white" font-size="11" font-weight="600" text-anchor="middle">evidence_within(table, levels, a, b)</text>
+        <text x="66" y="1103" fill="#94a3b8" font-size="7.5">Which phases left ANY trace in [a, b)?</text>
+        <text x="66" y="1120" fill="#94a3b8" font-size="7.5">Runs the same four triggers, but with</text>
+        <text x="66" y="1131" fill="#94a3b8" font-size="7.5">NO hold and NO rising edge — a single</text>
+        <text x="66" y="1142" fill="#94a3b8" font-size="7.5">satisfying sample counts.</text>
+        <text x="66" y="1159" fill="#fbbf24" font-size="7.5">The weak second check: it separates</text>
+        <text x="66" y="1170" fill="#fbbf24" font-size="7.5">&quot;the cue failed&quot; from &quot;no cycle happened&quot;.</text>
+        <text x="66" y="1187" fill="#94a3b8" font-size="7.5">Asked PER SPAN, never once per video.</text>
+        <text x="66" y="1198" fill="#64748b" font-size="7">One global set marked every cycle complete as</text>
+        <text x="66" y="1208" fill="#64748b" font-size="7">soon as any cycle anywhere was.</text>
+        <text x="66" y="1222" fill="#64748b" font-size="7">Half-open, so no sample lands in two cycles.</text>
+
+        <rect x="364" y="1066" width="292" height="162" rx="6" fill="#0f172a"/>
+        <rect x="364" y="1066" width="292" height="162" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="510" y="1084" fill="white" font-size="11" font-weight="600" text-anchor="middle">assemble(onsets, evidence) → [Cycle]</text>
+        <text x="374" y="1103" fill="#94a3b8" font-size="7.5">Splits on DIGGING — that is the boundary.</text>
+        <text x="374" y="1114" fill="#94a3b8" font-size="7.5">N digging onsets bound N−1 cycles, so</text>
+        <text x="374" y="1125" fill="#94a3b8" font-size="7.5">head and tail partials fall outside every</text>
+        <text x="374" y="1136" fill="#94a3b8" font-size="7.5">cycle for free — the spec's rule, no case.</text>
+        <text x="374" y="1155" fill="#a78bfa" font-size="7.5">Cycle(onsets, ends, span, occurred)</text>
+        <text x="374" y="1168" fill="#34d399" font-size="7.5">.complete   all four OCCURRED  → counted</text>
+        <text x="374" y="1180" fill="#22d3ee" font-size="7.5">.measurable all four REFINED, in order,</text>
+        <text x="374" y="1191" fill="#22d3ee" font-size="7.5">            with a closing onset → averaged</text>
+        <text x="374" y="1204" fill="#94a3b8" font-size="7.5">.reason     a sentence, not a flag</text>
+        <text x="374" y="1219" fill="#94a3b8" font-size="7.5">.duration, .durations()</text>
+
+        <rect x="672" y="1066" width="272" height="162" rx="6" fill="#0f172a"/>
+        <rect x="672" y="1066" width="272" height="162" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="808" y="1084" fill="white" font-size="11" font-weight="600" text-anchor="middle">summarise() → Answer</text>
+        <text x="682" y="1103" fill="#34d399" font-size="7.5">cycle_count = how many OCCURRED</text>
+        <text x="682" y="1116" fill="#22d3ee" font-size="7.5">averages    = over what was MEASURED</text>
+        <text x="682" y="1134" fill="#fbbf24" font-size="7.5">Two populations, deliberately.</text>
+        <text x="682" y="1146" fill="#64748b" font-size="7">A cue failing is a fact about the pipeline;</text>
+        <text x="682" y="1156" fill="#64748b" font-size="7">it is not a fact about the excavator.</text>
+        <text x="682" y="1172" fill="#fb7185" font-size="7.5">So count × average ≠ elapsed time</text>
+        <text x="682" y="1183" fill="#fb7185" font-size="7.5">whenever a cycle happened but a cue</text>
+        <text x="682" y="1194" fill="#fb7185" font-size="7.5">failed. That looks like a bug and</text>
+        <text x="682" y="1205" fill="#fb7185" font-size="7.5">is the correct answer to two</text>
+        <text x="682" y="1216" fill="#fb7185" font-size="7.5">different questions.</text>
+
+        <!-- ============ WHERE IT FAILS ============ -->
+        <text x="40" y="1284" fill="#fb7185" font-size="11" font-weight="700" letter-spacing="1">WHERE IT FAILS TODAY — pass 2 searches INSIDE the window, so a window that misses cannot be rescued</text>
+        <rect x="40" y="1292" width="920" height="150" rx="6" fill="#0f172a"/>
+        <rect x="40" y="1292" width="920" height="150" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="56" y="1312" fill="#94a3b8" font-size="8" xml:space="preserve">phase          window (s)      width    FIRED    truth      err    in window?</text>
+        <line x1="56" y1="1318" x2="640" y2="1318" stroke="#475569" stroke-width="0.5"/>
+        <text x="56" y="1332" fill="#e2e8f0" font-size="8" xml:space="preserve">digging      [ 2.60,  3.70]     1.10     3.40     4.17    −0.77    NO</text>
+        <text x="56" y="1348" fill="#e2e8f0" font-size="8" xml:space="preserve">hauling      [11.91, 13.01]     1.10    12.71    10.74    +1.97    NO</text>
+        <text x="56" y="1364" fill="#e2e8f0" font-size="8" xml:space="preserve">dumping      [13.01, 13.81]     0.80    13.51    18.65    −5.14    NO</text>
+        <text x="56" y="1380" fill="#e2e8f0" font-size="8" xml:space="preserve">swinging     [24.92, 26.02]     1.10    25.72    23.05    +2.67    NO</text>
+        <text x="56" y="1396" fill="#e2e8f0" font-size="8" xml:space="preserve">digging      [27.32, 28.42]     1.10    28.12    29.36    −1.23    NO</text>
+        <text x="56" y="1418" fill="#fbbf24" font-size="8">Five for five, against a ±0.6 s grading tolerance. So refine() correctly returns None for digging</text>
+        <text x="56" y="1431" fill="#fbbf24" font-size="8">and refuses to invent a number — which is why four averages read 0.000 rather than reading wrong.</text>
+
+        <text x="672" y="1332" fill="#34d399" font-size="8" font-weight="600">Not four problems:</text>
+        <text x="672" y="1348" fill="#94a3b8" font-size="7.5">low_height is the Otsu VALLEY</text>
+        <text x="672" y="1359" fill="#94a3b8" font-size="7.5">(0.0942 L) between the dig mode</text>
+        <text x="672" y="1370" fill="#94a3b8" font-size="7.5">(−0.11) and the carry mode (+0.23)</text>
+        <text x="672" y="1381" fill="#94a3b8" font-size="7.5">— ≈1.3 bucket-heights above the</text>
+        <text x="672" y="1392" fill="#94a3b8" font-size="7.5">real surface. ONE cause, TWO fields.</text>
+        <text x="672" y="1410" fill="#fb7185" font-size="7.5">Dumping is separate and worse:</text>
+        <text x="672" y="1421" fill="#fb7185" font-size="7.5">aspect_ratio is computed, labelled</text>
+        <text x="672" y="1432" fill="#fb7185" font-size="7.5">&quot;Carries T3&quot;, and read by no trigger.</text>
+
+        <!-- ============ LEGEND ============ -->
+        <rect x="40" y="1470" width="14" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.2"/>
+        <text x="60" y="1479" fill="#94a3b8" font-size="8">calibrate (global)</text>
+        <rect x="190" y="1470" width="14" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.2"/>
+        <text x="210" y="1479" fill="#94a3b8" font-size="8">pass 1 (window)</text>
+        <rect x="330" y="1470" width="14" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.2"/>
+        <text x="350" y="1479" fill="#94a3b8" font-size="8">pass 2 (instant)</text>
+        <rect x="470" y="1470" width="14" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.2"/>
+        <text x="490" y="1479" fill="#94a3b8" font-size="8">types and cycles</text>
+        <rect x="620" y="1470" width="14" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.2"/>
+        <text x="640" y="1479" fill="#94a3b8" font-size="8">known wrong</text>
+        <text x="760" y="1479" fill="#64748b" font-size="8">amber dashed = a level reaching a later stage</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><div class="card-dot amber"></div><h3>Why two passes at all</h3></div>
+        <ul>
+          <li>• A trigger that fires a little early costs pass 2 a slightly longer search. A trigger that never fires loses the transition entirely — so pass 1 errs toward firing</li>
+          <li>• That division only works one way round: <strong>pass 2 cannot reach outside its window</strong></li>
+          <li>• A refined answer from a wrong window is worse than none, because it <em>looks</em> precise</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot emerald"></div><h3>Invariants, fuzzed not assumed</h3></div>
+        <ul>
+          <li>• 6000 randomized walks — out-of-sequence digs, truncated holds, always-true schedules — <strong>zero violations</strong></li>
+          <li>• <code>window.lo ≤ fired_at &lt; window.hi</code> always</li>
+          <li>• Consecutive windows never overlap, so refinement cannot reorder what the walk ordered</li>
+          <li>• <code>fired_at</code> strictly increasing; every phase sequence legal</li>
+          <li>• <code>advance()</code> is atomic: both validations run before any mutation</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot rose"></div><h3>The rule this module keeps breaking</h3></div>
+        <ul>
+          <li>• <strong>A level is not an interval.</strong> A global statistic may say what &quot;low&quot; MEANS; it may never say WHEN anything happened</li>
+          <li>• Calibrate answers <em>what</em>. Pass 1 answers <em>roughly where</em>. Pass 2 answers <em>exactly when</em>. Collapsing any two is how the old bracket-first design went wrong</li>
+          <li>• A test pins <code>Split</code>'s field set, so growing a second bound fails the build</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      fsm.py 1114 L · cycles.py 228 L · branch <code>cycles-and-answer</code> (PR #4) · 2026-09-26
+    </p>
+  </div>
+
+  <script>
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) { btn.textContent = '✗ Failed'; }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+    async function downloadPNG(btn) {
+      const orig = btn.textContent; btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const link = document.createElement('a');
+        link.download = 'state-machine-current.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) { btn.textContent = '✗ Failed'; }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+    async function downloadPDF(btn) {
+      const orig = btn.textContent; btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const orientation = canvas.width > canvas.height ? 'landscape' : 'portrait';
+        const pdf = new jsPDF({ orientation, unit: 'px', format: [canvas.width, canvas.height], hotfixes: ['px_scaling'] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('state-machine-current.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) { btn.textContent = '✗ Failed'; }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+  </script>
+</body>
+</html>
