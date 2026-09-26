@@ -243,3 +243,68 @@ def test_an_interrupted_cycle_is_not_counted_as_a_complete_one():
     assert "no dumping, swinging in this span" in cycles[0].reason
     assert cycles[1].complete
     assert summarise(cycles).cycle_count == 1
+
+
+def test_evidence_within_really_is_restricted_to_the_span():
+    """The claimed fix, tested with the REAL function rather than a lambda.
+
+    Every other test here passes a fake `evidence` callable, so none of them touches
+    the actual windowing -- replacing `(times >= start) & (times <= end)` with the
+    whole video left the entire suite green. That is the exact bug the CLI change
+    claims to have removed, so it needs a test that can see it.
+
+    Two cycles: the first dumps, the second does not. A whole-video evidence check
+    reports dumping in both and marks both complete; a per-span one does not.
+    """
+    import numpy as np
+
+    from excavator_cycles.fsm import Levels, Split, evidence_within
+
+    class Table:
+        """Only the columns the four triggers read."""
+
+        def __init__(self, n: int):
+            self.time_seconds = np.arange(n) * 1.0
+            self.found = np.ones(n, bool)
+            self.height = np.zeros(n)
+            self.dh_dt = np.zeros(n)
+            self.d2h_dt2 = np.zeros(n)
+            self.speed_x = np.zeros(n)
+            self.truck_overlap = np.zeros(n)
+            self.rel_cabin_x = np.full(n, 0.4)
+            self.aspect_ratio = np.ones(n)
+
+    table = Table(20)
+    # Dumping needs overlap above the level AND the bucket past the cabin. Only
+    # samples 4-6 qualify, which lie inside the FIRST span and no other.
+    table.truck_overlap[4:7] = 0.8
+    levels = Levels(
+        low_height=Split(0.1, 0.95, 50, 50),
+        over_truck=Split(0.2, 0.95, 50, 50),
+        moving=Split(0.3, 0.95, 50, 50),
+        dump_side=1.0,
+    )
+
+    first = evidence_within(table, levels, 0.0, 9.0)
+    second = evidence_within(table, levels, 10.0, 19.0)
+    whole = evidence_within(table, levels, 0.0, 19.0)
+
+    assert "dumping" in first, "the dump is inside the first span"
+    assert "dumping" not in second, (
+        "the second span holds no dump -- a whole-video check would say otherwise"
+    )
+    assert "dumping" in whole, "and the whole video does contain one, which is the trap"
+    assert first != second, "the two spans must not produce the same evidence"
+
+
+def test_assemble_asks_the_evidence_function_for_each_span_separately():
+    """The wiring, not the windowing: one call per cycle, with that cycle's bounds."""
+    asked: list[tuple[float, float]] = []
+
+    def evidence(start: float, end: float) -> set[str]:
+        asked.append((start, end))
+        return set(PHASES)
+
+    onsets = [*cycle_of(0.0), *cycle_of(10.0), Onset("digging", 20.0, 20.0)]
+    assemble(onsets, evidence=evidence)
+    assert asked == [(0.0, 10.0), (10.0, 20.0)], f"expected one call per cycle, got {asked}"

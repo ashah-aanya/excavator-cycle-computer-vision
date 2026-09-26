@@ -154,7 +154,15 @@ def split_of(signal: np.ndarray, min_side: int = 1) -> Split:
         # False rather than something the caller has to infer from the counts.
         return Split(float(finite[0]), 0.0, 0, int(finite.size), min_side)
 
-    guard = max(1, min(int(min_side), (finite.size - 1) // 2))
+    # `min_side - 1`, not `min_side`. Clipping `min_side` values from each end
+    # removes an excursion of EXACTLY `min_side` samples -- which is long enough to
+    # fire, since `sustained` asks for `range(start, start + hold)` -- and so
+    # contradicted this function's own promise that no excursion long enough to be a
+    # transition is ever clipped away. Measured with a 3-sample excursion and
+    # min_side=3: threshold 0.0005 and separability 0.072, against an unclipped
+    # answer of 0.2594 and 0.970. The shortest excursion that must survive has
+    # `min_side` samples, so the most that may be clipped is `min_side - 1`.
+    guard = max(1, min(int(min_side) - 1, (finite.size - 1) // 2))
     if finite.size > 2 * guard:
         keep = np.sort(finite)[guard:-guard]
         threshold = otsu_threshold(np.clip(finite, keep[0], keep[-1]))

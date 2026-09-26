@@ -1523,3 +1523,52 @@ def test_an_out_of_sequence_dig_with_full_evidence_is_still_accepted():
         lookback_samples=4,
     )
     assert any(d.out_of_sequence for d in found), f"a genuine mid-cycle dig must fire: {found}"
+
+
+def test_an_excursion_exactly_as_long_as_the_hold_survives_clipping():
+    """`split_of` promises no excursion long enough to be a transition is clipped
+    away. It was clipping `min_side` values from each end, which removes an
+    excursion of EXACTLY `min_side` samples -- and that length IS long enough,
+    because `sustained` asks for `range(start, start + hold)`.
+
+    Measured before the fix, 3-sample excursion with min_side=3: threshold 0.0005,
+    separability 0.072, against an unclipped answer of 0.2594 and 0.970. The
+    shortest excursion that must survive has `min_side` samples, so at most
+    `min_side - 1` may be clipped.
+    """
+    from excavator_cycles.fsm import split_of
+
+    base = np.random.default_rng(0).normal(0.0, 0.01, 293)
+    short = split_of(np.r_[base, np.full(2, 0.5)], min_side=3)
+    exact = split_of(np.r_[base, np.full(3, 0.5)], min_side=3)
+
+    assert exact.threshold == pytest.approx(0.26, abs=0.05), (
+        f"an excursion of exactly min_side samples was clipped away: {exact}"
+    )
+    assert exact.trustworthy
+    # And one sample shorter than the hold is still correctly discarded: it cannot
+    # become a detection, so it must not be allowed to set a level.
+    assert not short.trustworthy, f"a 2-sample blip must not define a level: {short}"
+
+
+def test_the_mass_requirement_rejects_a_lopsided_split_on_its_own():
+    """Tested on `Split` directly, because `split_of` can no longer reach this case.
+
+    The clause was added to stop `below > 0 and above > 0` treating a 400-to-1 split
+    as two populations. It is worth asserting on its own terms, and it has to be
+    asserted here rather than through `split_of`: clipping (added in the same commit)
+    already erases any side smaller than the guard, so a lopsided split arrives with
+    its separability already crushed and the mass clause never decides anything.
+
+    So the honest statement is that the two mechanisms overlap -- clipping does the
+    work on real data, and this clause is the explicit guarantee. Without a test at
+    this level, removing the clause entirely changes no test at all.
+    """
+    from excavator_cycles.fsm import Split
+
+    lopsided = Split(threshold=2.4, separability=0.97, below=400, above=1, min_side=3)
+    assert not lopsided.trustworthy, "one sample is not a population"
+    assert Split(2.4, 0.97, 400, 3, min_side=3).trustworthy, "min_side samples is the bar"
+    assert not Split(2.4, 0.97, 2, 400, min_side=3).trustworthy, "either side counts"
+    # And separability still has to clear its own bar independently.
+    assert not Split(2.4, 0.5, 400, 50, min_side=3).trustworthy
