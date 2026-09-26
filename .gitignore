@@ -20,3 +20,7 @@ data/
 
 # copilot workspaces: personal working state, not project source
 .claude/workspaces/
+
+# Recovered session scratchpad: 179MB of regenerable media.
+# The CODE from it is committed under prior-art/box-physics/.
+recovered-scratchpad/
