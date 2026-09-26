@@ -133,3 +133,47 @@ def test_an_inverted_bracket_is_an_error_not_a_none():
     times = np.arange(0, 20, 0.1)
     with pytest.raises(ValueError, match="ordering upstream is wrong"):
         motion_boundary(np.zeros_like(times), times, (11.8, 10.8))
+
+
+# --- regressions from the physics review ----------------------------------
+
+
+def test_a_leading_gap_does_not_become_a_fake_rest_plateau():
+    """np.interp clamps outside its range, holding the first finite value flat.
+    For a RATE that manufactures the most convincing possible rest -- and
+    motion_boundary defines rest as "near zero" -- so a departure walk would
+    terminate on it and report the moment the tracker acquired the bucket."""
+    from excavator_cycles.onsets import derivative
+
+    height = np.concatenate([np.full(10, np.nan), np.linspace(0.1, 0.5, 30)])
+    times = np.arange(40) * 0.1
+    rate = derivative(height, times)
+    assert np.isnan(rate[:10]).all(), "unmeasured must not read as zero"
+    assert np.isfinite(rate[12:]).all()
+
+
+def test_a_trailing_gap_stays_nan_too():
+    from excavator_cycles.onsets import derivative
+
+    height = np.concatenate([np.linspace(0.1, 0.5, 30), np.full(10, np.nan)])
+    assert np.isnan(derivative(height, np.arange(40) * 0.1)[-10:]).all()
+
+
+def test_interior_gaps_are_still_bridged():
+    """Only the ends are refused; a short dropout mid-clip is interpolated so
+    the filter can run across it."""
+    from excavator_cycles.onsets import derivative
+
+    height = np.linspace(0.1, 0.5, 40).copy()
+    height[18:21] = np.nan
+    rate = derivative(height, np.arange(40) * 0.1)
+    assert np.isfinite(rate[18:21]).all()
+
+
+def test_a_broken_time_base_raises_instead_of_scaling_every_rate():
+    """A silent fallback to dt = 1.0 s scales every derivative by 1/dt -- 10x at
+    10 Hz -- and the result stays plausible, so nothing downstream notices."""
+    from excavator_cycles.onsets import derivative
+
+    with pytest.raises(ValueError, match="not increasing"):
+        derivative(np.arange(10.0), np.zeros(10))

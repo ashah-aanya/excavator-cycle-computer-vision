@@ -237,10 +237,17 @@ def overlap_fraction(
     Normalised by the bucket rather than by the union, because the question the
     dumping cue asks is "how much of the bucket is over the bed", and a union
     would shrink that answer as the truck grew.
+
+    Boxes here are **inclusive**: ``box_of`` returns ``xs.max()``, so a box from
+    x0 to x1 covers ``x1 - x0 + 1`` pixel columns. Every term below carries that
+    ``+ 1``. Dropping it is not a rounding difference -- a bucket box one pixel
+    tall sitting entirely on the bed would compute ``0 * n / 0`` and report
+    **no overlap at all**, and the bucket is thinnest in projection at exactly
+    the moment it tips over to dump, which is the event this gates.
     """
-    wide = max(0.0, min(box[2], other[2]) - max(box[0], other[0]))
-    tall = max(0.0, min(box[3], other[3]) - max(box[1], other[1]))
-    area = max((box[2] - box[0]) * (box[3] - box[1]), float(np.finfo(float).eps))
+    wide = max(0.0, min(box[2], other[2]) - max(box[0], other[0]) + 1.0)
+    tall = max(0.0, min(box[3], other[3]) - max(box[1], other[1]) + 1.0)
+    area = (box[2] - box[0] + 1.0) * (box[3] - box[1] + 1.0)  # >= 1 by construction
     return float(wide * tall / area)
 
 

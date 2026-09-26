@@ -178,8 +178,32 @@ def test_overlap_of_disjoint_boxes_is_zero():
     assert overlap_fraction((0, 0, 10, 10), (50, 50, 60, 60)) == 0.0
 
 
-def test_overlap_is_half_when_half_covered():
-    assert overlap_fraction((0, 0, 10, 10), (5, 0, 50, 10)) == pytest.approx(0.5)
+def test_overlap_counts_pixels_inclusively():
+    """Boxes are inclusive, so x0=0..x1=10 is ELEVEN columns, not ten.
+
+    The covered part here is columns 5..10 -- six of the eleven -- over all
+    eleven rows: 6*11 / 11*11 = 0.5454..., not 0.5. Getting this wrong
+    under-reports every partial overlap by a few percent.
+    """
+    assert overlap_fraction((0, 0, 10, 10), (5, 0, 50, 10)) == pytest.approx(6 * 11 / 121)
+
+
+def test_a_one_pixel_tall_bucket_on_the_bed_is_fully_overlapped():
+    """The regression that matters: the bucket is thinnest in projection at
+    exactly the moment it tips over to dump, which is the event overlap gates.
+    Exclusive arithmetic computed 0 * n / 0 here and reported NO overlap."""
+    assert overlap_fraction((10, 10, 20, 10), (0, 0, 100, 100)) == pytest.approx(1.0)
+    assert overlap_fraction((10, 10, 10, 20), (0, 0, 100, 100)) == pytest.approx(1.0)
+
+
+def test_a_single_pixel_bucket_is_not_a_division_by_zero():
+    assert overlap_fraction((7, 7, 7, 7), (0, 0, 100, 100)) == pytest.approx(1.0)
+    assert overlap_fraction((7, 7, 7, 7), (50, 50, 60, 60)) == 0.0
+
+
+def test_boxes_touching_at_one_column_do_overlap():
+    """They share a real pixel column, so the answer is not zero."""
+    assert overlap_fraction((0, 0, 10, 10), (10, 0, 20, 10)) == pytest.approx(1 * 11 / 121)
 
 
 # --- structure ------------------------------------------------------------

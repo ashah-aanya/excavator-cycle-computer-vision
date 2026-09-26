@@ -178,3 +178,46 @@ def test_smooth_boxes_rejects_the_wrong_shape():
 def test_boxtrack_length_is_the_sample_count():
     assert len(_track(n=7)) == 7
     assert isinstance(_track(), BoxTrack)
+
+
+# --- regressions from the physics review ----------------------------------
+
+
+def test_found_is_measured_before_smoothing_not_after():
+    """The moving average skips NaN, so a smoothed edge is finite wherever any
+    neighbour was found. Deriving `found` from that would report a gap as
+    measured, and the renderer would draw a box that was never seen."""
+    raw = np.tile([10.0, 20.0, 30.0, 26.0], (12, 1))
+    raw[4:8] = np.nan  # genuinely absent for four samples
+    track = smooth_boxes(raw, np.arange(12) * 0.1, 0.5, "trailing")
+    assert list(track.found[4:8]) == [False] * 4, "found must reflect the raw boxes"
+    assert int((~track.found).sum()) == 4
+
+
+def test_a_window_with_too_little_data_declines_to_answer():
+    """One surviving sample is not a smoothed value at this instant; it is an
+    unsmoothed value from up to (width-1)*dt ago, with the variance to match."""
+    v = np.array([1.0, 2.0, np.nan, np.nan, np.nan, np.nan, 7.0, 8.0])
+    out = moving_average(v, np.arange(8) * 0.1, 0.5, "trailing", min_valid_fraction=0.5)
+    assert np.isnan(out[5]), "only one valid sample in a 5-wide window"
+
+
+def test_a_truncated_window_at_the_start_is_not_treated_as_missing_data():
+    """Sample 0 has a one-sample window by construction, not by loss."""
+    v = np.arange(8, dtype=float)
+    out = moving_average(v, np.arange(8) * 0.1, 0.5, "trailing", min_valid_fraction=0.5)
+    assert np.isfinite(out[0])
+
+
+@pytest.mark.parametrize("width", [4, 5, 6, 7])
+def test_every_alignment_uses_the_same_number_of_samples(width):
+    """`width // 2` yields width+1 samples when width is even, so `centred`
+    would smooth harder than the other two and the claim that alignment is free
+    would stop holding."""
+    from excavator_cycles.boxes import _window_bounds
+
+    spans = {
+        mode: (lambda b: b[1] - b[0])(_window_bounds(20, width, mode, 100))
+        for mode in ("trailing", "centred", "leading")
+    }
+    assert set(spans.values()) == {width}, spans

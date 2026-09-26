@@ -86,6 +86,11 @@ class BoxTrack:
     y0: np.ndarray
     x1: np.ndarray
     y1: np.ndarray
+    # Which samples had a mask BEFORE smoothing. Kept explicitly because the
+    # moving average skips NaN, so a smoothed edge is finite wherever any
+    # neighbour was found -- deriving this from the smoothed array would report
+    # a gap as measured and let the renderer draw a box that was never seen.
+    found: np.ndarray
 
     @property
     def centre_x(self) -> np.ndarray:
@@ -109,11 +114,6 @@ class BoxTrack:
         """Width over height. Carries the bucket's tipping: it is widest seen
         side-on and narrows as it rotates over to empty."""
         return self.width / np.maximum(self.height, np.finfo(float).eps)
-
-    @property
-    def found(self) -> np.ndarray:
-        """Which samples actually had a mask."""
-        return np.isfinite(self.x0)
 
     def __len__(self) -> int:
         return len(self.times)
@@ -154,6 +154,7 @@ def moving_average(
     times: np.ndarray,
     window_seconds: float,
     alignment: Alignment = "trailing",
+    min_valid_fraction: float = 0.5,
 ) -> np.ndarray:
     """Average ``values`` over a window of real time.
 
@@ -162,8 +163,14 @@ def moving_average(
     the same physical amount.
 
     ``nan`` inputs are skipped rather than propagated: a sample whose window
-    contains some valid neighbours gets their mean. A sample whose window is
-    entirely missing stays ``nan``.
+    contains enough valid neighbours gets their mean.
+
+    ``min_valid_fraction`` is why that is bounded. Averaging whatever survives
+    is an unbiased estimate of the signal at the *surviving samples' centroid*,
+    not at the window's centre -- so a window with one sample left is not a
+    smoothed value at this instant, it is an unsmoothed value from up to
+    ``(width - 1) * dt`` ago, with the variance to match. At the default half,
+    the worst time shift is a quarter of the window rather than all of it.
     """
     values = np.asarray(values, dtype=float)
     if values.ndim != 1:
@@ -175,12 +182,15 @@ def moving_average(
     if width <= 1:
         return values.copy()
 
+    needed = max(1, int(np.ceil(width * min_valid_fraction)))
     out = np.full(len(values), np.nan)
     for index in range(len(values)):
         lo, hi = _window_bounds(index, width, alignment, len(values))
         segment = values[lo:hi]
         segment = segment[np.isfinite(segment)]
-        if segment.size:
+        # A truncated window at the clip's edge is short but not missing data,
+        # so it is judged against what it could contain, not against `width`.
+        if segment.size >= min(needed, hi - lo):
             out[index] = segment.mean()
     return out
 
@@ -203,12 +213,19 @@ def smooth_boxes(
     if len(raw) != len(times):
         raise ValueError(f"{len(raw)} boxes but {len(times)} timestamps")
 
+    found = np.isfinite(raw[:, 0])  # from the RAW boxes, before any smoothing
     edges = [moving_average(raw[:, i], times, window_seconds, alignment) for i in range(4)]
-    track = BoxTrack(np.asarray(times, dtype=float), *edges)
+    track = BoxTrack(np.asarray(times, dtype=float), *edges, found=found)
 
-    missing = int((~track.found).sum())
+    missing = int((~found).sum())
     if missing:
-        log.info("box track: %d of %d samples have no mask", missing, len(track))
+        smoothed_over = int((np.isfinite(track.x0) & ~found).sum())
+        log.info(
+            "box track: %d of %d samples had no mask (%d of them filled by smoothing)",
+            missing,
+            len(track),
+            smoothed_over,
+        )
     return track
 
 
@@ -236,6 +253,9 @@ def _window_bounds(
     if alignment == "leading":  # the w samples STARTING at index -- the diagram's
         return index, min(total, index + width)
     if alignment == "centred":
-        half = width // 2
-        return max(0, index - half), min(total, index + half + 1)
+        # (width - 1) // 2, not width // 2: the latter yields width + 1 samples
+        # whenever width is even, so "centred" would smooth harder than the other
+        # two and the claim that alignment is free would quietly stop holding.
+        half = (width - 1) // 2
+        return max(0, index - half), min(total, index - half + width)
     raise ValueError(f"unknown alignment {alignment!r}")

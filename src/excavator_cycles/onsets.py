@@ -55,11 +55,19 @@ log = logging.getLogger(__name__)
 
 
 def _spacing(times: np.ndarray) -> float:
-    """Seconds per sample, from the data rather than from a constant."""
+    """Median sample interval, in seconds.
+
+    Raises rather than substituting a default. A silent fallback to 1.0 s would
+    scale every derivative by 1/dt -- 10x at 10 Hz -- and the result stays
+    plausible, so nothing downstream would notice. ``boxes._window_samples``
+    already refuses the same input; the two must agree.
+    """
     if len(times) < 2:
-        return 1.0
+        raise ValueError(f"need at least 2 timestamps to find a spacing, got {len(times)}")
     step = float(np.median(np.diff(times)))
-    return step if step > 0 else 1.0
+    if not np.isfinite(step) or step <= 0:
+        raise ValueError(f"timestamps are not increasing (median spacing {step})")
+    return step
 
 
 def _samples(seconds: float, times: np.ndarray) -> int:
@@ -237,7 +245,7 @@ def smooth(signal: np.ndarray, times: np.ndarray, window_seconds: float = 0.9) -
     width = _odd(max(3, _samples(window_seconds, times)))
     if len(filled) <= width or not np.isfinite(filled).any():
         return filled
-    return savgol_filter(filled, width, 2)
+    return _restore_gaps(savgol_filter(np.nan_to_num(filled), width, 2), filled)
 
 
 def derivative(
@@ -250,17 +258,46 @@ def derivative(
     width = _odd(max(3, _samples(window_seconds, times)))
     if len(filled) <= width or not np.isfinite(filled).any():
         return np.full_like(filled, np.nan)
-    return savgol_filter(filled, width, 2, deriv=1, delta=_spacing(times))
+    out = savgol_filter(np.nan_to_num(filled), width, 2, deriv=1, delta=_spacing(times))
+    return _restore_gaps(out, filled)
 
 
 def _interpolate(values: np.ndarray) -> np.ndarray:
-    """Fill interior gaps so a filter can run; callers keep their own validity."""
+    """Fill INTERIOR gaps so a filter can run. Never extrapolate past the ends.
+
+    ``np.interp`` clamps outside the range it was given, holding the first and
+    last finite values flat. For a rate that is disastrous rather than merely
+    inaccurate: ``motion_boundary`` defines rest as "near zero", so a clip whose
+    tracking fails at either end is handed a perfectly flat run of samples --
+    the most convincing possible rest plateau -- and a departure walk will
+    happily terminate on it and report an onset that is really the moment the
+    tracker acquired the bucket.
+
+    Leading and trailing gaps therefore stay NaN, and the filters below return
+    NaN there too, so "not measured" cannot be mistaken for "not moving".
+    """
     values = np.asarray(values, dtype=np.float64)
     finite = np.isfinite(values)
     if finite.all() or finite.sum() < 2:
         return values.copy()
     index = np.arange(len(values))
-    return np.interp(index, index[finite], values[finite])
+    filled = np.interp(index, index[finite], values[finite])
+    first, last = int(index[finite][0]), int(index[finite][-1])
+    filled[:first] = np.nan
+    filled[last + 1 :] = np.nan
+    return filled
+
+
+def _restore_gaps(filtered: np.ndarray, source: np.ndarray) -> np.ndarray:
+    """Put the unmeasured span back as NaN after filtering.
+
+    ``savgol_filter`` cannot take NaN, so the ends are zero-filled to run it and
+    then blanked again here. Without this the zeros would read as a rate of
+    exactly zero -- see ``_interpolate``.
+    """
+    out = np.asarray(filtered, dtype=np.float64).copy()
+    out[~np.isfinite(source)] = np.nan
+    return out
 
 
 def _odd(value: int) -> int:
