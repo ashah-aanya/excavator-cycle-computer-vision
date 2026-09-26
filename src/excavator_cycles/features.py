@@ -1,21 +1,50 @@
-"""Stage 3b: per-sample measurements, from the masks and the scene.
+"""Kinematic features from bounding boxes. Design diagram stage 2.
 
-This is the last stage before the state machine, and its output is the table
-every phase boundary is read from. Two rules govern it:
+What this computes, and why each one is here
+--------------------------------------------
+The diagram asks for four groups. Three are built; the fourth, cabin rotation
+omega(t), is deliberately absent -- see "No rotation signal" below.
 
-**Everything is dimensionless or in seconds.** Distances are divided by the
-machine's reach, rates are per second. A hidden video at a different scale or
-frame rate produces the same numbers for the same motion.
+* **Positional** -- the bucket's x and y trajectories, ``dh/dt`` and ``dx/dt``.
+* **Relative position** -- bucket against the cabin, and bucket against the truck.
+* **Bucket / truck overlap** -- how much of the bucket lies over the truck bed.
+* **Shape** -- the bucket box's aspect ratio, which carries its tipping.
 
-**Derivatives use a symmetric filter.** A one-sided filter -- a moving average, an
-exponential smoother -- delays a signal by an amount that depends on its shape.
-That delay would land directly on the phase boundaries, and a boundary that is
-consistently late is exactly the systematic error the +/-0.6 s tolerance cannot
-absorb. A symmetric filter does not move extrema at all.
+Every length is divided by ``L``, the machine's arm reach in pixels, so a feature
+means the same thing on a 480-wide video and a 1920-wide one. Every rate is per
+second, taken against the decoder's real timestamps rather than a frame index, so
+a hidden video at 25 fps needs no special handling.
 
-The gate for this stage is visual: plot the signals, and check that the four
-phase boundaries are visible to a human before asking a rule to find them. If
-you cannot see a boundary in the plot, no threshold will find it reliably.
+Two sign conventions, stated once
+---------------------------------
+Image ``y`` increases **downward**. Getting this wrong inverts the
+digging-to-hauling trigger, so the flip happens in exactly two places and both
+are named:
+
+* ``height`` is ``(pivot_y - bucket_y) / L`` -- **positive is up**, measured from
+  the slew centre. Its derivatives ``dh_dt`` and ``d2h_dt2`` inherit that.
+* ``rel_cabin_y`` is ``(cabin_y - bucket_y) / L`` -- **positive means the bucket
+  is above the cabin**.
+
+``bucket_y`` itself is left in image coordinates (down is positive) because it is
+a trajectory for plotting, not a physics term. Nothing downstream should
+differentiate it; differentiate ``height`` instead. There is intentionally no
+``dy_dt`` column, because having both it and ``dh_dt`` would be an invitation to
+pick the wrong sign.
+
+No rotation signal
+------------------
+Earlier versions measured the cabin's rotation two ways and both were wrong. The
+fitted arm chain gave "rigid" links varying 5.2-8.2x in length. Dense optical flow
+over the house gave a quantity that correlated with the real slew at r = 0.025 --
+chance -- because a machine slewing about a **vertical** axis translates sideways
+in projection rather than rotating in the image plane.
+
+The swing is therefore measured positionally, as ``|dx/dt|`` of the bucket box
+centre, which is what the verified detector used.
+
+Nothing here is tied to one video: the frame rate, the truck box, the pivot and
+``L`` are all derived from the run being processed.
 """
 
 from __future__ import annotations
@@ -26,317 +55,284 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.signal import savgol_filter
 
+from .boxes import BoxTrack, raw_boxes, smooth_boxes
+from .cabin import stable_core
 from .config import Config
-from .filtering import filter_track
-from .geometry import (
-    Scene,
-    arm_reach,
-    dwell_clusters,
-    return_direction,
-    surface_height,
-)
-from .kinematics import body_core, boom_base, fit_frame
+from .geometry import arm_reach, farthest_point, rotation_centre
 from .logging_setup import get_logger
+from .onsets import derivative
 from .track import TrackResult
 
 log = get_logger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
+class Scene:
+    """Landmarks derived once per video, shared by every sample.
+
+    All three are measured from this video's own masks and detections. None is a
+    constant, and none survives from one video to the next.
+    """
+
+    pivot: tuple[float, float]  # slew centre, pixels
+    scale: float  # L: arm reach, pixels
+    truck_box: tuple[float, float, float, float] | None  # pixels; None = no truck
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "pivot": list(self.pivot),
+            "scale": self.scale,
+            "truck_box": list(self.truck_box) if self.truck_box else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Scene:
+        truck = data.get("truck_box")
+        return cls(
+            pivot=(float(data["pivot"][0]), float(data["pivot"][1])),
+            scale=float(data["scale"]),
+            truck_box=tuple(float(v) for v in truck) if truck else None,
+        )
+
+
+@dataclass(frozen=True)
 class FeatureTable:
-    """One row per sample; every column either dimensionless or in seconds."""
+    """One row per sample. Lengths in ``L``, rates in ``L``/second."""
 
     time_seconds: np.ndarray
-    frame_index: np.ndarray
-    bearing: np.ndarray  # angle of the bucket about the pivot, unwrapped (rad)
-    slew_rate: np.ndarray  # d(bearing)/dt; its SIGN separates hauling from swinging
-    extension: np.ndarray  # bucket distance from the pivot, in units of L
-    elevation: np.ndarray  # bucket's lowest point above the pivot, in units of L
-    elevation_rate: np.ndarray
-    speed: np.ndarray  # bucket speed, L per second
-    curl: np.ndarray  # bucket long-axis angle (rad) -- the dumping cue
-    curl_rate: np.ndarray
-    area: np.ndarray  # mask area / L^2; collapses when the bucket is buried
-    curl_valid: np.ndarray  # bool: was the arm's pose recovered for this sample?
-    # The fitted chain, four points per sample, for drawing and for any later
-    # measurement that wants a joint rather than a derived scalar.
-    base_x: np.ndarray
-    base_y: np.ndarray
-    joint1_x: np.ndarray
-    joint1_y: np.ndarray
-    joint2_x: np.ndarray
-    joint2_y: np.ndarray
-    tip_x: np.ndarray
-    tip_y: np.ndarray
-    in_dig_zone: np.ndarray  # bool
-    in_dump_zone: np.ndarray  # bool
-    confidence: np.ndarray  # from the tracker; low means MISSING, not "no"
-    valid: np.ndarray  # bool
 
-    def columns(self) -> dict[str, np.ndarray]:
-        return {k: v for k, v in self.__dict__.items()}
+    # --- positional: the bucket's trajectory (diagram: "x and y trajectories")
+    bucket_x: np.ndarray  # box centre x / L. Image coords.
+    bucket_y: np.ndarray  # box centre y / L. Image coords: DOWN is positive.
+    height: np.ndarray  # (pivot_y - bucket_y) / L. UP is positive.
+
+    # --- positional: the rates the diagram names
+    dh_dt: np.ndarray  # L/s, up-positive. Carries T1 and T2.
+    d2h_dt2: np.ndarray  # L/s^2. The kink where lifting takes over from scooping.
+    dx_dt: np.ndarray  # L/s, right-positive.
+    speed_x: np.ndarray  # |dx/dt|. Carries T4.
+
+    # --- relative position (diagram: "relative to truck", "relative to cabin")
+    rel_cabin_x: np.ndarray  # (bucket_x - cabin_x) / L
+    rel_cabin_y: np.ndarray  # (cabin_y - bucket_y) / L. Positive = bucket above.
+    rel_truck_x: np.ndarray  # (bucket_x - truck_centre_x) / L. nan with no truck.
+    rel_truck_y: np.ndarray  # (truck_centre_y - bucket_y) / L. Positive = above.
+
+    # --- bucket / truck overlap (diagram: its own box)
+    truck_overlap: np.ndarray  # [0,1]: share of the bucket box over the truck box
+
+    # --- shape
+    aspect_ratio: np.ndarray  # bucket box width / height. Carries T3.
+    radius: np.ndarray  # |bucket - pivot| / L. How far the arm is reaching.
+
+    found: np.ndarray  # bool: did this sample have a bucket mask?
 
     def __len__(self) -> int:
         return len(self.time_seconds)
 
+    def columns(self) -> dict[str, np.ndarray]:
+        return {f: getattr(self, f) for f in self.__dataclass_fields__}
+
 
 def build_features(
-    result: TrackResult, masks: dict[int, np.ndarray], config: Config
+    result: TrackResult,
+    objects: dict[str, dict[int, np.ndarray]],
+    config: Config,
 ) -> tuple[FeatureTable, Scene]:
-    """Turn masks into the signals the state machine reads."""
-    positions = sorted(masks)
-    times = np.array([result.frames[p].time_seconds for p in positions])
-    frame_indices = np.array([result.frames[p].frame_index for p in positions])
-    confidence = np.array([result.frames[p].sam_confidence for p in positions])
-    mask_list = [masks[p] for p in positions]
+    """Derive the scene, then every feature, from the tracked masks.
 
-    # The arm's pose, fitted per sample: boom base, two joints, bucket tip.
-    # Everything below is measured from those four points rather than from
-    # whichever pixel happens to lie farthest from the machine.
-    core = body_core(mask_list, config.geometry.occupancy_quantile)
-    centre = boom_base(core)
-    chains = [fit_frame(mask, centre, core) for mask in mask_list]
-    fitted = sum(c is not None for c in chains)
-    log.info(
-        "boom base at (%.0f, %.0f); arm pose fitted on %d/%d samples",
-        centre[0],
-        centre[1],
-        fitted,
-        len(chains),
-    )
-    if fitted < 0.8 * len(chains):
+    Args:
+        result: a completed ``track()`` run; supplies the real timestamps.
+        objects: mask sets by name. ``"excavator"`` is required, ``"bucket"``
+            strongly preferred -- without it the bucket falls back to the whole
+            machine's box, which is a much weaker signal and is logged loudly.
+    """
+    times = np.array([record.time_seconds for record in result.frames], dtype=float)
+    count = len(times)
+    if count < 2:
+        raise ValueError(f"need at least 2 samples to differentiate, got {count}")
+
+    excavator = objects.get("excavator")
+    if not excavator:
+        raise ValueError("no excavator masks; cannot derive the scene")
+    scene = derive_scene(result, excavator, config)
+
+    bucket = objects.get("bucket")
+    if not bucket:
         log.warning(
-            "the arm's pose failed on %d%% of samples", (1 - fitted / len(chains)) * 100
+            "no bucket masks in this run; falling back to the whole machine's box. "
+            "Every feature below is then about the silhouette, not the bucket."
         )
+        bucket = excavator
 
-    raw_tips = [c.tip if c is not None else None for c in chains]
-    scale = arm_reach(raw_tips, centre, config.geometry.reach_percentile)
+    window = config.features.box_window_seconds
+    alignment = config.features.box_alignment
 
-    # Design doc section 4.3: reject single-frame jumps rather than integrating
-    # them. The pose is fitted independently per frame, so nothing else stops
-    # one frame disagreeing with its neighbours -- and a bucket cannot teleport.
-    dt_nominal = float(np.median(np.diff(times))) if len(times) > 1 else 0.1
-    track = filter_track(
-        raw_tips,
-        dt_nominal,
-        scale,
-        config.geometry.tip_process_noise,
-        config.geometry.tip_measurement_noise,
-        config.geometry.tip_gate_sigma,
+    bucket_track = smooth_boxes(raw_boxes(bucket, count), times, window, alignment)
+    cabin_track = smooth_boxes(
+        raw_boxes(_body_masks(excavator, count, config), count), times, window, alignment
     )
-    tips = [(p[0], p[1]) if np.isfinite(p).all() else None for p in track.positions]
+    return _assemble(bucket_track, cabin_track, scene, times, config), scene
+
+
+def derive_scene(
+    result: TrackResult,
+    excavator: dict[int, np.ndarray],
+    config: Config,
+) -> Scene:
+    """Pivot, scale and truck box -- each measured from this video."""
+    masks = [excavator[k] for k in sorted(excavator)]
+    pivot = rotation_centre(masks, config.geometry.occupancy_quantile)
+    scale = arm_reach(
+        [farthest_point(m, pivot) for m in masks], pivot, config.geometry.reach_percentile
+    )
+    truck = truck_box(result, config)
     log.info(
-        "temporal filter: %d/%d poses accepted (%.0f%% rejected as implausible jumps)",
-        int(track.accepted.sum()),
-        len(track.accepted),
-        track.rejection_rate * 100,
+        "scene: pivot (%.0f, %.0f) px, L = %.0f px, truck %s",
+        pivot[0],
+        pivot[1],
+        scale,
+        "found" if truck else "none",
     )
-
-    xs = np.array([t[0] if t else np.nan for t in tips])
-    ys = np.array([t[1] if t else np.nan for t in tips])
-
-    # Image y grows downward, so negate it to make "up" positive.
-    bearing = np.unwrap(np.arctan2(-(ys - centre[1]), xs - centre[0]))
-    extension = np.hypot(xs - centre[0], ys - centre[1]) / scale
-
-    elevation = np.full(len(positions), np.nan)
-    curl = np.full(len(positions), np.nan)
-    area = np.full(len(positions), np.nan)
-    keypoints = np.full((len(positions), 4, 2), np.nan)
-
-    for index, (mask, chain) in enumerate(zip(mask_list, chains, strict=True)):
-        area[index] = mask.sum() / (scale**2)
-        if chain is None:
-            continue
-        keypoints[index] = np.array(chain.points)
-
-        # The curl is now a real joint angle: the bucket link relative to the
-        # stick link. No hand-picked region, no axis of a blob -- the two links
-        # come from the fitted chain, so this is the quantity the phase
-        # definition talks about.
-        stick = np.subtract(chain.stick_bucket, chain.boom_stick)
-        bucket = np.subtract(chain.tip, chain.stick_bucket)
-        if np.hypot(*stick) > 1 and np.hypot(*bucket) > 1:
-            curl[index] = _signed_angle(bucket, stick)
-
-        # Elevation uses the LOWEST pixel of the bucket, because the task defines
-        # hauling as beginning when the *entire* bucket clears the surface. The
-        # bucket's pixels are those near the bucket link -- a y-extremum, so a
-        # loose region is harmless here in a way an axis would not be.
-        lowest = _lowest_near_segment(
-            mask, chain.stick_bucket, chain.tip, config.geometry.bucket_band_low * scale * 0.2
-        )
-        if lowest is not None:
-            elevation[index] = (centre[1] - lowest) / scale
-
-    # A coasted sample has a position but no measurement behind it.
-    curl_valid = np.isfinite(curl) & track.accepted
-    curl = _fill_gaps(curl)
-
-    dt = float(np.median(np.diff(times))) if len(times) > 1 else 1.0
-    window = _odd(max(3, round(config.features.smoothing_window_seconds / dt)))
-    order = min(config.features.smoothing_polyorder, window - 1)
-
-    bearing_s = _smooth(bearing, window, order)
-    elevation_s = _smooth(elevation, window, order)
-    curl_s = _smooth(curl, window, order)
-
-    slew_rate = _derivative(bearing_s, window, order, dt)
-    elevation_rate = _derivative(elevation_s, window, order, dt)
-    curl_rate = _derivative(curl_s, window, order, dt)
-
-    speed = np.hypot(
-        _derivative(_smooth(xs / scale, window, order), window, order, dt),
-        _derivative(_smooth(ys / scale, window, order), window, order, dt),
-    )
-
-    dig_zone, dump_zone, separation = dwell_clusters(tips, speed, config, scale)
-    in_dig = _within(xs, ys, dig_zone, config.geometry.min_zone_separation * scale / 2)
-    in_dump = _within(xs, ys, dump_zone, config.geometry.min_zone_separation * scale / 2)
-    surface = surface_height(elevation_s, in_dig)
-    if surface is not None:
-        log.info("material surface at %.3f L above the pivot", surface)
-
-    scene = Scene(
-        centre=centre,
-        scale=scale,
-        dig_zone=dig_zone,
-        dump_zone=dump_zone,
-        surface_height=surface,
-        return_sign=return_direction(dig_zone, dump_zone, centre),
-        zone_separation=separation,
-    )
+    return Scene(pivot=pivot, scale=float(scale), truck_box=truck)
 
 
-    table = FeatureTable(
-        time_seconds=times,
-        frame_index=frame_indices,
-        bearing=bearing_s,
-        slew_rate=slew_rate,
-        extension=extension,
-        elevation=elevation_s,
-        elevation_rate=elevation_rate,
-        speed=speed,
-        curl=curl_s,
-        curl_rate=curl_rate,
-        area=area,
-        curl_valid=curl_valid,
-        base_x=keypoints[:, 0, 0],
-        base_y=keypoints[:, 0, 1],
-        joint1_x=keypoints[:, 1, 0],
-        joint1_y=keypoints[:, 1, 1],
-        joint2_x=keypoints[:, 2, 0],
-        joint2_y=keypoints[:, 2, 1],
-        tip_x=keypoints[:, 3, 0],
-        tip_y=keypoints[:, 3, 1],
-        in_dig_zone=in_dig,
-        in_dump_zone=in_dump,
-        confidence=confidence,
-        valid=(
-            np.isfinite(elevation)
-            & track.accepted
-            & (confidence >= config.features.min_sample_confidence)
-        ),
-    )
-    return table, scene
+def truck_box(result: TrackResult, config: Config) -> tuple[float, ...] | None:
+    """Where the truck is, from the frames where it was cleanly separate.
 
+    The detector sometimes merges the excavator and the truck into one box; on
+    those frames the "truck" box is the merged box and says nothing. Frames whose
+    two boxes barely overlap are the informative ones, and a parked truck holds
+    its position while the excavator swings over it -- so the median of the clean
+    detections is a static box good for the whole clip.
 
-
-def _signed_angle(vector: np.ndarray, reference: np.ndarray) -> float:
-    """Angle of ``vector`` relative to ``reference``, in (-pi, pi].
-
-    Signed, and a full turn rather than an axis: these are links with a
-    direction, not lines, so there is no 180-degree ambiguity to wrap around.
-    That ambiguity is what made the earlier blob-axis measurement so fragile.
+    ``None`` when no truck is ever cleanly seen, which is legitimate: a video
+    with no truck simply has no overlap feature.
     """
-    angle = np.arctan2(vector[1], vector[0]) - np.arctan2(reference[1], reference[0])
-    return float(np.arctan2(np.sin(angle), np.cos(angle)))
-
-
-def _lowest_near_segment(mask, start, end, radius: float) -> float | None:
-    """The lowest mask pixel lying near the segment from ``start`` to ``end``."""
-    ys, xs = np.nonzero(mask)
-    if xs.size == 0:
+    clean = [
+        record.truck_box
+        for record in result.frames
+        if record.truck_box is not None
+        and (record.detection_truck_iou or 0.0) <= config.track.max_clean_truck_iou
+    ]
+    if not clean:
         return None
-    start, end = np.asarray(start, float), np.asarray(end, float)
-    segment = end - start
-    length_squared = float(segment @ segment)
-    points = np.stack([xs, ys], axis=1).astype(float)
-    if length_squared == 0:
-        near = np.hypot(*(points - start).T) <= radius
-    else:
-        t = np.clip((points - start) @ segment / length_squared, 0, 1)[:, None]
-        near = np.hypot(*(points - (start + t * segment)).T) <= radius
-    return float(ys[near].max()) if near.any() else None
+    box = np.median(np.array(clean, dtype=float), axis=0)
+    return tuple(float(v) for v in box)
 
 
-def _smooth(values: np.ndarray, window: int, order: int) -> np.ndarray:
-    """Symmetric (zero-phase) smoothing. See the module docstring for why."""
-    filled = _fill_gaps(values)
-    if np.isnan(filled).all() or len(filled) <= window:
-        return filled
-    return savgol_filter(filled, window, order)
+def overlap_fraction(
+    box: tuple[float, float, float, float],
+    other: tuple[float, ...],
+) -> float:
+    """Share of ``box``'s area that lies inside ``other``.
 
-
-def _derivative(values: np.ndarray, window: int, order: int, dt: float) -> np.ndarray:
-    """Rate of change, also zero-phase, so extrema keep their position in time."""
-    filled = _fill_gaps(values)
-    if np.isnan(filled).all() or len(filled) <= window:
-        return np.full_like(filled, np.nan)
-    return savgol_filter(filled, window, order, deriv=1, delta=dt)
-
-
-def _fill_gaps(values: np.ndarray) -> np.ndarray:
-    """Interpolate short gaps so a filter can run; genuinely absent data stays NaN.
-
-    A gap is a missing measurement, not a measurement of zero, and the `valid`
-    column records where that happened so downstream rules can treat those
-    samples as absent rather than as evidence.
+    Normalised by the bucket rather than by the union, because the question the
+    dumping cue asks is "how much of the bucket is over the bed", and a union
+    would shrink that answer as the truck grew.
     """
-    out = values.copy()
-    finite = np.isfinite(out)
-    if not finite.any():
-        return out
-    indices = np.arange(len(out))
-    out[~finite] = np.interp(indices[~finite], indices[finite], out[finite])
+    wide = max(0.0, min(box[2], other[2]) - max(box[0], other[0]))
+    tall = max(0.0, min(box[3], other[3]) - max(box[1], other[1]))
+    area = max((box[2] - box[0]) * (box[3] - box[1]), float(np.finfo(float).eps))
+    return float(wide * tall / area)
+
+
+def _body_masks(
+    excavator: dict[int, np.ndarray], count: int, config: Config
+) -> list[np.ndarray | None]:
+    """The cabin, per frame: this frame's mask restricted to the persistent core.
+
+    The core is the set of pixels that are machine in almost every frame -- the
+    body and undercarriage, which stay put while the arm sweeps. Intersecting it
+    with the current mask gives a cabin box that does not grow when the arm
+    extends, which matters because three phase cues compare the bucket against
+    the cabin. A reference that drifted with the arm would compare the bucket
+    against something the bucket itself had dragged.
+    """
+    masks = [excavator[k] for k in sorted(excavator)]
+    core, _threshold = stable_core(masks, config.geometry.occupancy_quantile)
+    out: list[np.ndarray | None] = []
+    for index in range(count):
+        mask = excavator.get(index)
+        out.append(None if mask is None else (mask & core))
     return out
 
 
-def _within(xs, ys, zone, radius: float) -> np.ndarray:
-    if zone is None:
-        return np.zeros(len(xs), dtype=bool)
-    return np.hypot(xs - zone[0], ys - zone[1]) <= radius
+def _assemble(
+    bucket: BoxTrack,
+    cabin: BoxTrack,
+    scene: Scene,
+    times: np.ndarray,
+    config: Config,
+) -> FeatureTable:
+    """Every column, from the two smoothed box tracks."""
+    scale = scene.scale
+    window = config.features.derivative_window_seconds
 
+    bx = bucket.centre_x / scale
+    by = bucket.centre_y / scale
+    cx = cabin.centre_x / scale
+    cy = cabin.centre_y / scale
 
-def _odd(value: int) -> int:
-    return value if value % 2 == 1 else value + 1
+    # The one y-flip that matters: up-positive height above the slew centre.
+    height = (scene.pivot[1] / scale) - by
 
+    dh = derivative(height, times, window_seconds=window)
+    dx = derivative(bx, times, window_seconds=window)
 
-def save(table: FeatureTable, scene: Scene, output_dir: str | Path) -> None:
-    """Write the table and the scene for the state machine and for inspection."""
-    output_dir = Path(output_dir)
-    np.savez_compressed(output_dir / "features.npz", **table.columns())
-    (output_dir / "scene.json").write_text(json.dumps(scene.to_dict(), indent=2))
+    if scene.truck_box is not None:
+        tx = (scene.truck_box[0] + scene.truck_box[2]) / 2.0 / scale
+        ty = (scene.truck_box[1] + scene.truck_box[3]) / 2.0 / scale
+        rel_truck_x, rel_truck_y = bx - tx, ty - by
+        overlap = np.array(
+            [
+                overlap_fraction(
+                    (bucket.x0[i], bucket.y0[i], bucket.x1[i], bucket.y1[i]),
+                    scene.truck_box,
+                )
+                if bucket.found[i]
+                else np.nan
+                for i in range(len(bucket))
+            ]
+        )
+    else:
+        rel_truck_x = np.full(len(bucket), np.nan)
+        rel_truck_y = np.full(len(bucket), np.nan)
+        overlap = np.full(len(bucket), np.nan)
 
-    # A CSV as well: the point of this stage is that a human can read it.
-    columns = table.columns()
-    header = ",".join(columns)
-    rows = np.column_stack([np.asarray(v, dtype=float) for v in columns.values()])
-    np.savetxt(
-        output_dir / "features.csv",
-        rows,
-        delimiter=",",
-        header=header,
-        comments="",
-        fmt="%.6g",
+    return FeatureTable(
+        time_seconds=times,
+        bucket_x=bx,
+        bucket_y=by,
+        height=height,
+        dh_dt=dh,
+        d2h_dt2=derivative(dh, times, window_seconds=window),
+        dx_dt=dx,
+        speed_x=np.abs(dx),
+        rel_cabin_x=bx - cx,
+        rel_cabin_y=cy - by,
+        rel_truck_x=rel_truck_x,
+        rel_truck_y=rel_truck_y,
+        truck_overlap=overlap,
+        aspect_ratio=bucket.aspect_ratio,
+        radius=np.hypot(bx - scene.pivot[0] / scale, by - scene.pivot[1] / scale),
+        found=bucket.found,
     )
 
 
-def load(output_dir: str | Path) -> tuple[FeatureTable, dict[str, Any]]:
+def save(table: FeatureTable, scene: Scene, output_dir: str | Path) -> None:
+    """Write ``features.npz`` and ``scene.json`` beside the masks."""
     output_dir = Path(output_dir)
-    with np.load(output_dir / "features.npz") as data:
-        table = FeatureTable(**{k: data[k] for k in data.files})
-    scene = json.loads((output_dir / "scene.json").read_text())
+    np.savez_compressed(output_dir / "features.npz", **table.columns())
+    (output_dir / "scene.json").write_text(json.dumps(scene.to_dict(), indent=2))
+    log.info("wrote features.npz and scene.json to %s", output_dir)
+
+
+def load(output_dir: str | Path) -> tuple[FeatureTable, Scene]:
+    """Read back what :func:`save` wrote."""
+    output_dir = Path(output_dir)
+    data = np.load(output_dir / "features.npz")
+    table = FeatureTable(**{f: data[f] for f in FeatureTable.__dataclass_fields__})
+    scene = Scene.from_dict(json.loads((output_dir / "scene.json").read_text()))
     return table, scene

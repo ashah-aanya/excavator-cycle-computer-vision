@@ -221,50 +221,31 @@ def _cmd_render(args: argparse.Namespace) -> int:
 
 
 def _cmd_features(args: argparse.Namespace) -> int:
-    """Derive the scene and the signals, and plot them for inspection."""
-    import cv2
-
+    """Stage 3: derive the scene and every kinematic feature, and plot them."""
     from .features import build_features, save
+    from .masks import load_objects
     from .track import load_result
 
     config = Config.load(args.config)
-    result, masks = load_result(args.track_dir)
-    table, scene = build_features(result, masks, config)
+    result, _excavator = load_result(args.track_dir)
+    objects, _shape = load_objects(args.track_dir / "masks.npz")
+    table, scene = build_features(result, objects, config)
     save(table, scene, args.track_dir)
 
     if not args.no_plots:
-        from .plots import plot_scene, plot_signals
-        from .video import read_frames_at
+        from .plots import plot_features
 
-        plot_signals(table, scene, args.track_dir / "signals.png")
-        mid = read_frames_at(result.video, [result.duration_seconds / 2])
-        if mid:
-            plot_scene(mid[0].image, table, scene, args.track_dir / "scene.png")
-        else:
-            log.warning("could not read a frame for the scene plot")
-        del cv2  # imported only to fail early if OpenCV is missing
+        plot_features(table, scene, args.track_dir / "features.png")
 
     print()
-    print(f"  samples        : {len(table)}  ({int(table.valid.sum())} valid)")
-    print(f"  rotation centre: ({scene.centre[0]:.0f}, {scene.centre[1]:.0f}) px")
+    print(f"  samples        : {len(table)}  ({int(table.found.sum())} with a bucket)")
+    print(f"  slew centre    : ({scene.pivot[0]:.0f}, {scene.pivot[1]:.0f}) px")
     print(f"  arm reach L    : {scene.scale:.0f} px")
-    if scene.dig_zone and scene.dump_zone:
-        print(f"  dig zone       : ({scene.dig_zone[0]:.0f}, {scene.dig_zone[1]:.0f})")
-        print(f"  dump zone      : ({scene.dump_zone[0]:.0f}, {scene.dump_zone[1]:.0f})")
-        print(f"  separation     : {scene.zone_separation:.2f} L")
+    if scene.truck_box:
+        box = ", ".join(f"{v:.0f}" for v in scene.truck_box)
+        print(f"  truck box      : ({box}) px")
     else:
-        print("  zones          : NOT RESOLVED")
-    surface = scene.surface_height
-    print(
-        f"  surface height : {surface:.3f} L"
-        if surface is not None
-        else "  surface height : NOT RESOLVED"
-    )
-    print(f"  return swing   : {'left' if scene.return_sign > 0 else 'right'}")
-    print()
-    print(f"  wrote features.npz, features.csv, scene.json to {args.track_dir}")
-    if not args.no_plots:
-        print(f"  LOOK AT: {args.track_dir}/scene.png and {args.track_dir}/signals.png")
-        print("  The gate for this stage is visual: the landmarks must land where")
-        print("  you would put them, and the four boundaries must be visible.")
+        print("  truck box      : none detected (overlap feature is nan)")
+    print(f"  wrote          : {args.track_dir}/features.npz, scene.json")
     return 0
+

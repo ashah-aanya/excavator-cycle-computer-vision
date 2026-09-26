@@ -57,7 +57,7 @@ geometry:
   min_zone_separation: 0.40  # dig and dump must be this far apart, in units of L
 
 features:
-  smoothing_window_seconds: 0.5  # symmetric window; one-sided would bias boundaries
+  derivative_window_seconds: 0.9 # Savitzky-Golay; symmetric, so it moves no extremum
   smoothing_polyorder: 2
   box_window_seconds: 0.5        # 0.3 and 0.5 both give 4/4; 0.9 collapses to 1/4
   box_alignment: trailing        # trailing | centred | leading (the diagram draws leading)

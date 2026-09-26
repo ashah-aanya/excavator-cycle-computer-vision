@@ -224,7 +224,22 @@ class FeatureConfig:
     # is not a preference: a one-sided filter delays signals by an amount that
     # depends on their shape, which is exactly the systematic bias the +/-0.6 s
     # tolerance cannot absorb.
-    smoothing_window_seconds: float = 0.5
+    # Two windows, deliberately separate, because they were once conflated: the
+    # trailing mean ran at 0.3-0.5 s while every derivative went through
+    # Savitzky-Golay at 0.9 s, so varying the first barely moved anything and the
+    # second was doing the work. Sweeping both (graded fields out of 6):
+    #
+    #       SG ->     0.3s  0.5s  0.7s  0.9s  1.3s
+    #   trail NONE     deg     6     6     5     4
+    #         0.3s       6     6     5     5     4
+    #         0.5s       5     5     5     5     3
+    #         0.7s       5     6     6     5     3
+    #
+    # 0.5 / 0.9 is the pair under which all four transitions were verified to
+    # land inside tolerance; 0.3 / 0.3 scored best but its neighbours do not, so
+    # it sits on a boundary rather than a plateau. Tuning belongs to the state
+    # machine stage, with a second video to check against.
+    derivative_window_seconds: float = 0.9
     smoothing_polyorder: int = 2
 
     # Box smoothing (design diagram stage 1.5). Measured on the development
