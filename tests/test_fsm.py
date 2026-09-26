@@ -712,3 +712,100 @@ def test_walk_accepts_a_config_and_converts_for_itself():
         config=Config.load(),
     )
     assert [d.phase for d in found] == ["digging"]
+
+
+# --- pass 2 ---------------------------------------------------------------
+
+
+def _ramp_table(n=60, onset=30, rate=0.05):
+    """A signal at rest, then rising steadily from `onset`. The onset is the
+    thing pass 2 has to find, and we know exactly where it is."""
+    t = np.arange(n) * 0.1
+    height = np.where(np.arange(n) < onset, 0.0, (np.arange(n) - onset) * rate)
+    return _CueTable(n=n), t, height
+
+
+def test_refine_finds_a_known_onset_on_a_ramp():
+    from excavator_cycles.fsm import Window, refine
+
+    _table, t, height = _ramp_table(onset=30)
+    when = refine(height, t, Window(20, 45), mode="departs")
+    assert when == pytest.approx(3.0, abs=0.25), f"onset is at 3.0s, got {when}"
+
+
+def test_refine_searches_only_inside_its_window():
+    """The guarantee the whole two-pass design rests on: a window that does not
+    contain the transition cannot produce it."""
+    from excavator_cycles.fsm import Window, refine
+
+    _table, t, height = _ramp_table(onset=30)
+    when = refine(height, t, Window(40, 55), mode="departs")
+    assert when is None or when >= t[40]
+
+
+def test_refine_returns_none_when_the_cue_never_fires():
+    """Information, not a crash: the window contained nothing to find."""
+    from excavator_cycles.fsm import Window, refine
+
+    t = np.arange(40) * 0.1
+    assert refine(np.zeros(40), t, Window(5, 30), mode="departs") is None
+
+
+def test_refine_uses_the_timestamp_array_not_a_nominal_dt():
+    """On a variable-rate clip `t0 + i*dt` is wrong, and wrong invisibly."""
+    from excavator_cycles.fsm import Window, refine
+
+    n, onset = 60, 30
+    height = np.where(np.arange(n) < onset, 0.0, (np.arange(n) - onset) * 0.05)
+    uneven = np.cumsum(np.r_[0.0, np.random.default_rng(0).uniform(0.05, 0.15, n - 1)])
+    when = refine(height, uneven, Window(20, 45), mode="departs")
+    assert when == pytest.approx(uneven[onset], abs=0.3), (
+        "the onset must be reported at its real timestamp, not index * nominal dt"
+    )
+
+
+def test_refine_handles_an_arrival_as_well_as_a_departure():
+    """digging and hauling ARRIVE at rest; swinging DEPARTS it."""
+    from excavator_cycles.fsm import Window, refine
+
+    n = 60
+    t = np.arange(n) * 0.1
+    falling = np.where(np.arange(n) < 30, (30 - np.arange(n)) * 0.05, 0.0)
+    when = refine(falling, t, Window(15, 45), mode="arrives")
+    assert when == pytest.approx(3.0, abs=0.3)
+
+
+def test_refine_on_an_empty_window_is_none_not_an_error():
+    from excavator_cycles.fsm import Window, refine
+
+    t = np.arange(40) * 0.1
+    assert refine(np.arange(40.0), t, Window(10, 10), mode="departs") is None
+
+
+def test_refine_extremum_finds_the_peak():
+    """T3's cue is argmax(aspect_ratio), which is neither an arrival nor a
+    departure but a turning point."""
+    from excavator_cycles.fsm import Window, refine
+
+    t = np.arange(60) * 0.1
+    bump = np.exp(-(((np.arange(60) - 35) / 6.0) ** 2))
+    assert refine(bump, t, Window(20, 50), mode="peak") == pytest.approx(3.5, abs=0.15)
+
+
+def test_the_rest_band_is_not_fooled_by_a_window_that_is_mostly_moving():
+    """A window is chosen BECAUSE it contains a transition, so it is mostly
+    moving by construction. Using the median difference as the noise measures
+    that motion: on a clean ramp it came out at the ramp's own step size, which
+    swallowed the whole excursion and put the onset four samples late."""
+    from excavator_cycles.fsm import _rest_band
+
+    ramp = np.r_[np.zeros(10), np.arange(14) * 0.05]
+    assert _rest_band(ramp, sigma=3.0) < 0.05, "the band must not reach the ramp's step size"
+
+
+def test_the_rest_band_never_collapses_to_zero():
+    """A perfectly flat lead-in makes the low quantile 0, and a zero band makes
+    every sample an excursion."""
+    from excavator_cycles.fsm import _rest_band
+
+    assert _rest_band(np.r_[np.zeros(20), np.arange(10) * 0.1], sigma=3.0) > 0

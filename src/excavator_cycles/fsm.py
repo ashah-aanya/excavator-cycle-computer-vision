@@ -43,6 +43,7 @@ arbitrary and the gate built on it should not be trusted.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 import numpy as np
 
@@ -601,3 +602,110 @@ TRIGGERS = {
 def default_fires(phase: str, table, index: int, levels: Levels, config=None) -> bool:
     """The trigger the walk uses when none is injected."""
     return TRIGGERS[phase](table, index, levels)
+
+
+# ---------------------------------------------------------------------------
+# Pass 2 -- exactly when, inside a window pass 1 has already chosen
+#
+# Pass 1 is allowed to be blunt because pass 2 is precise. The division only
+# works one way round, though: refine() searches INSIDE the window it is given
+# and cannot reach outside it, so a window that misses the transition cannot be
+# rescued here. A refined answer from a wrong window is worse than none, because
+# it looks precise.
+# ---------------------------------------------------------------------------
+
+Mode = Literal["departs", "arrives", "peak"]
+
+
+def refine(
+    signal: np.ndarray,
+    times: np.ndarray,
+    window: Window,
+    mode: Mode,
+    sigma: float = 3.0,
+) -> float | None:
+    """The instant a transition happened, inside ``window``.
+
+    Three shapes of onset, because the four cues are not all the same kind:
+
+    ``departs``  the signal leaves rest. Found by locating the excursion and
+                 walking BACKWARD to where it started -- you cannot detect a
+                 departure going forwards, because a signal at rest looks
+                 identical to one about to move.
+    ``arrives``  the signal settles into rest. The mirror image, walking forward.
+    ``peak``     a turning point, for a cue whose event is an extremum rather
+                 than a change of regime (T3's aspect ratio).
+
+    Returns ``None`` when nothing qualifies in the window. That is information
+    -- "the cue did not fire here" -- and the caller uses it to decide whether a
+    cycle is measurable, so it must not be an exception.
+
+    Every time returned is read from ``times``. Never ``t0 + i * dt``: on a
+    variable-rate clip that is wrong, and wrong without any symptom.
+    """
+    values = np.asarray(signal, dtype=float)
+    times = np.asarray(times, dtype=float)
+    lo, hi = max(0, window.lo), min(len(values), window.hi)
+    if hi - lo < 2:
+        return None
+
+    inside = values[lo:hi]
+    finite = np.isfinite(inside)
+    if finite.sum() < 2:
+        return None
+
+    if mode == "peak":
+        # argmax over the window. An extremum is unmoved by symmetric smoothing,
+        # which is why it can be taken directly rather than reconstructed.
+        return float(times[lo + int(np.nanargmax(np.where(finite, inside, -np.inf)))])
+
+    # Rest for a RATE is zero, absolutely -- it does not have to be estimated,
+    # only its width does. Estimating the level is what once made the detector
+    # settle on the hauling height instead of the dig plateau.
+    band = _rest_band(inside[finite], sigma)
+    if band <= 0:
+        return None
+    quiet = np.abs(inside) <= band
+
+    if mode == "departs":
+        # Find the excursion, then walk BACK to where the quiet ended.
+        loud = np.flatnonzero(~quiet & finite)
+        if loud.size == 0:
+            return None
+        cursor = int(loud[0])
+        while cursor > 0 and not quiet[cursor - 1]:
+            cursor -= 1
+        return float(times[lo + cursor])
+
+    if mode == "arrives":
+        # The mirror: find where quiet BEGINS and stays.
+        settled = np.flatnonzero(quiet & finite)
+        if settled.size == 0:
+            return None
+        return float(times[lo + int(settled[0])])
+
+    raise ValueError(f"unknown mode {mode!r}")
+
+
+def _rest_band(values: np.ndarray, sigma: float, floor_fraction: float = 0.02) -> float:
+    """How far from zero still counts as "at rest".
+
+    Two traps here, both of which this project has fallen into before.
+
+    **The median difference is not the noise.** A window chosen because it
+    contains a transition is, by construction, mostly moving -- so the MEDIAN of
+    successive differences measures the motion. On a clean synthetic ramp that
+    estimate came out at the ramp's own step size, 0.052, which then swallowed
+    the entire excursion and put the onset four samples late. A low quantile
+    looks at the quiet part instead.
+
+    **And it can come out at zero.** On a signal that is exactly flat before the
+    transition, the low quantile is 0, and a band of zero makes every sample an
+    excursion. The floor is a small fraction of what the signal does across the
+    window: rest cannot be defined more tightly than that.
+    """
+    if values.size < 3:
+        return 0.0
+    steps = np.abs(np.diff(values))
+    quiet = float(np.quantile(steps, 0.25)) * 1.4826 / np.sqrt(2)
+    return max(sigma * quiet, floor_fraction * float(np.ptp(values)))
