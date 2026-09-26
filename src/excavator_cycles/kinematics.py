@@ -246,15 +246,6 @@ def _segment_error(points: np.ndarray) -> float:
     return float(np.sum(np.abs((points - start) @ normal)))
 
 
-def _turn_angle(a, b, c) -> float:
-    """How sharply the path turns at b; a straight run turns by 0."""
-    first, second = np.array(b) - np.array(a), np.array(c) - np.array(b)
-    n1, n2 = np.linalg.norm(first), np.linalg.norm(second)
-    if n1 == 0 or n2 == 0:
-        return 0.0
-    cosine = float(np.clip(np.dot(first, second) / (n1 * n2), -1, 1))
-    return float(np.arccos(cosine))
-
 
 def _residual(path: np.ndarray, vertices: np.ndarray) -> float:
     """Mean distance from the traced path to the fitted segments.

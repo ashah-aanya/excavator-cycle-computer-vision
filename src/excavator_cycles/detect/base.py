@@ -14,7 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-import cv2
 import numpy as np
 
 # Overlay colours (BGR). Cosmetic only -- they cannot change any reported
@@ -89,24 +88,7 @@ class Detector(Protocol):
         ...
 
 
-def box_area_fraction(box: np.ndarray, image_shape: tuple[int, ...]) -> float:
-    """Fraction of the frame a box covers.
 
-    A sanity check with teeth: a "detection" covering 90% of the frame usually
-    means the model grabbed the whole scene, and a detection covering 0.1% is
-    usually a piece of background. Both pass a confidence threshold happily.
-    """
-    height, width = image_shape[:2]
-    x1, y1, x2, y2 = box
-    return float(max(0.0, x2 - x1) * max(0.0, y2 - y1) / (width * height))
-
-
-def box_centre(box: np.ndarray) -> np.ndarray:
-    return np.array([(box[0] + box[2]) / 2, (box[1] + box[3]) / 2], dtype=np.float64)
-
-
-def box_diagonal(box: np.ndarray) -> float:
-    return float(np.hypot(box[2] - box[0], box[3] - box[1]))
 
 
 def iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
@@ -131,119 +113,5 @@ def iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
     return float(intersection / union) if union > 0 else 0.0
 
 
-def draw_detections(
-    image: np.ndarray,
-    detections: Detection | list[Detection],
-    caption: str = "",
-    highlight_best: bool = True,
-) -> np.ndarray:
-    """Draw boxes on a copy of the image.
-
-    This is the artifact that decides whether stage 1 passes. Metrics can look
-    healthy while the box sits on a dump truck, a shadow or the sky, so the
-    frames must be looked at, not just scored.
-    """
-    if isinstance(detections, Detection):
-        detections = [detections]
-
-    canvas = image.copy()
-    height = canvas.shape[0]
-    thickness = max(1, round(height / 400))
-    font_scale = max(0.4, height / 1000)
-
-    for detection in detections:
-        best = detection.best()
-        for i, (box, score) in enumerate(zip(detection.boxes, detection.scores, strict=True)):
-            is_best = highlight_best and best is not None and np.allclose(box, best[0])
-            colour = _COLOR_PRIMARY if is_best else _COLOR_SECONDARY
-            x1, y1, x2, y2 = (round(v) for v in box)
-            cv2.rectangle(
-                canvas, (x1, y1), (x2, y2), colour, thickness + (1 if is_best else 0)
-            )
-
-            label = detection.labels[i] if i < len(detection.labels) else detection.prompt
-            _draw_label(
-                canvas, f"{label} {score:.2f}", (x1, y1), colour, font_scale, thickness
-            )
-
-    if caption:
-        _draw_label(
-            canvas, caption, (6, 6), (40, 40, 40), font_scale, thickness, anchor_below=True
-        )
-    return canvas
 
 
-def _draw_label(
-    canvas: np.ndarray,
-    text: str,
-    origin: tuple[int, int],
-    colour: tuple[int, int, int],
-    font_scale: float,
-    thickness: int,
-    anchor_below: bool = False,
-) -> None:
-    """Text on a filled background, so it stays readable over any imagery."""
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-    x, y = origin
-    top = y if anchor_below else max(0, y - text_height - baseline - 4)
-    cv2.rectangle(
-        canvas,
-        (x, top),
-        (x + text_width + 6, top + text_height + baseline + 4),
-        colour,
-        cv2.FILLED,
-    )
-    cv2.putText(
-        canvas,
-        text,
-        (x + 3, top + text_height + 2),
-        font,
-        font_scale,
-        _COLOR_TEXT,
-        thickness,
-        cv2.LINE_AA,
-    )
-
-
-def contact_sheet(
-    images: list[np.ndarray], columns: int = 5, tile_width: int = 380
-) -> np.ndarray:
-    """Tile frames into one image.
-
-    Twenty separate files require twenty clicks; one sheet shows the whole spike
-    at a glance, and failures cluster visibly -- e.g. every frame where the arm
-    is extended, or everything after the truck arrives.
-    """
-    if not images:
-        raise ValueError("no images to tile")
-
-    columns = max(1, min(columns, len(images)))
-    scaled = []
-    for image in images:
-        height, width = image.shape[:2]
-        tile_height = round(height * tile_width / width)
-        scaled.append(
-            cv2.resize(image, (tile_width, tile_height), interpolation=cv2.INTER_AREA)
-        )
-
-    tile_height = max(tile.shape[0] for tile in scaled)
-    rows = []
-    for start in range(0, len(scaled), columns):
-        row_tiles = scaled[start : start + columns]
-        padded = [
-            cv2.copyMakeBorder(
-                tile,
-                0,
-                tile_height - tile.shape[0],
-                0,
-                0,
-                cv2.BORDER_CONSTANT,
-                value=(20, 20, 20),
-            )
-            for tile in row_tiles
-        ]
-        while len(padded) < columns:  # pad the final row so hstack works
-            padded.append(np.full_like(padded[0], 20))
-        rows.append(np.hstack(padded))
-    return np.vstack(rows)

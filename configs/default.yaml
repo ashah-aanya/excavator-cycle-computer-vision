@@ -27,13 +27,6 @@ detection:
   text_threshold: 0.25
   alt_model_id: "google/owlv2-base-patch16-ensemble"
 
-spike:
-  n_frames: 20                 # frames sampled across the video
-  min_detection_rate: 0.95     # the machine must be found in ~every frame
-  min_median_score: 0.40       # scraping the threshold is fragile on unseen footage
-  max_box_area_fraction: 0.60  # bigger than this = the model grabbed the whole scene
-  min_box_area_fraction: 0.005 # smaller than this = background
-  max_centre_jump: 0.75        # box movement between frames, as a fraction of its diagonal
 
 track:
   model_id: "facebook/sam2.1-hiera-tiny"   # ungated, Apache-2.0
@@ -56,20 +49,16 @@ geometry:
   occupancy_quantile: 0.90   # what counts as the machine's persistent core
   reach_percentile: 95.0     # defines L, the scale unit
   bucket_band_low: 0.85      # bucket = outer 15% of the arm's radial extent
-  forearm_band_low: 0.55     # stick = the band inside it, gives the reference axis
   bucket_radius_frac: 0.22   # optical-flow patch size, in units of L
-  elbow_frac: 0.60           # where along the arm the forearm direction is taken
   tip_process_noise: 2.0       # L/s^2  -- how much the bucket may accelerate
   tip_measurement_noise: 0.02  # L      -- expected error of one pose fit
   tip_gate_sigma: 3.0          # reject measurements beyond this many sigmas
-  min_bucket_elongation: 1.35  # below this the bucket axis is meaningless
   dwell_speed_quantile: 0.25 # "slow enough to count as lingering"
   min_zone_separation: 0.40  # dig and dump must be this far apart, in units of L
 
 features:
   smoothing_window_seconds: 0.5  # symmetric window; one-sided would bias boundaries
   smoothing_polyorder: 2
-  threshold_percentile: 95.0     # the "typical magnitude" each alpha scales
   min_sample_confidence: 0.35    # below this, a sample is MISSING, not negative
 
 fsm:
@@ -88,11 +77,7 @@ cycles:
 
 qa:
   min_excavator_coverage: 0.97
-  max_detection_gap_seconds: 0.50
   min_anchor_agreement: 0.70
-  max_tip_jump_frac: 0.35
-  min_frame_iou: 0.80
-  min_cyclicity: 0.30
   min_bucket_coverage: 0.90      # advisory only: reported, never folded into status
   min_bucket_containment: 0.80   # bucket pixels that must lie inside the machine's mask
   max_bucket_area_ratio: 4.0     # p90/p10 of bucket area across the clip

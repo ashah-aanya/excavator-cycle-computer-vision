@@ -23,7 +23,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-import cv2
 import numpy as np
 
 from .config import Config
@@ -106,77 +105,8 @@ def arm_reach(
     return float(np.percentile(distances, percentile))
 
 
-def radial_band(
-    mask: np.ndarray, centre: tuple[float, float], low: float, high: float
-) -> np.ndarray:
-    """Mask pixels whose distance from the pivot lies in a band of its extent.
-
-    ``low`` and ``high`` are fractions of the machine's *current* radial reach,
-    so the band follows the arm as it extends and retracts.
-
-    Why not a disk around the tip, which is the obvious thing and what this
-    module did first: intersecting a mask with a circle makes the result
-    circular. The bucket region then measures elongation 1.25 -- indistinguishable
-    from a blob -- and its axis looks ill-posed when it is not. Measured against
-    a radial band the same bucket comes out at 2.13, which is a well-determined
-    axis. The crop was imposing its own shape on the measurement.
-    """
-    ys, xs = np.nonzero(mask)
-    if xs.size == 0:
-        return np.zeros_like(mask)
-    distance = np.hypot(xs - centre[0], ys - centre[1])
-    extent = distance.max()
-    keep = (distance >= low * extent) & (distance <= high * extent)
-    out = np.zeros_like(mask)
-    out[ys[keep], xs[keep]] = True
-    return out
 
 
-def bucket_axis(region: np.ndarray) -> tuple[float, float] | None:
-    """Orientation of the bucket region's long axis, and how elongated it is.
-
-    Returns ``(angle, elongation)`` where the angle is in radians **modulo pi**
-    -- an axis has no head or tail, so 10 degrees and 190 degrees are the same
-    axis -- and elongation is the ratio of the long side to the short one.
-
-    That ratio is not decoration. When a shape is nearly as wide as it is long,
-    its "long axis" is nearly arbitrary: a couple of pixels flipping swings the
-    answer by 90 degrees. At 480x272 the bucket is often in that regime, so the
-    caller must be able to reject the measurement instead of receiving a
-    confident wrong number.
-    """
-    points = cv2.findNonZero(region.astype(np.uint8))
-    if points is None or len(points) < 5:
-        return None
-    (_, _), (width, height), angle = cv2.minAreaRect(points)
-    if width <= 0 or height <= 0:
-        return None
-    long_side, short_side = max(width, height), min(width, height)
-    if width < height:  # report the LONG axis, whichever side that is
-        angle += 90.0
-    return float(np.deg2rad(angle) % np.pi), float(long_side / short_side)
-
-
-def relative_angle(axis: float, reference: float) -> float:
-    """Angle between two axes, wrapped to (-pi/2, pi/2].
-
-    The bucket's curl is meaningful only *relative to the forearm*: the absolute
-    axis swings through a whole revolution as the arm slews, which buries the
-    small rotation that actually signals dumping. Both quantities are axes
-    rather than directions, so the difference wraps at pi, not 2pi.
-    """
-    delta = (axis - reference) % np.pi
-    return float(delta - np.pi if delta > np.pi / 2 else delta)
-
-
-def unwrap_axis(values: np.ndarray) -> np.ndarray:
-    """Unwrap a sequence of axis angles, which repeat every pi.
-
-    ``np.unwrap`` assumes a period of 2*pi. Applied to an axis it treats the
-    meaningless 180-degree flips as real motion, which is what made the curl
-    signal look like noise in the first plots.
-    """
-    return np.unwrap(values, period=np.pi)
 
 
 def dwell_clusters(

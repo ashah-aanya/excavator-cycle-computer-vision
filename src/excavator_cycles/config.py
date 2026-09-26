@@ -94,38 +94,6 @@ class DetectionConfig:
     alt_model_id: str = "google/owlv2-base-patch16-ensemble"
 
 
-@dataclass(frozen=True)
-class SpikeConfig:
-    """Stage 1: the gate that decides whether perception is good enough to build on.
-
-    These are *diagnostic* thresholds, not pipeline behaviour -- they change what
-    the spike reports, never what the pipeline answers. They exist so "does
-    detection work?" has a number attached instead of an impression.
-    """
-
-    # How many frames to sample, spread across the whole video so every phase of
-    # the cycle is represented.
-    n_frames: int = 20
-
-    # The machine must be found in essentially every frame. Downstream tracking
-    # can bridge a brief gap, but not a detector that fails one frame in five.
-    min_detection_rate: float = 0.95
-
-    # A detector scraping its own threshold is fragile on unseen footage, even
-    # when the box happens to be right.
-    min_median_score: float = 0.40
-
-    # Plausibility of the box itself. A "detection" covering most of the frame
-    # is the model grabbing the whole scene; a tiny one is background. Both pass
-    # a confidence check happily, which is why size is checked separately.
-    max_box_area_fraction: float = 0.60
-    min_box_area_fraction: float = 0.005
-
-    # How far the box centre may move between sampled frames, as a fraction of
-    # the box's own diagonal. Large values mean the detector is latching onto
-    # different objects, which no downstream smoothing can repair.
-    max_centre_jump: float = 0.75
-
 
 @dataclass(frozen=True)
 class TrackConfig:
@@ -220,14 +188,10 @@ class GeometryConfig:
     # crop makes any region circular: measured that way the bucket's elongation
     # is 1.25 (apparently shapeless), measured as a radial band it is 2.13.
     bucket_band_low: float = 0.85
-    forearm_band_low: float = 0.55
 
     # Size of the optical-flow patch below the bucket, in units of L.
     bucket_radius_frac: float = 0.22
 
-    # The "elbow" used to define the forearm direction sits this far along the
-    # arm from the rotation centre, as a fraction of the distance to the tip.
-    elbow_frac: float = 0.60
 
     # Temporal filter on the bucket's position (design doc section 4.3). All in
     # units of the machine's reach L and in seconds, so one set of values serves
@@ -241,10 +205,6 @@ class GeometryConfig:
     tip_measurement_noise: float = 0.02  # L, expected error of one pose fit
     tip_gate_sigma: float = 3.0  # reject beyond this many sigmas
 
-    # Below this ratio of long side to short side, the bucket region is too
-    # round for its axis to mean anything -- a couple of pixels flipping swings
-    # it by 90 degrees -- so the curl measurement is rejected for that sample.
-    min_bucket_elongation: float = 1.35
 
     # Samples slower than this quantile of speed count as "dwelling", and are
     # what the dig/dump location clustering is run on.
@@ -267,9 +227,6 @@ class FeatureConfig:
     smoothing_window_seconds: float = 0.5
     smoothing_polyorder: int = 2
 
-    # Thresholds are `alpha * percentile(|signal|)` over this video's own valid
-    # samples. This percentile defines the "typical magnitude" each alpha scales.
-    threshold_percentile: float = 95.0
 
     # Samples below this confidence are treated as MISSING, not as evidence
     # against a transition. A gap in perception is not a statement about physics.
@@ -333,11 +290,7 @@ class QAConfig:
     """
 
     min_excavator_coverage: float = 0.97  # fraction of samples with a valid mask
-    max_detection_gap_seconds: float = 0.50  # longest run of missing masks
     min_anchor_agreement: float = 0.70  # median IoU, fresh detection vs track
-    max_tip_jump_frac: float = 0.35  # tip jump per sample, in units of L
-    min_frame_iou: float = 0.80  # frame-to-frame mask overlap
-    min_cyclicity: float = 0.30  # strength of the dominant bearing period
 
     # The bucket's own bands. These are ADVISORY: they produce notes in the
     # report, not a pass/fail, because whether a ~25 px object can be held for a
@@ -354,7 +307,6 @@ class Config:
 
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
-    spike: SpikeConfig = field(default_factory=SpikeConfig)
     track: TrackConfig = field(default_factory=TrackConfig)
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)

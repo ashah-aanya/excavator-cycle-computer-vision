@@ -11,23 +11,13 @@ from ..config import DetectionConfig
 from .base import (
     Detection,
     Detector,
-    box_area_fraction,
-    box_centre,
-    box_diagonal,
-    contact_sheet,
-    draw_detections,
     iou,
 )
 
 __all__ = [
     "Detection",
     "Detector",
-    "box_area_fraction",
-    "box_centre",
-    "box_diagonal",
     "build_detector",
-    "contact_sheet",
-    "draw_detections",
     "iou",
 ]
 
