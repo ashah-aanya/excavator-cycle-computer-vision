@@ -59,6 +59,8 @@ geometry:
 features:
   smoothing_window_seconds: 0.5  # symmetric window; one-sided would bias boundaries
   smoothing_polyorder: 2
+  box_window_seconds: 0.5        # 0.3 and 0.5 both give 4/4; 0.9 collapses to 1/4
+  box_alignment: trailing        # trailing | centred | leading (the diagram draws leading)
   min_sample_confidence: 0.35    # below this, a sample is MISSING, not negative
 
 fsm:

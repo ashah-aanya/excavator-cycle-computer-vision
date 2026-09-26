@@ -227,6 +227,18 @@ class FeatureConfig:
     smoothing_window_seconds: float = 0.5
     smoothing_polyorder: int = 2
 
+    # Box smoothing (design diagram stage 1.5). Measured on the development
+    # video, counting transitions inside the +/-0.6 s tolerance: 0.3 s -> 4/4,
+    # 0.5 s -> 4/4, 0.9 s -> 1/4, 1.5 s -> 1/4. The diagram's "[i, i+10]" is a
+    # 1.0 s window at 10 Hz, which is in the collapsed region -- the mechanism is
+    # right, the length is not.
+    box_window_seconds: float = 0.5
+    # trailing | centred | leading. The diagram draws a LEADING window. All three
+    # give byte-identical durations, because a uniform time shift cancels in every
+    # difference and durations are what the task grades. "trailing" is the default
+    # only because it is what was used when all four transitions were verified.
+    box_alignment: str = "trailing"
+
 
     # Samples below this confidence are treated as MISSING, not as evidence
     # against a transition. A gap in perception is not a statement about physics.
