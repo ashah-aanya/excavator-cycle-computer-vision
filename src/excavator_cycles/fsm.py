@@ -1036,7 +1036,11 @@ def evidence_within(table, levels, start: float, end: float) -> set[str]:
     detection anywhere marked every cycle as having dumped.
     """
     times = np.asarray(table.time_seconds, dtype=float)
-    inside = np.flatnonzero((times >= start) & (times <= end))
+    # HALF-OPEN, matching `Window`. With both ends inclusive the closing digging
+    # onset's sample belonged to this cycle AND was the next cycle's opening sample,
+    # so a single dumping sample sitting exactly on a boundary counted as evidence in
+    # both -- enough to mark the wrong cycle complete and inflate `cycle_count`.
+    inside = np.flatnonzero((times >= start) & (times < end))
     # `for_evidence` restores a truck level that was too weak to pin an onset. A
     # gate disabled for measurement must not also erase the record that the phase
     # happened -- see `Levels.for_evidence`.

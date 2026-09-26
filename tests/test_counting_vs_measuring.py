@@ -308,3 +308,43 @@ def test_assemble_asks_the_evidence_function_for_each_span_separately():
     onsets = [*cycle_of(0.0), *cycle_of(10.0), Onset("digging", 20.0, 20.0)]
     assemble(onsets, evidence=evidence)
     assert asked == [(0.0, 10.0), (10.0, 20.0)], f"expected one call per cycle, got {asked}"
+
+
+def test_a_sample_on_a_cycle_boundary_belongs_to_exactly_one_cycle():
+    """The evidence span is HALF-OPEN, matching `Window`.
+
+    With both ends inclusive, the closing digging onset's sample belonged to this
+    cycle AND was the next cycle's opening sample. Harmless for digging, which is the
+    boundary itself -- but a single dumping sample sitting exactly on a boundary
+    counted as evidence in both spans, which is enough to mark the wrong cycle
+    complete and inflate `cycle_count`.
+    """
+    import numpy as np
+
+    from excavator_cycles.fsm import Levels, Split, evidence_within
+
+    class Table:
+        def __init__(self, n: int):
+            self.time_seconds = np.arange(n) * 1.0
+            self.found = np.ones(n, bool)
+            for column in ("height", "dh_dt", "d2h_dt2", "speed_x", "truck_overlap"):
+                setattr(self, column, np.zeros(n))
+            self.aspect_ratio = np.ones(n)
+            self.rel_cabin_x = np.full(n, 0.4)
+
+    table = Table(12)
+    table.truck_overlap[5] = 0.8  # exactly one dumping sample, exactly on the boundary
+    clean = Split(0.2, 0.95, 50, 50)
+    levels = Levels(
+        low_height=Split(0.1, 0.95, 50, 50),
+        over_truck=clean,
+        moving=Split(0.3, 0.95, 50, 50),
+        dump_side=1.0,
+        over_truck_observed=clean,
+    )
+
+    first = evidence_within(table, levels, 0.0, 5.0)
+    second = evidence_within(table, levels, 5.0, 9.0)
+    assert "dumping" not in first, "the boundary sample belongs to the NEXT span"
+    assert "dumping" in second
+    assert not ({"dumping"} & first & second), "no sample may be evidence in two cycles"
