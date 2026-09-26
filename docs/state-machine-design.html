@@ -196,7 +196,7 @@
           <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
         </div>
       </div>
-      <p class="subtitle">Calibrate globally, search locally · always watching for digging · <strong>design only — not yet built</strong></p>
+      <p class="subtitle">Calibrate globally, search locally · always watching for digging · <strong>BUILT — this page is the original design; see the note below for where the code diverged</strong></p>
     </div>
 
     <!-- Main Diagram -->
@@ -392,7 +392,7 @@
         </ul>
       </div>
     </div>
-    <p class="footer">design only · fsm.py and cycles.py do not exist · the pass-2 primitives (motion_boundary, otsu_threshold) are built and tested</p>
+    <p class="footer">HISTORICAL DESIGN · <code>fsm.py</code> and <code>cycles.py</code> now exist and diverge from this page in several places: there is no derived timeout (a mid-cycle re-dig abandons and restarts instead), <code>MachineState</code> carries no cycle lists and no <code>validate()</code>, windows reach BACKWARD from the trigger rather than forward, pass 2 refines each window as it is found rather than waiting for all four, and <code>refine()</code> estimates the rest band rather than calling <code>motion_boundary()</code>. <code>cycle_count</code> counts cycles that OCCURRED, not <code>len(cycles)</code>. Read <code>src/excavator_cycles/fsm.py</code> for what is actually built.</p>
   </div>
 
   <script>

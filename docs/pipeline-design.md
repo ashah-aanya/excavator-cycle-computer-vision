@@ -97,11 +97,18 @@ the averages with it. This sharpens the priority order above rather than changin
 
 ### 1.4 Internal consistency, enforced
 
-Phase averages are computed over *exactly* the same set of complete cycles as the cycle average.
-Then `average_cycle_duration == Σ average_phase_duration` holds to floating point, and the pipeline
-asserts it. It costs nothing, and since the grader's reference must obey the same tiling, a
-mutually consistent answer is strictly more likely to land in tolerance than five independently
-estimated numbers.
+Phase averages are computed over *exactly* the same set of MEASURABLE cycles as the cycle average,
+so `average_cycle_duration == Σ average_phase_duration` holds to floating point. Since the grader's
+reference must obey the same tiling, a mutually consistent answer is more likely to land in
+tolerance than five independently estimated numbers.
+
+> **Corrected 2026-09-26.** This section used to claim "the pipeline asserts it". It does not, and
+> there has never been such an assertion. What the code does assert, in `cycles.py`'s module
+> docstring, is a *different* and deliberately weaker property: `cycle_count` counts cycles that
+> OCCURRED while the averages come from cycles that could be MEASURED, so
+> `cycle_count × average_cycle_duration` will **not** equal elapsed time whenever a cycle happened
+> but a cue failed. The tiling identity above holds within the measured population; it is not a
+> runtime check.
 
 ---
 
@@ -447,6 +454,14 @@ Notes on the two that are easy to get wrong:
   the surface. (A common alternative — taking the deepest point of the scoop — is a different
   event, typically one to two seconds earlier, and would shorten every digging phase and lengthen
   every hauling phase.)
+
+  > **The code does not do this yet.** `features.py` computes `height` from the bucket box's
+  > CENTRE (`by = bucket.centre_y / scale`), not its lowest edge. The median bucket box is
+  > 0.1514 `L` tall, so "entire" is about 0.0757 `L` above what is currently measured. Recorded
+  > here as a known divergence rather than quietly corrected, because it is part of the cue work:
+  > measured in isolation it makes hauling *worse* (onset moves from +1.97 s to +2.67 s), since the
+  > dominant error is that `low_height.threshold` is the Otsu valley at 0.0942 `L` rather than the
+  > material surface. Fix the surface estimate first, then this.
 - **T3 carries an anti-spillage guard.** The spec states that material spilling during lift or
   transport is still hauling, so falling material can never trigger dumping on its own; the bucket's
   own rotation is required, and the tip must be out of the dig zone and above the surface. Truck

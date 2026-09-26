@@ -1,20 +1,36 @@
 # Status — what works, measured
 
-**Date:** 2026-09-22 · 26 commits · 108 tests · video: 480×272, 29.6 s, ~1 complete cycle
+**Date:** 2026-09-26 · 385 tests, 1 strict xfail · video: 480×272, 29.6 s, 1 complete cycle
 
 ## Honest summary
 
-Perception works. Measurement is adequate but has less margin than it looks.
-**The deliverable does not exist yet** — there is no `answer.json`, because the
-state machine (design doc §7) and cycle statistics (§8) are not built.
+The pipeline runs end to end: `run.py run <video>` writes `answer.json`, and a fresh
+run from the raw video reproduces the cached one's features **byte for byte**.
+`cycle_count` is correct. **The four phase averages are 0.000, and that is the honest
+output rather than a bug** — all four coarse cues fire outside the window containing
+the transition they look for, so pass 2 has nothing to refine and refuses to invent a
+number.
 
 | Stage | Status | Measured |
 |---|---|---|
 | Detection | works | excavator found in 100% of sampled frames, median score 0.73 |
 | Tracking | works | 296/296 masks; area steady at 7.2% of frame (4.2–7.8%); 0.91 IoU against independent detections |
 | Arm pose | mostly works | tip on the bucket in every pose inspected; 10% of frames rejected as physically implausible |
-| Cues | unproven | cannot be validated without hand-labelled boundaries |
-| Answer | **missing** | §7 and §8 not built |
+| Calibration | works | all three levels separable at 0.81–0.87; robust to a single glitched frame |
+| **Cues** | **wrong** | every window misses its onset: −0.77 / +1.97 / −5.14 / +2.67 / −1.23 s against ±0.6 s |
+| State machine | works | sequencing, non-overlap and `fired_at`-in-window hold over 6000 fuzzed runs |
+| Answer | **1 of 6 fields** | `cycle_count` 1 = 1 PASS; the five duration fields are 0.000 |
+
+## Where the cue error comes from
+
+Not four independent problems. `low_height.threshold` is the Otsu valley between the
+dig mode (−0.11 `L`) and the carry mode (+0.23 `L`), landing at 0.0942 `L` — about 1.3
+bucket-heights above where the bucket sits while digging. That one misplacement makes
+digging run long and hauling fire late. Dumping is separate and worse: it tests
+POSITION where the spec requires TIPPING, so it fires 5.14 s early on the bucket
+passing over the bed while still hauling — the exact case the spec's anti-spillage
+clause legislates against. `aspect_ratio` is computed, labelled "Carries T3", and read
+by no trigger.
 
 ## The number that matters
 

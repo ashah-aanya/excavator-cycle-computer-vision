@@ -6,6 +6,35 @@ surfaced, plus the two gaps the recovered detector never covered. They are
 written down because each one changes what `fsm.py` should be, and deciding them
 inside the implementation would bury them.
 
+> ## STATUS, 2026-09-26: sections 1 and 2 are decided, in code
+>
+> Read this before the sections below, which are preserved as the record of how the
+> decision was reached rather than as open questions.
+>
+> **1. Every cycle is measured**, not just the first. `cycles.assemble` splits on
+> digging, `summarise` averages every measurable cycle, and multi-cycle needed no
+> special case -- the loop simply keeps going.
+>
+> **2. Incomplete cycles** were resolved by a split this document did not propose:
+> `cycle_count` counts cycles that OCCURRED and the averages come from cycles that
+> could be MEASURED. Two populations, on purpose. A cue failing is a fact about the
+> pipeline, not about the excavator, so a cycle with a missed onset is still counted
+> and simply contributes no duration. `Cycle.reason` says which and why. The
+> consequence -- that `cycle_count × average_cycle_duration` will not equal elapsed
+> time -- is correct and is documented in `cycles.py`.
+>
+> A **mid-video re-dig** is handled by abandon-and-restart, not by the revert rule
+> sketched in section 2: an out-of-sequence dig drops the cycle in progress and
+> becomes a new boundary, and the abandoned span is then judged on its own per-span
+> evidence like any other.
+>
+> **3 remains open**, and section 3's own answer turned out to be right in an
+> unexpected way: `low_height.threshold` is NOT the material surface. It is the Otsu
+> valley between the dig mode (-0.11 `L`) and the carry mode (+0.23 `L`), landing at
+> 0.0942 `L` -- about 1.3 bucket-heights above where the bucket actually sits while
+> digging. That single misplacement is why digging runs 1.9 s long and hauling fires
+> 1.97 s late. It is the first thing to fix in the cue work.
+
 ---
 
 ## 1. Only the first cycle is measured  ★ the one that decides the answer
