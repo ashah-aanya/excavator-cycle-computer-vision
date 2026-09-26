@@ -244,10 +244,12 @@ def test_run_continues_past_a_track_qa_concern_and_still_answers(
     """
     from excavator_cycles import cli
 
-    # Remove the tracking product so the (stubbed) track stage actually runs, and
-    # keep the features product so stage 3 is reused rather than needing real masks.
+    # Remove the tracking product so the (stubbed) track stage actually runs. A
+    # stage that runs makes everything after it run too, so features is stubbed to
+    # leave the fixture's `features.npz` in place rather than needing real masks.
     (reusable_work_dir / "masks.npz").unlink()
     monkeypatch.setattr(cli, "_cmd_track", lambda args: 1)
+    monkeypatch.setattr(cli, "_cmd_features", lambda args: 0)
     out = tmp_path / "flagged.json"
     status = cli._cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, out))
     assert out.exists(), "a QA concern must not cost the answer entirely"
@@ -280,3 +282,64 @@ def test_run_skips_a_stage_whose_product_is_already_there(reusable_work_dir, mon
     monkeypatch.setattr(cli, "_cmd_features", lambda args: called.append("features") or 0)
     cli._cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, None))
     assert called == [], f"both products exist, so neither stage should run; ran {called}"
+
+
+def test_reuse_reruns_every_stage_after_one_that_ran(reusable_work_dir, monkeypatch):
+    """`--reuse` asked each stage alone whether its product existed, so fresh masks
+    could be followed by a REUSED `features.npz` built from the old ones -- an
+    answer from neither run. Once a stage runs, everything downstream is stale."""
+    from excavator_cycles import cli
+
+    (reusable_work_dir / "masks.npz").unlink()
+    called: list[str] = []
+    monkeypatch.setattr(cli, "_cmd_track", lambda args: called.append("track") or 0)
+    monkeypatch.setattr(cli, "_cmd_features", lambda args: called.append("features") or 0)
+    cli._cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, None))
+    assert called == ["track", "features"], called
+
+
+def test_run_out_naming_the_cached_answer_another_way_does_not_crash(
+    reusable_work_dir, monkeypatch
+):
+    """The work dir given relative, `--out` given absolute: the same file spelled
+    two ways. Compared as text they differed, so `copyfile` was asked to copy the
+    file onto itself and raised `SameFileError` after the pipeline had succeeded."""
+    from excavator_cycles.cli import _cmd_run
+
+    monkeypatch.chdir(reusable_work_dir.parent)
+    out = (reusable_work_dir / "answer.json").resolve()
+    assert _cmd_run(_run_args(Path("clip.mp4"), Path(reusable_work_dir.name), out)) == 0
+    assert json.loads(out.read_text())["cycle_count"] == 1
+
+
+def test_run_out_creates_the_directories_it_needs(reusable_work_dir, tmp_path):
+    from excavator_cycles.cli import _cmd_run
+
+    out = tmp_path / "not" / "yet" / "there" / "answer.json"
+    assert _cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, out)) == 0
+    assert json.loads(out.read_text())["cycle_count"] == 1
+
+
+def test_the_breakdown_marks_a_dig_that_interrupted_a_cycle(capsys):
+    """`Onset.out_of_sequence` was carried from pass 1 into every onset and read by
+    nothing. A dig that abandoned a cycle is exactly what someone debugging a
+    short cycle count needs to see."""
+    from excavator_cycles.cli import _print_breakdown
+    from excavator_cycles.fsm import Onset
+
+    _print_breakdown(
+        [],
+        [
+            Onset("digging", 1.0, 1.0),
+            Onset("digging", 6.0, 6.0, out_of_sequence=True),
+            Onset("digging", None, 9.0, out_of_sequence=True),
+        ],
+        {},
+    )
+    lines = [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("  digging")
+    ]
+    assert len(lines) == 3, lines
+    assert "interrupted a cycle" not in lines[0]
+    assert "interrupted a cycle" in lines[1]
+    assert "interrupted a cycle" in lines[2], "an unrefined onset must be marked too"
