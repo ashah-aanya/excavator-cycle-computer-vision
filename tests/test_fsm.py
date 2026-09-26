@@ -7,6 +7,8 @@ changed -- and the second is worth noticing.
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import numpy as np
 import pytest
 
@@ -591,3 +593,73 @@ def test_an_already_running_phase_cannot_interrupt_itself():
         hold_samples=3,
     )
     assert not any(d.out_of_sequence for d in found)
+
+
+# --- windows may not overlap ----------------------------------------------
+
+
+def test_consecutive_windows_never_overlap():
+    """Ordering is enforced on the onset TIMES, but pass 2 searches inside the
+    WINDOWS. Overlapping windows would let refinement return hauling at 13.0s
+    and dumping at 12.8s -- a negative phase duration, from a machine whose
+    whole point is that ordering is impossible to violate.
+
+    Invisible today, because the coarse onsets are the trigger times and those
+    are ordered. Fatal the moment pass 2 exists.
+    """
+    from excavator_cycles.fsm import walk
+
+    hold = 3
+    schedule = {
+        "digging": set(range(10, 10 + hold)),
+        "hauling": set(range(14, 14 + hold)),  # deliberately close
+        "dumping": set(range(18, 18 + hold)),
+        "swinging": set(range(22, 22 + hold)),
+    }
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted(schedule),
+        hold_samples=hold,
+        lookback_samples=20,  # far wider than the gaps between triggers
+    )
+    for earlier, later in pairwise(found):
+        # Non-overlap means the next window starts at or after the previous one
+        # ENDS -- not merely after the previous one was detected. The previous
+        # window extends forward past its own trigger, so clipping to the
+        # trigger leaves them overlapping by exactly that extension.
+        assert later.window.lo >= earlier.window.hi, (
+            f"{later.phase} window [{later.window.lo},{later.window.hi}) overlaps "
+            f"{earlier.phase} [{earlier.window.lo},{earlier.window.hi})"
+        )
+
+
+def test_a_window_is_clipped_to_the_previous_onset():
+    """This phase's onset must be AFTER the previous phase started. That is not
+    a convention, it is what "phase" means -- so a window reaching back past it
+    permits an answer that cannot be true."""
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": {10, 11, 12}, "hauling": {15, 16, 17}}),
+        hold_samples=3,
+        lookback_samples=50,  # would reach back to 0 if unclipped
+    )
+    assert found[1].window.lo == found[0].window.hi, (
+        "clipped to where the previous window ENDS, not to where it was triggered"
+    )
+
+
+def test_the_first_window_has_nothing_to_clip_against():
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": {30, 31, 32}}),
+        hold_samples=3,
+        lookback_samples=8,
+    )
+    assert found[0].window.lo == 22, "free to use the full lookback"

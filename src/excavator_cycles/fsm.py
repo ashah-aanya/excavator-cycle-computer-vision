@@ -314,6 +314,9 @@ def walk(
     state = MachineState()
     found: list[Detection] = []
     index = 0
+    # Where the previous transition was detected. Every window is clipped to it,
+    # so consecutive windows cannot overlap.
+    previous = None
 
     def sustained(phase: str, start: int, needed: int) -> bool:
         """Did the trigger RISE here and then hold for `needed` samples?
@@ -339,7 +342,11 @@ def walk(
 
         # The transition we are expecting.
         if sustained(target, index, hold_samples):
-            found.append(_detect(state, target, index, hold_samples, lookback_samples, times))
+            detected = _detect(
+                state, target, index, hold_samples, lookback_samples, times, previous
+            )
+            found.append(detected)
+            previous = detected.window.hi
             index += hold_samples
             continue
 
@@ -361,10 +368,13 @@ def walk(
             state.pending.clear()
             state.occurred.clear()
             state.since = None
-            detection = _detect(state, "digging", index, strict, lookback_samples, times)
+            detection = _detect(
+                state, "digging", index, strict, lookback_samples, times, previous
+            )
             found.append(
                 Detection(detection.phase, detection.window, detection.fired_at, True)
             )
+            previous = detection.window.hi
             index += strict
             continue
 
@@ -373,9 +383,34 @@ def walk(
     return found
 
 
-def _detect(state, phase, index, held, lookback, times) -> Detection:
-    """Record the transition and move the state into it."""
-    window = Window(max(0, index - lookback), min(len(times), index + held))
+def _detect(state, phase, index, held, lookback, times, previous=None) -> Detection:
+    """Record the transition and move the state into it.
+
+    ``previous`` is where the previous window ENDED, not where it was triggered.
+    Clipping to the trigger is not enough: a window extends forward past its own
+    trigger by ``held`` samples, so two windows would still overlap by exactly
+    that much. On the development video that left hauling and dumping sharing
+    three samples even after the clip was added.
+
+    This matters only once pass 2 exists, and then it matters a lot: pass 2
+    searches INSIDE a window, so overlapping windows would let it return hauling
+    at 13.0 s and dumping at 12.8 s -- a negative phase duration, out of a
+    machine whose whole design is that ordering cannot be violated. Ordering is
+    enforced on the onset times by `MachineState.advance`, and that guarantee is
+    worth nothing if refinement is then free to reorder them.
+
+    No grace margin. An earlier draft let the window reach a little before the
+    previous onset, reasoning that a departure cue has to walk backward to find
+    where a signal left rest. That was wrong: this phase's onset must be after
+    the previous phase started, which is not a convention but what "phase"
+    means. A cue needing to look further back than that is reporting that the
+    previous onset was wrong, and the right response is to notice, not to allow
+    an impossible answer.
+    """
+    lo = max(0, index - lookback)
+    if previous is not None:
+        lo = max(lo, previous)
+    window = Window(lo, min(len(times), index + held))
     state.advance(phase, float(times[index]))  # provisional; pass 2 refines it
     return Detection(phase, window, index)
 
