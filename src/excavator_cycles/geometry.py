@@ -27,21 +27,57 @@ from .logging_setup import get_logger
 log = get_logger(__name__)
 
 
-def rotation_centre(masks: list[np.ndarray], quantile: float) -> tuple[float, float]:
-    """Where the machine pivots.
+def occupancy(masks: list[np.ndarray]) -> np.ndarray:
+    """Per-pixel fraction of the frames in which that pixel was machine.
 
-    An excavator's body and undercarriage stay put while the arm sweeps, so the
-    pixels that are machine in *almost every* frame are the body. Their centroid
-    is the pivot -- no detection of the body required, just arithmetic over the
-    masks already computed.
+    A long exposure. Photograph a ceiling fan for a second and the hub stays
+    sharp while the blades smear, because brightness records the fraction of
+    time something was there. The same arithmetic separates an excavator's body
+    from its arm: the body holds still while the arm sweeps, so persistence
+    tells them apart with no detection of either.
+
+    Float in [0, 1], same shape as one mask.
     """
-    occupancy = np.mean(np.stack(masks).astype(np.float32), axis=0)
-    threshold = (
-        float(np.quantile(occupancy[occupancy > 0], quantile)) if occupancy.any() else 0.0
-    )
-    core = occupancy >= max(threshold, 1e-6)
+    if not masks:
+        raise ValueError("no masks given; cannot compute occupancy")
+    return np.mean(np.stack(masks).astype(np.float32), axis=0)
+
+
+def stable_core(masks: list[np.ndarray], quantile: float) -> tuple[np.ndarray, float]:
+    """The pixels that are machine in almost every frame -- the body.
+
+    Args:
+        quantile: a position in *this video's* occupancy distribution, not a
+            pixel value and not an occupancy level. 0.90 means "keep the most
+            persistent tenth of the pixels that were ever machine", and what
+            cutoff that works out to differs between videos by design.
+
+    Returns the boolean core and the cutoff, so a caller can report what the
+    quantile actually meant here.
+    """
+    occ = occupancy(masks)
+    ever = occ[occ > 0]
+    if ever.size == 0:
+        raise ValueError("masks are empty; no machine pixels anywhere")
+    threshold = float(np.quantile(ever, quantile))
+    core = occ >= max(threshold, float(np.finfo(np.float32).tiny))
     if not core.any():
-        core = occupancy > 0
+        # Only reachable when every pixel shares one occupancy value. Fall back
+        # to "was ever machine" rather than returning nothing.
+        log.warning("occupancy quantile %.2f produced an empty core; using all", quantile)
+        core = occ > 0
+    return core, threshold
+
+
+def rotation_centre(masks: list[np.ndarray], quantile: float) -> tuple[float, float]:
+    """Where the machine pivots: the centroid of the pixels that never move.
+
+    A centroid rather than the centre of a box around them, because a box is
+    defined by its most marginal pixel. Measured across a quantile sweep wide
+    enough to change the core's size 4.4x, the centroid moves 10.5 px in x while
+    a box's width moves 163 px.
+    """
+    core, _threshold = stable_core(masks, quantile)
     ys, xs = np.nonzero(core)
     return float(xs.mean()), float(ys.mean())
 
