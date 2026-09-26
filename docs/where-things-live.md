@@ -34,7 +34,9 @@ in a scratchpad.
 
 | Branch | Holds | Status |
 |---|---|---|
-| **`minimal-bbox-pipeline`** | the rebuild | **Current work branch.** Everything happens here. |
+| `minimal-bbox-pipeline` | the rebuild | Merged into `main`. |
+| `state-machine` | `fsm.py` -- calibrate, walk, refine | Merged into `cycles-and-answer`. |
+| **`cycles-and-answer`** | `cycles.py`, the `run` command, the review gates | **Current work branch.** Everything happens here. |
 | `main` | perception + v1 chain features + flow | Merge target. 16 commits behind; lacks `seeding.py`, `onsets.py`. Not the newest anything. |
 | `deprecated/kinematic-signals` | geodesic seeding, SAM2 bucket-as-object-2, `signals.py`, `onsets.py` | The base this branch was cut from. Its content is already in the rebuild. |
 | `deprecated/optical-flow` | flow + chain fit + YOLO-World, pinned | **Everything deleted during the rebuild is recoverable here by name.** |
@@ -92,7 +94,7 @@ is committed in the same commit.**
 
 **Production**: `track.py`, `seeding.py`, `masks.py`, `video.py`, `geometry.py`,
 `boxes.py`, `features.py`, `kinematics.boom_base`/`geodesic_distance`,
-`onsets.motion_boundary`/`noise_scale`/`smooth`/`derivative`, `render.py`,
+`onsets.motion_boundary`/`noise_scale`/`derivative`, `render.py`,
 `plots.py`, `config.py`, `detect/`.
 
 **Diagnostics** live in `scripts/`, never imported by `src/`.
@@ -106,6 +108,25 @@ is committed in the same commit.**
 **Dead** (delete outright): the abandoned `onsets` path (`rest_boundary`,
 `rest_level`, `strongest_interval`), ten zero-reference symbols, orphaned config
 keys, `spike.py`.
+
+Most of that is now done, and enforced rather than remembered:
+`tests/test_no_dead_code.py` fails the build on any definition -- function, class or
+dataclass field -- that nothing in `src/` references, resolving references from the
+AST so a mention in a comment cannot hide one. Removed on
+`cycles-and-answer`: `MachineState.note_occurred`/`elapsed`/`pending`/`occurred`,
+`video.read_frames_at`/`sample_times`, `track.load_bucket_masks`,
+`render._signal_strip`, `onsets.smooth`.
+
+**Config side, now clear.** Four keys had no reader: `CycleConfig.duration_band`,
+`CycleConfig.min_mean_confidence`, `GeometryConfig.dwell_speed_quantile`,
+`GeometryConfig.min_zone_separation`. All four are deleted, and `CycleConfig` went
+with them since those were its only two fields. `FSMConfig.strict_hold_seconds`
+briefly joined them and has been wired back instead.
+
+The dead-code gate cannot see config keys -- it walks `src/` for definitions with no
+reference, and a dataclass field with a default is *defined* whether or not anything
+reads it. So a new orphaned key would still slip through; the check for that is
+`grep` and this list.
 
 Two things must be **rescued out of `signals.py` before it is deleted**, because
 they are geometric and load-bearing: `truck_overlap` (T3's location gate) and
@@ -129,15 +150,35 @@ src/excavator_cycles/
   onsets.py      pass-2 primitives
   plots.py       the 13-panel feature graph
   render.py      annotated video
-  fsm.py         NOT BUILT YET -- pass 1 windows, pass 2 frames   diagram 3
-  cycles.py      NOT BUILT YET -- cycle assembly, answer.json      diagram 4
+  fsm.py         calibrate, walk (pass 1), refine (pass 2),
+                 evidence_within                               diagram 3
+  cycles.py      cycle assembly, answer.json                   diagram 4
 ```
 
 Gone, and recoverable from `deprecated/optical-flow`: `motion.py`, `signals.py`,
 `filtering.py`, `spike.py`, the arm-chain fitter. No optical flow, no omega.
 
-CLI: `probe`, `track`, `render`, `features`. The state machine and the answer
-are the two stages still missing.
+CLI: `run` (video in, `answer.json` out -- the deliverable), plus the four stages
+it chains: `probe`, `track`, `features`, `cycles`, and `render` for the annotated
+video. `cycles --test` adds the diagnostic video and the per-cycle breakdown.
+
+**What is still wrong:** all four coarse cues fire outside the window containing the
+transition they look for (digging -0.77 s, hauling +1.97 s, dumping -5.14 s,
+swinging +2.67 s, closing dig -1.23 s, against a +/-0.6 s tolerance). So
+`cycle_count` is right and the four phase averages are zero.
+`tests/test_onset_accuracy.py` holds those numbers as a ratchet plus one strict
+`xfail` that goes green when the windows contain their onsets.
+
+---
+
+## The diagrams
+
+| File | What it shows |
+|---|---|
+| `docs/architecture-current.html` | **Read first.** Every module and function as built, with what works and what does not. |
+| `docs/state-machine-current.html` | `fsm.py` in detail: the two passes, every function, the types between them, and the five windows that miss. |
+| `docs/architecture.html` | Superseded. The design as planned. |
+| `docs/state-machine-design.html` | Superseded. The original state-machine design; its footer lists where the code diverged. |
 
 ---
 

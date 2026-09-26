@@ -50,7 +50,8 @@ _DIG = (90, 230, 120)
 _DUMP = (250, 180, 80)
 _TRACE = (220, 220, 220)
 _EDGE = (60, 60, 60)
-_PLAYHEAD = (160, 160, 160)
+_PLAYHEAD = (110, 110, 110)
+_REFERENCE = (235, 235, 235)
 
 
 @dataclass
@@ -67,6 +68,8 @@ def render(
     draw_boxes: bool = True,
     physics: bool = True,
     onsets: dict[str, float] | None = None,
+    windows: list[tuple[str, float, float]] | None = None,
+    reference: dict[str, float] | None = None,
 ) -> RenderStats:
     """Write an annotated copy of the source video.
 
@@ -82,6 +85,14 @@ def render(
             predictions, and `eval/annotate_solution.py` supplies the hand labels
             to make a reference video. Nothing under `src/` may read the labels
             itself, so they arrive as an argument or not at all.
+        windows: (phase, start, end) spans in seconds, shaded on every signal
+            panel. Meant for the state machine's pass-1 output, where the
+            question being asked of a picture is "does this window even contain
+            the transition?" -- which a marker cannot answer and a span can.
+        reference: a SECOND set of onsets, drawn dashed and grey. Kept separate
+            from `onsets` so the two can be seen against each other: the
+            pipeline's answer solid, something to compare it to dashed. Only a
+            caller outside `src/` may supply hand labels here.
     """
     output_dir = Path(output_dir)
     result, masks = load_result(output_dir)
@@ -89,13 +100,12 @@ def render(
 
     # The physics overlay needs stage 3's output. Absent, the video still renders
     # with masks and boxes -- the stages stay independent.
-    table = scene = strip = None
+    table = scene = None
     if physics:
         try:
             from .features import load as load_features
 
             table, scene = load_features(output_dir)
-            strip = _signal_strip(table, scene)
             log.info("physics overlay enabled")
         except (FileNotFoundError, KeyError) as exc:
             log.warning("no feature data (%s); rendering masks only", exc)
@@ -112,11 +122,11 @@ def render(
 
     # The writer accepts exactly one frame size and silently DROPS anything
     # else, so the total height has to account for every panel we stack --
-    # including the signal strip, whose presence depends on stage 3 having run.
+    # including the signal graphs, whose presence depends on stage 3 having run.
     # Layout: the video on the left with a thin status bar under it, and the
     # signals in a column down the right. Stacking the signals underneath made
     # the canvas nearly square and gave half the frame to the graphs.
-    graph_width = round(width * 0.62) if strip is not None else 0
+    graph_width = round(width * 0.62) if table is not None else 0
     canvas_height = height + panel_height
     canvas_width = width + graph_width
 
@@ -151,7 +161,7 @@ def render(
 
             canvas = _draw_frame(frame, mask, record, result, scale, draw_boxes)
             if table is not None and sample_position is not None:
-                canvas = _draw_physics(canvas, mask, table, scene, sample_position, scale)
+                canvas = _draw_physics(canvas, table, scene, sample_position, scale)
             if onsets:
                 _draw_phase_banner(canvas, onsets, frame_index / info.fps)
             left = np.vstack(
@@ -174,7 +184,13 @@ def render(
                     [
                         left,
                         _graph_column(
-                            table, sample_position, graph_width, canvas_height, onsets
+                            table,
+                            sample_position,
+                            graph_width,
+                            canvas_height,
+                            onsets,
+                            windows,
+                            reference,
                         ),
                     ]
                 )
@@ -251,7 +267,7 @@ def _draw_frame(frame, mask, record, result: TrackResult, scale: float, draw_box
     return canvas
 
 
-def _draw_physics(canvas, mask, table, scene, position: int, scale: float):
+def _draw_physics(canvas, table, scene, position: int, scale: float):
     """Draw what the measurement stage actually used: two boxes and a pivot.
 
     Every shape here is read from the feature table, so the video cannot show
@@ -314,11 +330,6 @@ _GRAPHS = (
 )
 
 
-def _signal_strip(table, scene, height: int = 0):
-    """Kept so `render` can test whether stage 3 ran; the drawing is per-frame."""
-    return table
-
-
 _PHASE_COLOUR = {
     "digging": (240, 180, 90),
     "hauling": (120, 220, 120),
@@ -358,6 +369,8 @@ def _graph_column(
     width: int,
     height: int,
     onsets: dict[str, float] | None = None,
+    windows: list[tuple[str, float, float]] | None = None,
+    reference: dict[str, float] | None = None,
 ):
     """The signals, stacked down the right-hand side, with a shared playhead.
 
@@ -416,21 +429,51 @@ def _graph_column(
                 cv2.LINE_AA,
             )
 
-    # Onset markers span every panel, so a boundary can be read against all six
-    # signals at once -- which is the point of stacking them.
     times = np.asarray(table.time_seconds, dtype=float)
-    for name, when in (onsets or {}).items():
+
+    # Windows first, so the markers and traces draw on top of them.
+    for name, start, end in windows or ():
+        colour = _PHASE_COLOUR.get(name, _TEXT)
+        x0 = left + round(span * int(np.argmin(np.abs(times - start))) / total)
+        x1 = left + round(span * int(np.argmin(np.abs(times - end))) / total)
+        shade = np.full((height - 8, max(1, x1 - x0), 3), colour, dtype=np.uint8)
+        region = column[4 : height - 4, x0 : x0 + shade.shape[1]]
+        column[4 : height - 4, x0 : x0 + shade.shape[1]] = cv2.addWeighted(
+            shade[: region.shape[0], : region.shape[1]], 0.22, region, 0.78, 0
+        )
+
+    # Reference first, DASHED and grey, so the pipeline's own answer draws over
+    # it rather than under. Both span every panel, so one boundary can be read
+    # against all six signals at once -- the point of stacking them.
+    for name, when in (reference or {}).items():
         if when is None:
             continue
-        index = int(np.argmin(np.abs(times - when)))
-        x = left + round(span * index / total)
-        colour = _PHASE_COLOUR.get(name, _TEXT)
-        for y in range(4, height - 4, 6):  # dashed, so it reads under the traces
-            cv2.line(column, (x, y), (x, min(y + 3, height - 4)), colour, 1)
+        x = left + round(span * int(np.argmin(np.abs(times - when))) / total)
+        for y in range(6, height - 16, 8):
+            cv2.line(column, (x, y), (x, min(y + 4, height - 16)), _REFERENCE, 1)
         cv2.putText(
             column,
             name[:4],
-            (x + 3, height - 6),
+            (x + 3, height - 16),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.3,
+            _REFERENCE,
+            1,
+            cv2.LINE_AA,
+        )
+
+    # The pipeline's own onsets: SOLID and phase-coloured, with a dot on top.
+    for name, when in (onsets or {}).items():
+        if when is None:
+            continue
+        x = left + round(span * int(np.argmin(np.abs(times - when))) / total)
+        colour = _PHASE_COLOUR.get(name, _TEXT)
+        cv2.line(column, (x, 4), (x, height - 4), colour, 1, cv2.LINE_AA)
+        cv2.circle(column, (x, 9), 3, colour, -1)
+        cv2.putText(
+            column,
+            name[:4],
+            (x + 3, height - 5),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.3,
             colour,

@@ -62,7 +62,10 @@ extend-exclude = ["reference/"]
 # SIM simplifications, RUF ruff-specific. ANN/D are deliberately off: this is a
 # research pipeline, and the docstring discipline here is about explaining WHY,
 # which a linter cannot check.
-select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]
+# ARG earns its place: `render(reference=...)` was added, threaded down two
+# levels, and never used -- the ground truth silently never appeared on the
+# video, and nothing noticed until it was looked for with a pixel count.
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF", "ARG"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["E501"]
+"tests/*" = ["E501", "ARG"]  # fixtures legitimately take unused arguments

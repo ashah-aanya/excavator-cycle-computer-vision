@@ -228,3 +228,76 @@ def test_round_trip_through_disk(tmp_path):
 def test_scene_round_trips_without_a_truck():
     scene = Scene(pivot=(1.0, 2.0), scale=10.0, truck_box=None)
     assert Scene.from_dict(scene.to_dict()).truck_box is None
+
+
+# --- the confidence floor -----------------------------------------------------
+
+
+def _confident_result(n: int, confidences: list[float]) -> TrackResult:
+    """A run where each sample's bucket mask carries a stated confidence."""
+    import dataclasses
+
+    base = _result(n)
+    frames = [
+        dataclasses.replace(record, has_bucket_mask=True, bucket_confidence=confidences[i])
+        for i, record in enumerate(base.frames)
+    ]
+    return dataclasses.replace(base, frames=frames)
+
+
+def test_a_low_confidence_bucket_mask_is_treated_as_missing():
+    """`min_sample_confidence` was documented from the start and never read.
+
+    A low-confidence mask is a GAP IN PERCEPTION, not a measurement. Keeping one
+    lets a bad mask set the box, and every rate derived from that box then carries
+    an excursion the machine never made -- which is worse than a hole, because a
+    hole is visible in `found` and an excursion is not.
+    """
+    n = 12
+    excavator = {i: _blob(100, 60) for i in range(n)}
+    # The bucket sits still, except at sample 5 where a barely-believed mask puts
+    # it somewhere absurd.
+    bucket = {i: _blob(60, 40) for i in range(n)}
+    bucket[5] = _blob(180, 110, half=4)
+
+    confident = [0.9] * n
+    doubtful = [0.9] * n
+    doubtful[5] = 0.10  # below the 0.35 floor
+
+    kept, _ = build_features(
+        _confident_result(n, confident), {"excavator": excavator, "bucket": bucket}, CONFIG
+    )
+    dropped, _ = build_features(
+        _confident_result(n, doubtful), {"excavator": excavator, "bucket": bucket}, CONFIG
+    )
+
+    assert kept.found[5], "a confident mask must be kept"
+    assert not dropped.found[5], "a mask below the floor must be reported as missing"
+    # And the excursion must be gone from the signal, not merely flagged.
+    assert abs(dropped.height[5] - dropped.height[4]) < abs(kept.height[5] - kept.height[4])
+
+
+def test_the_confidence_floor_comes_from_the_config():
+    """A different floor must actually change the outcome, or the knob is a lie."""
+    import dataclasses
+
+    n = 12
+    excavator = {i: _blob(100, 60) for i in range(n)}
+    bucket = {i: _blob(60, 40) for i in range(n)}
+    confidences = [0.9] * n
+    confidences[5] = 0.50  # above the default floor, below a raised one
+
+    default = build_features(
+        _confident_result(n, confidences), {"excavator": excavator, "bucket": bucket}, CONFIG
+    )[0]
+    strict_config = dataclasses.replace(
+        CONFIG, features=dataclasses.replace(CONFIG.features, min_sample_confidence=0.70)
+    )
+    strict = build_features(
+        _confident_result(n, confidences),
+        {"excavator": excavator, "bucket": bucket},
+        strict_config,
+    )[0]
+
+    assert default.found[5], "0.50 clears the 0.35 default"
+    assert not strict.found[5], "0.50 does not clear a 0.70 floor"

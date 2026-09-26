@@ -76,7 +76,7 @@ video's own 95th percentile, never an absolute level.
 | **Flow used?** | **No.** |
 | **Verdict** | **Survives intact.** The strongest-specified trigger in the repo. |
 
-**Preserve this detail:** T2 uses the bucket's **lowest** point, not its centre.
+**Preserve this detail:** T2 uses the bucket's **lowest** point, not its centre. *(Not yet true of the code -- `features.py` uses the box centre. See the note in `pipeline-design.md` 3.2 for why this is sequenced after the surface estimate.)*
 The task spec says the *entire* bucket clears the surface. Using the deepest point
 of the scoop instead is a different event, typically 1–2 s earlier, and would
 shorten every digging phase while lengthening every hauling phase. Encoded at

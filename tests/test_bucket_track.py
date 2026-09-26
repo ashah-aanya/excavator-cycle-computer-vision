@@ -53,7 +53,6 @@ from excavator_cycles.track import (
     bucket_prompt_payload,
     derive_bucket_seed,
     evaluate_bucket_quality,
-    load_bucket_masks,
     load_result,
     register_prompt,
     split_objects,
@@ -665,7 +664,7 @@ def test_an_old_track_json_still_loads_without_the_new_fields(tmp_path):
     assert result.frames[0].has_bucket_mask is False
     assert result.frames[0].bucket_area_fraction == 0.0
     assert result.frames[0].bucket_confidence == 0.0
-    assert load_bucket_masks(tmp_path) == {}
+    assert mask_io.load_objects(tmp_path / "masks.npz")[0].get("bucket", {}) == {}
 
 
 def test_a_run_with_a_bucket_round_trips_through_the_same_reader(tmp_path):
@@ -685,4 +684,4 @@ def test_a_run_with_a_bucket_round_trips_through_the_same_reader(tmp_path):
     assert result.bucket_seed["prompt"] == "mask"
     assert result.frames[1].has_bucket_mask is True
     assert len(masks) == 4, "the excavator masks must be unaffected by the second set"
-    assert sorted(load_bucket_masks(tmp_path)) == [1]
+    assert sorted(mask_io.load_objects(tmp_path / "masks.npz")[0]["bucket"]) == [1]

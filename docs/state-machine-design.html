@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>State Machine — Excavator Cycle Pipeline</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+    
+    .container {
+      max-width: 1360px;
+      margin: 0 auto;
+    }
+    
+    .header {
+      margin-bottom: 2rem;
+    }
+    
+    .header-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    .pulse-dot {
+      width: 12px;
+      height: 12px;
+      background: #22d3ee;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+    }
+    
+    .subtitle {
+      color: #94a3b8;
+      font-size: 0.875rem;
+      margin-left: 1.75rem;
+    }
+    
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+    
+    svg {
+      width: 100%;
+      min-width: 900px;
+      display: block;
+    }
+    
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+    
+    .card {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 0.75rem;
+      border: 1px solid #1e293b;
+      padding: 1.25rem;
+    }
+    
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    
+    .card-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    
+    .card h3 {
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+    
+    .card ul {
+      list-style: none;
+      color: #94a3b8;
+      font-size: 0.75rem;
+    }
+    
+    .card li {
+      margin-bottom: 0.375rem;
+    }
+    
+    .footer {
+      text-align: center;
+      margin-top: 1.5rem;
+      color: #475569;
+      font-size: 0.75rem;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 0.5rem;
+      margin-left: auto;
+      flex-shrink: 0;
+      align-items: center;
+    }
+    .toolbar-toggle {
+      background: transparent;
+      border: none;
+      color: #475569;
+      cursor: pointer;
+      font-size: 1.25rem;
+      line-height: 1;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.375rem;
+      transition: color 0.2s, background 0.2s;
+    }
+    .toolbar-toggle:hover { color: #94a3b8; background: rgba(30, 41, 59, 0.5); }
+    .toolbar-actions {
+      display: none;
+      gap: 0.5rem;
+    }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button {
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid #334155;
+      color: #94a3b8;
+      padding: 0.375rem 0.75rem;
+      border-radius: 0.375rem;
+      font-family: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .toolbar-actions button:hover {
+      background: rgba(51, 65, 85, 0.8);
+      color: white;
+      border-color: #475569;
+    }
+
+    @media print {
+      body { background: #020617; padding: 1rem; }
+      .toolbar { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>The State Machine</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle" style="color:#fb7185;font-weight:600">SUPERSEDED by state-machine-current.html, which documents fsm.py as it actually is. This page is the ORIGINAL DESIGN and diverges from the code in several places, listed in its footer.</p>
+      <p class="subtitle">Calibrate globally, search locally · always watching for digging · <strong>BUILT — this page is the original design; see the note below for where the code diverged</strong></p>
+    </div>
+
+    <!-- Main Diagram -->
+    <div class="diagram-container">
+      <svg viewBox="0 0 1280 1150">
+        <defs>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
+        </defs>
+        <rect width="1280" height="1150" fill="url(#grid)"/>
+        <line x1="930" y1="200" x2="930" y2="300" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="930.0" y="243.0" fill="#64748b" font-size="7.4" text-anchor="middle">levels</text>
+        <line x1="230" y1="200" x2="230" y2="300" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="230.0" y="243.0" fill="#64748b" font-size="7.4" text-anchor="middle">arrays</text>
+        <line x1="400" y1="375" x2="440" y2="375" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="420.0" y="368.0" fill="#64748b" font-size="7.4" text-anchor="middle">curr_stage</text>
+        <line x1="620" y1="450" x2="620" y2="500" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="620.0" y="471.0" fill="#64748b" font-size="7.4" text-anchor="middle">window</text>
+        <line x1="800" y1="570" x2="840" y2="570" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="820.0" y="563.0" fill="#64748b" font-size="7.4" text-anchor="middle">fired</text>
+        <polyline points="1040,620 1040,655 230,655 230,300" fill="none" stroke="#64748b" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="635" y="650" fill="#64748b" font-size="7.4" text-anchor="middle">not validated  ->  slide on</text>
+        <line x1="1040" y1="620" x2="1040" y2="740" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="1040.0" y="673.0" fill="#a78bfa" font-size="7.4" text-anchor="middle">validated: coarse window</text>
+        <polyline points="840,810 200,810 200,300" fill="none" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="520" y="805" fill="#a78bfa" font-size="7.4" text-anchor="middle">advance curr_stage, loop</text>
+        <line x1="660" y1="880" x2="660" y2="965" stroke="#fb7185" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+<text x="660.0" y="915.5" fill="#fb7185" font-size="7.4" text-anchor="middle">4 onsets, or a mismatch</text>
+        <rect x="40" y="60" width="1200" height="150" rx="12" fill="none" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="80" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="1">CALIBRATE ONCE  ·  levels, not segments</text>
+<text x="56" y="94" fill="#64748b" font-size="8">global statistics tell us what 'low' MEANS here; they never decide WHEN anything happened</text>
+        <rect x="60" y="98" width="520" height="100" rx="6" fill="#0f172a"/>
+<rect x="60" y="98" width="520" height="100" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="320.0" y="117" fill="white" font-size="12" font-weight="600" text-anchor="middle">FeatureTable</text>
+<text x="320.0" y="131" fill="#94a3b8" font-size="8" text-anchor="middle">13 numpy arrays, length n</text>
+<text x="72" y="148" fill="#fbbf24" font-size="7.4">time_seconds[n]   real seconds  ·  index/fps on a CFR file</text>
+<text x="72" y="160" fill="#fbbf24" font-size="7.4">height[n] dh_dt[n] d2h_dt2[n] speed_x[n]</text>
+<text x="72" y="172" fill="#fbbf24" font-size="7.4">truck_overlap[n] aspect_ratio[n] rel_cabin_*[n] found[n]</text>
+        <rect x="620" y="98" width="620" height="100" rx="6" fill="#0f172a"/>
+<rect x="620" y="98" width="620" height="100" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="930.0" y="117" fill="white" font-size="12" font-weight="600" text-anchor="middle">calibrate(table) -> Levels</text>
+<text x="930.0" y="131" fill="#94a3b8" font-size="8" text-anchor="middle">one pass, zero tuned constants</text>
+<text x="632" y="148" fill="#fbbf24" font-size="7.4">low_height   = otsu(height)        what 'in the material' means</text>
+<text x="632" y="160" fill="#fbbf24" font-size="7.4">over_truck   = otsu(truck_overlap) what 'at the bed' means</text>
+<text x="632" y="172" fill="#fbbf24" font-size="7.4">moving       = otsu(|dx/dt|)       what 'traversing' means</text>
+<text x="632" y="184" fill="#94a3b8" font-size="7.4">these are LEVELS. Nothing here cuts the video into pieces --</text>
+<text x="632" y="196" fill="#94a3b8" font-size="7.4">that was the old design, and it made digging a special case.</text>
+        <rect x="40" y="250" width="1200" height="380" rx="12" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="270" fill="#34d399" font-size="11" font-weight="700" letter-spacing="1">THE WALK  ·  slide a window, test the triggers, validate</text>
+<text x="56" y="284" fill="#64748b" font-size="8">curr_stage starts at SWINGING, so the first thing it seeks is digging</text>
+        <rect x="60" y="300" width="340" height="310" rx="6" fill="#0f172a"/>
+<rect x="60" y="300" width="340" height="310" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="230.0" y="319" fill="white" font-size="12" font-weight="600" text-anchor="middle">MachineState</text>
+<text x="230.0" y="333" fill="#94a3b8" font-size="8" text-anchor="middle">everything it remembers</text>
+<text x="72" y="350" fill="#34d399" font-size="7.2">curr_stage: str          starts 'swinging'</text>
+<text x="72" y="362.4" fill="#34d399" font-size="7.2">since: float             when it started</text>
+<text x="72" y="374.79999999999995" fill="#34d399" font-size="7.2"></text>
+<text x="72" y="387.19999999999993" fill="#34d399" font-size="7.2">pending:  dict[str,float]  this cycle's onsets</text>
+<text x="72" y="399.5999999999999" fill="#34d399" font-size="7.2">occurred: set[str]         weak evidence: which</text>
+<text x="72" y="411.9999999999999" fill="#34d399" font-size="7.2">                           phases happened AT ALL</text>
+<text x="72" y="424.39999999999986" fill="#34d399" font-size="7.2"></text>
+<text x="72" y="436.79999999999984" fill="#34d399" font-size="7.2">cycles:   list[Cycle]    counted</text>
+<text x="72" y="449.1999999999998" fill="#34d399" font-size="7.2">measured: list[Cycle]    counted AND averageable</text>
+<text x="72" y="461.5999999999998" fill="#34d399" font-size="7.2">rejected: list[Cycle]    with a reason</text>
+<text x="72" y="473.9999999999998" fill="#34d399" font-size="7.2"></text>
+<text x="72" y="486.39999999999975" fill="#34d399" font-size="7.2">looking_for -> PHASES[(i+1) % 4]</text>
+<text x="72" y="498.7999999999997" fill="#34d399" font-size="7.2">  swing -> dig -> haul -> dump -> swing</text>
+<text x="72" y="511.1999999999997" fill="#34d399" font-size="7.2"></text>
+<text x="72" y="523.5999999999997" fill="#34d399" font-size="7.2">cycle_count = len(cycles)</text>
+<text x="72" y="535.9999999999997" fill="#34d399" font-size="7.2">averages    = over measured</text>
+<text x="72" y="548.3999999999996" fill="#94a3b8" font-size="7.2">two populations, on purpose: a cycle the machine</text>
+<text x="72" y="560.7999999999996" fill="#94a3b8" font-size="7.2">performed is complete whether or not we could</text>
+<text x="72" y="573.1999999999996" fill="#94a3b8" font-size="7.2">pin all four of its onsets.</text>
+        <rect x="440" y="300" width="360" height="145" rx="6" fill="#0f172a"/>
+<rect x="440" y="300" width="360" height="145" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="620.0" y="319" fill="white" font-size="12" font-weight="600" text-anchor="middle">the sliding window</text>
+<text x="620.0" y="333" fill="#94a3b8" font-size="8" text-anchor="middle">x seconds of samples</text>
+<text x="452" y="350" fill="#34d399" font-size="7.2">w = table[i : i + round(x / dt)]</text>
+<text x="452" y="362" fill="#34d399" font-size="7.2"></text>
+<text x="452" y="374" fill="#34d399" font-size="7.2">x long enough to contain the pattern,</text>
+<text x="452" y="386" fill="#34d399" font-size="7.2">short enough not to span two</text>
+<text x="452" y="398" fill="#34d399" font-size="7.2">transitions. Shortest phase ~2-4 s,</text>
+<text x="452" y="410" fill="#34d399" font-size="7.2">so start around 0.5-1.0 s and sweep.</text>
+        <rect x="440" y="500" width="360" height="110" rx="6" fill="#0f172a"/>
+<rect x="440" y="500" width="360" height="110" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="620.0" y="519" fill="white" font-size="12" font-weight="600" text-anchor="middle">TWO checks, every window</text>
+<text x="452" y="550" fill="#34d399" font-size="7.2">1. the trigger for looking_for</text>
+<text x="452" y="561.5" fill="#34d399" font-size="7.2">2. DIGGING, always, at a HIGHER bar</text>
+<text x="452" y="573.0" fill="#94a3b8" font-size="7.2">   digging is the cycle boundary, so it is</text>
+<text x="452" y="584.5" fill="#94a3b8" font-size="7.2">   the only way back from confusion -- but a</text>
+<text x="452" y="596.0" fill="#94a3b8" font-size="7.2">   spurious dig would truncate a good cycle.</text>
+        <rect x="840" y="300" width="400" height="145" rx="6" fill="#0f172a"/>
+<rect x="840" y="300" width="400" height="145" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="1040.0" y="319" fill="white" font-size="12" font-weight="600" text-anchor="middle">validate()</text>
+<text x="1040.0" y="333" fill="#94a3b8" font-size="8" text-anchor="middle">a trigger is not a transition</text>
+<text x="852" y="350" fill="#34d399" font-size="7.2">hold the evidence over the next k samples</text>
+<text x="852" y="362" fill="#34d399" font-size="7.2">before believing it</text>
+<text x="852" y="374" fill="#34d399" font-size="7.2"></text>
+<text x="852" y="386" fill="#34d399" font-size="7.2">one noisy sample cannot advance the state;</text>
+<text x="852" y="398" fill="#34d399" font-size="7.2">the cost is detecting slightly late, which</text>
+<text x="852" y="410" fill="#34d399" font-size="7.2">pass 2 undoes by going back and finding the</text>
+<text x="852" y="422" fill="#34d399" font-size="7.2">precise instant inside the stored window.</text>
+        <rect x="840" y="500" width="400" height="110" rx="6" fill="#0f172a"/>
+<rect x="840" y="500" width="400" height="110" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="1040.0" y="519" fill="white" font-size="12" font-weight="600" text-anchor="middle">coarse window</text>
+<text x="1040.0" y="533" fill="#94a3b8" font-size="8" text-anchor="middle">what gets stored, not a time yet</text>
+<text x="852" y="550" fill="#34d399" font-size="7.2">Window(lo, hi)   SAMPLE INDICES</text>
+<text x="852" y="562" fill="#34d399" font-size="7.2">  plus a lookback margin, because an</text>
+<text x="852" y="574" fill="#34d399" font-size="7.2">  onset is where a signal LEFT rest and</text>
+<text x="852" y="586" fill="#34d399" font-size="7.2">  you find that by walking BACKWARD</text>
+        <rect x="40" y="670" width="1200" height="170" rx="12" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="690" fill="#a78bfa" font-size="11" font-weight="700" letter-spacing="1">PASS 2  ·  only once all four coarse windows exist</text>
+<text x="56" y="704" fill="#64748b" font-size="8">the expensive, precise work, done four times per cycle rather than every frame</text>
+        <rect x="60" y="708" width="580" height="120" rx="6" fill="#0f172a"/>
+<rect x="60" y="708" width="580" height="120" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="350.0" y="727" fill="white" font-size="12" font-weight="600" text-anchor="middle">refine(window, table) -> float</text>
+<text x="350.0" y="741" fill="#94a3b8" font-size="8" text-anchor="middle">the exact instant</text>
+<text x="72" y="758" fill="#a78bfa" font-size="7.4">slices the arrays:  table.dh_dt[lo:hi]</text>
+<text x="72" y="770.5" fill="#a78bfa" font-size="7.4">searches FORWARD or BACKWARD, whichever the cue needs</text>
+<text x="72" y="783.0" fill="#a78bfa" font-size="7.4">  arrives/departs -> onsets.motion_boundary()</text>
+<text x="72" y="795.5" fill="#a78bfa" font-size="7.4">interpolates BETWEEN samples using time_seconds[],</text>
+<text x="72" y="808.0" fill="#a78bfa" font-size="7.4">  never t0 + i*dt -- that is wrong on a VFR file</text>
+        <rect x="680" y="708" width="560" height="120" rx="6" fill="#0f172a"/>
+<rect x="680" y="708" width="560" height="120" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="960.0" y="727" fill="white" font-size="12" font-weight="600" text-anchor="middle">the four cues</text>
+<text x="960.0" y="741" fill="#94a3b8" font-size="8" text-anchor="middle">one signature, swappable</text>
+<text x="692" y="758" fill="#a78bfa" font-size="7.4">digging    dh_dt      arrives at 0</text>
+<text x="692" y="770.5" fill="#a78bfa" font-size="7.4">hauling    d2h_dt2    arrives at 0</text>
+<text x="692" y="783.0" fill="#a78bfa" font-size="7.4">dumping    argmax(aspect_ratio)      <- weakest, no margin</text>
+<text x="692" y="795.5" fill="#a78bfa" font-size="7.4">swinging   speed_x    departs 0</text>
+<text x="692" y="808.0" fill="#94a3b8" font-size="7.4">this is the seam. Changing a cue changes nothing else.</text>
+        <rect x="40" y="880" width="1200" height="230" rx="12" fill="none" stroke="#fb7185" stroke-width="1" stroke-dasharray="8,4" opacity="0.55"/>
+<text x="56" y="900" fill="#fb7185" font-size="11" font-weight="700" letter-spacing="1">CLOSING A CYCLE  ·  did it happen, and could we measure it?</text>
+<text x="56" y="914" fill="#64748b" font-size="8">two different questions, and conflating them is how cycle_count goes wrong</text>
+        <rect x="60" y="930" width="700" height="165" rx="6" fill="#0f172a"/>
+<rect x="60" y="930" width="700" height="165" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+<text x="410.0" y="949" fill="white" font-size="12" font-weight="600" text-anchor="middle">the three cases</text>
+<text x="410.0" y="963" fill="#94a3b8" font-size="8" text-anchor="middle">weak evidence separates 2 from 3</text>
+<text x="72" y="980" fill="#fb7185" font-size="7.4">1  all four onsets found</text>
+<text x="72" y="992.8" fill="#fb7185" font-size="7.4">     -> cycles + measured        counted and averaged</text>
+<text x="72" y="1005.5999999999999" fill="#fb7185" font-size="7.4"></text>
+<text x="72" y="1018.3999999999999" fill="#fb7185" font-size="7.4">2  an onset missing, BUT the phase left evidence</text>
+<text x="72" y="1031.1999999999998" fill="#fb7185" font-size="7.4">     e.g. truck_overlap rose somewhere in the span</text>
+<text x="72" y="1043.9999999999998" fill="#fb7185" font-size="7.4">     -> cycles only              counted, not averaged</text>
+<text x="72" y="1056.7999999999997" fill="#fb7185" font-size="7.4"></text>
+<text x="72" y="1069.5999999999997" fill="#fb7185" font-size="7.4">3  an onset missing AND no evidence it ever happened</text>
+<text x="72" y="1082.3999999999996" fill="#fb7185" font-size="7.4">     the bucket never went near the truck: a re-dig</text>
+<text x="72" y="1095.1999999999996" fill="#fb7185" font-size="7.4">     -> rejected                 neither</text>
+        <rect x="800" y="930" width="440" height="165" rx="6" fill="#0f172a"/>
+<rect x="800" y="930" width="440" height="165" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+<text x="1020.0" y="949" fill="white" font-size="12" font-weight="600" text-anchor="middle">timeout, derived not fixed</text>
+<text x="812" y="980" fill="#fb7185" font-size="7.2">too long in a phase -> abandon, re-seek digging</text>
+<text x="812" y="992.4" fill="#fb7185" font-size="7.2"></text>
+<text x="812" y="1004.8" fill="#fb7185" font-size="7.2">limit = k x median gap between digging onsets</text>
+<text x="812" y="1017.1999999999999" fill="#fb7185" font-size="7.2">        SEEN SO FAR</text>
+<text x="812" y="1029.6" fill="#fb7185" font-size="7.2"></text>
+<text x="812" y="1042.0" fill="#94a3b8" font-size="7.2">a constant here would be tuned to one video.</text>
+<text x="812" y="1054.4" fill="#94a3b8" font-size="7.2">On cycle 1 there is no history, so there is no</text>
+<text x="812" y="1066.8000000000002" fill="#94a3b8" font-size="7.2">timeout -- better to run long once than to cut a</text>
+<text x="812" y="1079.2000000000003" fill="#94a3b8" font-size="7.2">real cycle short on a guess.</text>
+<text x="812" y="1091.6000000000004" fill="#fb7185" font-size="7.2"></text>
+<text x="812" y="1104.0000000000005" fill="#fb7185" font-size="7.2">head and tail partials need no rule: a cycle is</text>
+<text x="812" y="1116.4000000000005" fill="#fb7185" font-size="7.2">dig-onset to dig-onset, so they are in no cycle</text>
+      </svg>
+    </div>
+
+    <!-- Info Cards -->
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><div class="card-dot amber"></div><h3>What changed from the first design</h3></div>
+        <ul>
+          <li>• The old version cut the video into <strong>dig episodes</strong> with a global Otsu and walked those. That made digging a <em>different mechanism</em> from the other three &mdash; found globally and non-causally while everything else was found locally and in sequence.</li>
+          <li>• Now Otsu only sets <strong>levels</strong>. What "low" means comes from the whole video; <em>when</em> it happened comes from the walk. All four transitions are found the same way.</li>
+          <li>• It also degrades better: a single global split assumes the whole clip is bimodal. A sliding window doesn't care what happened 40 seconds ago.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot emerald"></div><h3>Always watching for digging</h3></div>
+        <ul>
+          <li>• Digging is the <strong>cycle boundary</strong>, so it is the only transition that re-establishes where we are. Watch it only in sequence and one missed onset loses every later cycle.</li>
+          <li>• But at a <strong>higher bar</strong> than the in-sequence check: expected evidence is cheap, unexpected evidence should be expensive. A spurious dig mid-haul would silently truncate a good cycle.</li>
+          <li>• Paired with a <strong>derived timeout</strong> &mdash; k &times; the median gap between digging onsets seen so far. A constant would be tuned to one video. No timeout on cycle 1, since there is no history yet.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot rose"></div><h3>Two counters, on purpose</h3></div>
+        <ul>
+          <li>• <code>cycle_count</code> counts what the machine <strong>did</strong>. The averages come from what we could <strong>measure</strong>. A cycle is complete whether or not we pinned all four of its onsets.</li>
+          <li>• Telling "we missed a cue" from "no cycle happened" needs a <strong>weaker second check</strong>: did the phase leave any evidence at all? Truck overlap rose somewhere &rarr; dumping happened, the cue failed.</li>
+          <li>• Consequence worth knowing: <code>cycle_count</code> and the averages come from different populations, so their product will not equal the elapsed time. That is correct, and it will look like a bug later.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="footer">HISTORICAL DESIGN · <code>fsm.py</code> and <code>cycles.py</code> now exist and diverge from this page in several places: there is no derived timeout (a mid-cycle re-dig abandons and restarts instead), <code>MachineState</code> carries no cycle lists and no <code>validate()</code>, windows reach BACKWARD from the trigger rather than forward, pass 2 refines each window as it is found rather than waiting for all four, and <code>refine()</code> estimates the rest band rather than calling <code>motion_boundary()</code>. <code>cycle_count</code> counts cycles that OCCURRED, not <code>len(cycles)</code>. Read <code>src/excavator_cycles/fsm.py</code> for what is actually built.</p>
+  </div>
+
+  <script>
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPNG(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const link = document.createElement('a');
+        link.download = 'diagram.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPDF(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const orientation = canvas.width > canvas.height ? 'landscape' : 'portrait';
+        const pdf = new jsPDF({ orientation, unit: 'px', format: [canvas.width, canvas.height], hotfixes: ['px_scaling'] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('diagram.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+  </script>
+</body>
+</html>

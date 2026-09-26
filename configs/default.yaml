@@ -53,8 +53,6 @@ geometry:
   tip_process_noise: 2.0       # L/s^2  -- how much the bucket may accelerate
   tip_measurement_noise: 0.02  # L      -- expected error of one pose fit
   tip_gate_sigma: 3.0          # reject measurements beyond this many sigmas
-  dwell_speed_quantile: 0.25 # "slow enough to count as lingering"
-  min_zone_separation: 0.40  # dig and dump must be this far apart, in units of L
 
 features:
   derivative_window_seconds: 0.9 # Savitzky-Golay; symmetric, so it moves no extremum
@@ -64,18 +62,11 @@ features:
   min_sample_confidence: 0.35    # below this, a sample is MISSING, not negative
 
 fsm:
-  hold_seconds: 0.40             # same for all four transitions, so lag is common-mode
-  max_evidence_gap_seconds: 0.30
-  max_lookback_seconds: 2.0      # how far pass 2 searches back for the true onset
-  alpha_contact_speed: 0.35      # T1  swinging -> digging
-  alpha_clearance_margin: 0.05   # T2  digging  -> hauling
-  alpha_uncurl_rate: 0.50        # T3  hauling  -> dumping
-  alpha_swing_rate: 0.40         # T4  dumping  -> swinging
-  min_phase_seconds: null        # derived from this video; flags, never blocks
-
-cycles:
-  duration_band: [0.4, 2.5]      # relative to the median cycle in the same video
-  min_mean_confidence: 0.50
+  hold_seconds: 0.30           # evidence must persist this long to be believed
+  strict_hold_seconds: 0.60    # the higher bar for an out-of-turn digging trigger
+  lookback_seconds: 0.80       # how far a coarse window reaches back before the trigger
+  rest_sigma: 3.0              # pass 2: multiples of a window's own noise that count as rest
+  rest_floor_fraction: 0.02    # ...floored at this fraction of the window's range
 
 qa:
   min_excavator_coverage: 0.97

@@ -1,0 +1,6 @@
+#!/bin/sh
+# The inner loop for working on the triggers: run the walk, print the table,
+# render the video. No arguments -- edit a cue, run this, look at the mp4.
+set -e
+cd "$(dirname "$0")/.."
+PYTHONPATH=src .venv/bin/python scripts/show_windows.py "${1:-outputs/track/dual}" "$@"

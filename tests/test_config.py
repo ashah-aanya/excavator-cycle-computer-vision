@@ -19,9 +19,7 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
 def test_defaults_load():
     config = Config.load()
     assert config.sampling.rate_hz == 10.0
-    assert config.fsm.hold_seconds == 0.40
-    # None is meaningful: minimum phase duration is derived from the data.
-    assert config.fsm.min_phase_seconds is None
+    assert config.fsm.hold_seconds == 0.30
 
 
 def test_shipped_yaml_matches_code_defaults():
@@ -46,4 +44,4 @@ def test_unknown_key_raises():
 def test_config_is_serialisable():
     """Run metadata records the config, so every result is traceable."""
     data = Config.load().to_dict()
-    assert data["fsm"]["alpha_uncurl_rate"] == 0.50
+    assert data["fsm"]["hold_seconds"] == 0.30

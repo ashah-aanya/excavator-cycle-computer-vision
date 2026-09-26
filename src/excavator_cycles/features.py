@@ -176,7 +176,35 @@ def build_features(
     window = config.features.box_window_seconds
     alignment = config.features.box_alignment
 
-    bucket_track = smooth_boxes(raw_boxes(bucket, count), times, window, alignment)
+    # A low-confidence mask is a GAP IN PERCEPTION, not a measurement. Treating one
+    # as real lets a bad mask set a box, and every rate derived from that box then
+    # carries an excursion the machine never made. `min_sample_confidence` has
+    # documented this from the start and nothing read it: the samples were kept
+    # whatever SAM 2 thought of them.
+    #
+    # Dropped here rather than in `track`, so the confidence stays on the record and
+    # the threshold remains a question for this stage to answer -- re-running
+    # `features` with a different threshold costs a second and needs no GPU.
+    raw = raw_boxes(bucket, count)
+    floor = config.features.min_sample_confidence
+    weak = np.array(
+        [
+            record.has_bucket_mask and record.bucket_confidence < floor
+            for record in result.frames
+        ]
+    )
+    if weak.any():
+        log.info(
+            "%d of %d bucket masks are below the %.2f confidence floor; treating them as "
+            "missing rather than as evidence",
+            int(weak.sum()),
+            count,
+            floor,
+        )
+        raw = raw.copy()
+        raw[weak] = np.nan
+
+    bucket_track = smooth_boxes(raw, times, window, alignment)
     cabin_track = smooth_boxes(
         raw_boxes(_body_masks(excavator, count, config), count), times, window, alignment
     )

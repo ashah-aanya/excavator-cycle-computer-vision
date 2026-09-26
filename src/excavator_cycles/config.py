@@ -203,15 +203,6 @@ class GeometryConfig:
     tip_measurement_noise: float = 0.02  # L, expected error of one pose fit
     tip_gate_sigma: float = 3.0  # reject beyond this many sigmas
 
-    # Samples slower than this quantile of speed count as "dwelling", and are
-    # what the dig/dump location clustering is run on.
-    dwell_speed_quantile: float = 0.25
-
-    # The two derived locations must be at least this far apart (in units of `L`)
-    # to be believed. Closer than this and the clustering is reported as failed
-    # rather than silently returning two overlapping blobs.
-    min_zone_separation: float = 0.40
-
 
 @dataclass(frozen=True)
 class FeatureConfig:
@@ -258,49 +249,41 @@ class FeatureConfig:
 
 @dataclass(frozen=True)
 class FSMConfig:
-    """State machine: how long evidence must persist, and how strong it must be.
+    """The state machine's parameters. Every one is a DURATION, never a count.
 
-    The alphas are the multipliers described in ``FeatureConfig.threshold_percentile``.
-    Every one of them is a candidate for the sensitivity sweep: we want a plateau
-    (answers stable across a wide range), not a knife-edge optimum.
+    A window given in samples means something different at every frame rate: 3
+    samples is 0.3 s at 10 Hz and 0.15 s at 20 Hz, so the same footage sampled
+    differently would produce different onsets. Seconds convert through the
+    observed sample spacing exactly once, at the boundary.
     """
 
-    # Pass 1: how long a transition's evidence must hold before it is confirmed.
-    # The SAME value for all four transitions, on purpose -- any residual
-    # confirmation lag is then common-mode and cancels in phase durations.
-    hold_seconds: float = 0.40
+    # How long a transition's evidence must persist before it is believed. A
+    # trigger is not a transition; one noisy sample must not advance the state.
+    # The SAME value for all four, on purpose: any residual confirmation lag is
+    # then common-mode and cancels in the phase DURATIONS, which is what the
+    # task grades.
+    hold_seconds: float = 0.30
 
-    # Gaps in perception shorter than this are bridged rather than breaking a run
-    # of sustained evidence.
-    max_evidence_gap_seconds: float = 0.30
+    # The bar for a DIGGING trigger that arrives out of turn. Higher, because
+    # expected evidence is cheap and unexpected evidence should be expensive --
+    # a spurious dig mid-haul would silently truncate a good cycle.
+    strict_hold_seconds: float = 0.60
 
-    # Pass 2 searches this far back from the confirmation point for the true
-    # onset (the extremum or level crossing).
-    max_lookback_seconds: float = 2.0
+    # How far the coarse window reaches back before the trigger. An onset is
+    # where a signal LEFT rest, found by walking backward from the excursion, so
+    # a window starting at the trigger would exclude what it is looking for.
+    lookback_seconds: float = 0.80
 
-    # Evidence strength multipliers, per transition. Named for what they gate.
-    alpha_contact_speed: float = 0.35  # T1: bucket decelerating into material
-    alpha_clearance_margin: float = 0.05  # T2: margin above surface, in units of L
-    alpha_uncurl_rate: float = 0.50  # T3: how fast the bucket must open
-    alpha_swing_rate: float = 0.40  # T4: how fast the machine must rotate back
+    # Pass 2: how many multiples of a window's own noise still count as "at
+    # rest". Dimensionless -- a multiple of a quantity measured from the same
+    # window -- so it carries no assumption about any video's scale.
+    rest_sigma: float = 3.0
 
-    # Minimum phase duration. None means: derive it from this video's own measured
-    # phase durations and use it to FLAG a suspicious phase, never to block a
-    # transition from firing. A hard lockout delays triggers in one direction
-    # only, and can swallow a genuinely short dumping phase.
-    min_phase_seconds: float | None = None
-
-
-@dataclass(frozen=True)
-class CycleConfig:
-    """What counts as a complete cycle."""
-
-    # A cycle whose duration falls outside this band, relative to the median
-    # cycle duration in the same video, is flagged as an outlier.
-    duration_band: tuple[float, float] = (0.4, 2.5)
-
-    # Mean per-sample confidence a cycle needs to contribute to the averages.
-    min_mean_confidence: float = 0.50
+    # ...and the floor under that band, as a fraction of what the signal does
+    # across the window. Rest cannot be defined more tightly than this: on an
+    # exactly flat lead-in the measured noise is zero, and a zero band makes
+    # every sample an excursion.
+    rest_floor_fraction: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -333,7 +316,6 @@ class Config:
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
     fsm: FSMConfig = field(default_factory=FSMConfig)
-    cycles: CycleConfig = field(default_factory=CycleConfig)
     qa: QAConfig = field(default_factory=QAConfig)
 
     @classmethod
