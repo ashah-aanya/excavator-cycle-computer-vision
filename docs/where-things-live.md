@@ -6,6 +6,17 @@ part of it was in the least durable place.
 
 **Read this before refactoring anything.**
 
+## The naming scheme
+
+Status is carried in the name, so nothing has to be remembered:
+
+| Prefix | Means |
+|---|---|
+| `deprecated/…` (branch) | Superseded. Never build on it. Kept so deletions stay recoverable by name. |
+| `reference/…` (directory) | Works, and is the thing to port **from**. Never imported by `src/`. |
+| `src/…` | Live production code. If it is here, it runs. |
+| gitignored | Regenerable. Losing it costs a re-run, nothing more. |
+
 ---
 
 ## The one-paragraph history
@@ -23,11 +34,11 @@ in a scratchpad.
 
 | Branch | Holds | Status |
 |---|---|---|
-| `main` | perception + v1 chain features + flow | **16 commits behind.** Lacks `seeding.py`, `signals.py`, `onsets.py`. Not the newest anything. |
-| `kinematic-signals` | `main` + geodesic seeding + SAM2 bucket-as-object-2 + `signals.py` + `onsets.py` | The newest *committed* work. Base for the rebuild. |
-| `yoloworld-probe` | `kinematic-signals` + 2 YOLO-World commits | The probe **failed**; kept only for the record. |
-| `archive/optical-flow` | pinned at `yoloworld-probe` | **Reference. Never build on it.** Everything deleted during the rebuild is recoverable here by name. |
-| `minimal-bbox-pipeline` | the rebuild | **Current work branch.** Cut from `kinematic-signals`. |
+| **`minimal-bbox-pipeline`** | the rebuild | **Current work branch.** Everything happens here. |
+| `main` | perception + v1 chain features + flow | Merge target. 16 commits behind; lacks `seeding.py`, `onsets.py`. Not the newest anything. |
+| `deprecated/kinematic-signals` | geodesic seeding, SAM2 bucket-as-object-2, `signals.py`, `onsets.py` | The base this branch was cut from. Its content is already in the rebuild. |
+| `deprecated/optical-flow` | flow + chain fit + YOLO-World, pinned | **Everything deleted during the rebuild is recoverable here by name.** |
+| `deprecated/yoloworld-probe` | identical commit to `deprecated/optical-flow` | Redundant pointer; safe to delete. |
 
 `origin/main` and `origin/kinematic-signals` are both behind their local
 counterparts. Nothing has been pushed during the rebuild.
@@ -44,7 +55,7 @@ when reading this repo.
 |---|---|---|---|
 | **v1** | fitted 3-link arm chain — curl angle, bearing, elevation | `features.py`, `filtering.py`, `kinematics.py` chain fit, `pipeline-design.md` §7.1 | The chain fit is invalid: "rigid" links varying 5.2–8.2× in length, joints jumping 0.466 L in 0.1 s |
 | **v2** | dense optical flow — `omega_house`, `delta_omega` | `motion.py`, `signals.py` | The house rotates about a **vertical** axis, so in projection it translates rather than rotates. `omega_house` correlated with the real slew at **r = 0.025** — chance |
-| **v3** | bounding-box position and velocity | `prior-art/box-physics/`, **uncommitted until now** | Not replaced. **This is the one that works.** |
+| **v3** | bounding-box position and velocity | `reference/box-physics/`, **uncommitted until now** | Not replaced. **This is the one that works.** |
 
 ---
 
@@ -53,7 +64,7 @@ when reading this repo.
 | Path | Status |
 |---|---|
 | `src/excavator_cycles/` | Production. Mixed v1 and v2; the rebuild strips v2 and replaces v1. |
-| `prior-art/box-physics/` | **Recovered v3.** Verified working, re-run on recovery. Reference only — do not import; see its README for the hardcoding that blocks reuse. |
+| `reference/box-physics/` | **Recovered v3. Verified working** — re-run on recovery. Port **from** it; never import it. Its README lists the hardcoding that blocks direct reuse. |
 | `recovered-scratchpad/` | 179 MB of media from the same session. **Gitignored**, regenerable by re-running the scripts. |
 | `eval/` | Ground-truth labels + scorer. **Walled off**: nothing in `src/` may import or read it, and `tests/test_eval_labels.py` enforces that by grepping the package. |
 | `docs/stages/` | Findings per stage, including the negative results. Keep. |
@@ -69,7 +80,7 @@ less far along than it was. Both readings were wrong for the same reason.
 
 - `outputs/track/dual/*/signals.npz` — `signals.build_signals` has **no caller**
 - `outputs/track/real/features.csv`, `motion.csv` — from CLI commands that exist
-- `prior-art/box-physics/boxfeat.npz`, `sig4.npz` — now committed alongside the
+- `reference/box-physics/boxfeat.npz`, `sig4.npz` — now committed alongside the
   scripts that made them
 
 **Rule going forward: if an artifact is worth keeping, the code that produced it
@@ -84,7 +95,7 @@ is committed in the same commit.**
 `geodesic_distance`, `onsets.motion_boundary`/`noise_scale`/`smooth`/`derivative`,
 `render.py`, `config.py`, `cabin.py`, `detect/`.
 
-**Prior art** (reference, not imported): `prior-art/box-physics/`.
+**Prior art** (reference, not imported): `reference/box-physics/`.
 
 **Archive** (deleted here, recoverable from `archive/optical-flow`): `motion.py`,
 `signals.py`'s flow channels, `features.falling_material`, the chain fit in
