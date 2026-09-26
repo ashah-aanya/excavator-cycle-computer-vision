@@ -1572,3 +1572,61 @@ def test_the_mass_requirement_rejects_a_lopsided_split_on_its_own():
     assert not Split(2.4, 0.97, 2, 400, min_side=3).trustworthy, "either side counts"
     # And separability still has to clear its own bar independently.
     assert not Split(2.4, 0.5, 400, 50, min_side=3).trustworthy
+
+
+def test_a_weak_truck_level_still_counts_the_cycle_it_cannot_measure():
+    """Disabling an untrustworthy `over_truck` took `cycle_count` from 1 to 0.
+
+    `evidence_within` uses the same triggers, so a disabled truck level meant no
+    dumping EVIDENCE either -- the cycle was not `complete` and dropped out of the
+    COUNT, not just the averages. `cycles.py` forbids exactly that: "A cue failing is
+    a fact about the pipeline; it is not a fact about the excavator."
+
+    The dev clip's truck level scores 0.82 against a bar of 0.80, so a hidden video
+    is one bad frame away from this on the one field graded exactly.
+
+    `Levels.for_evidence` is the counting-versus-measuring split one level down: a
+    level too weak to say WHEN dumping started can still say THAT the bucket went to
+    the bed.
+    """
+    from excavator_cycles.fsm import Levels, Split, evidence_within, trigger_dumping
+
+    n = 20
+    table = _CueTable(n=n)
+    table.truck_overlap = np.r_[np.zeros(4), np.full(3, 0.8), np.zeros(n - 7)]
+    table.rel_cabin_x = np.full(n, 0.4)
+    measured = Split(0.2, 0.5, 17, 3, min_side=3)  # too weak to trust
+    levels = Levels(
+        low_height=Split(0.1, 0.95, 50, 50),
+        over_truck=None,  # disabled for onsets
+        moving=Split(0.3, 0.95, 50, 50),
+        dump_side=1.0,
+        over_truck_observed=measured,
+    )
+
+    # The ONSET gate stays shut: a meaningless level must not pin a transition.
+    assert not trigger_dumping(table, 5, levels), "a weak level must not locate an onset"
+    # The EVIDENCE check still sees it, so the cycle can be counted.
+    assert "dumping" in evidence_within(table, levels, 0.0, 2.0), (
+        "a disabled gate must not erase the record that the phase happened"
+    )
+
+
+def test_a_video_with_no_truck_at_all_has_nothing_to_fall_back_on():
+    """The distinction that matters: "weak truck level" is not "no truck".
+
+    Nothing was measured, so there is no observed split to restore, and dumping
+    genuinely left no evidence. A fallback here would invent one.
+    """
+    from excavator_cycles.fsm import calibrate, evidence_within
+
+    n = 200
+    table = _CueTable(n=n)
+    table.height = np.r_[np.zeros(n // 2), np.ones(n // 2)]
+    table.speed_x = np.r_[np.zeros(n // 2), np.ones(n // 2)]
+    table.truck_overlap = np.full(n, np.nan)
+    levels = calibrate(table, None)
+    assert levels.over_truck is None
+    assert levels.over_truck_observed is None, "nothing was measured, so nothing is retained"
+    assert levels.for_evidence is levels, "there is no permissive variant to build"
+    assert "dumping" not in evidence_within(table, levels, 0.0, 20.0)

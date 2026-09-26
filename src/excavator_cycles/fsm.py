@@ -43,7 +43,7 @@ arbitrary and the gate built on it should not be trusted.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from statistics import NormalDist
 from typing import Literal
 
@@ -188,11 +188,36 @@ class Levels:
     """
 
     low_height: Split  # "the bucket is down in the material"
-    over_truck: Split | None  # "the bucket is at the bed"; None with no truck
+    over_truck: Split | None  # "the bucket is at the bed"; None when unusable
     moving: Split  # "the machine is traversing"
     # Which side of the cabin the truck is on: +1 right, -1 left. A level like the
     # others -- read off this video rather than assumed. See `calibrate`.
     dump_side: float = 1.0
+    # The truck level AS MEASURED, retained even when it is too weak to use for an
+    # onset. See `for_evidence` below for why both are kept.
+    over_truck_observed: Split | None = None
+
+    @property
+    def for_evidence(self) -> Levels:
+        """The same levels, with a weak truck level allowed back in.
+
+        The counting-versus-measuring split, one level down. A truck level that
+        cannot be trusted to say WHEN dumping started can still say THAT the bucket
+        went to the bed at some point, and those are different questions -- the
+        second is the weak check `cycles.py` counts cycles on.
+
+        Without this, disabling an untrustworthy `over_truck` took `cycle_count` from
+        1 to 0 on the dev clip, because `evidence_within` uses the same triggers: no
+        dumping evidence meant the cycle was not `complete` and dropped out of the
+        COUNT, not just the averages. That is what `cycles.py` forbids in as many
+        words -- "A cue failing is a fact about the pipeline; it is not a fact about
+        the excavator." The dev clip's truck level scores 0.82 against a bar of 0.80,
+        so a hidden video is one bad frame from that outcome on the one field graded
+        exactly.
+        """
+        if self.over_truck is not None or self.over_truck_observed is None:
+            return self
+        return replace(self, over_truck=self.over_truck_observed)
 
     def report(self) -> str:
         side = "right" if self.dump_side >= 0 else "left"
@@ -241,9 +266,12 @@ def calibrate(table, config=None) -> Levels:
         # A legitimate video, not an error: nothing that looked like a truck was
         # ever cleanly detected, so the dumping gate simply has no evidence.
         log.info("no truck overlap in this run; the dumping location gate is unavailable")
-        over_truck = None
+        # Nothing was measured, so there is nothing to fall back on for evidence
+        # either. This is genuinely "no truck", not "a weak truck level".
+        over_truck = over_truck_observed = None
     else:
         over_truck = split_of(overlap, min_side)
+        over_truck_observed = over_truck
         if not over_truck.trustworthy:
             log.warning(
                 "the over-truck level is meaningless (%s); the dumping location gate "
@@ -296,6 +324,7 @@ def calibrate(table, config=None) -> Levels:
         over_truck=over_truck,
         moving=moving,
         dump_side=dump_side,
+        over_truck_observed=over_truck_observed,
     )
 
 
@@ -981,10 +1010,14 @@ def evidence_within(table, levels, start: float, end: float) -> set[str]:
     """
     times = np.asarray(table.time_seconds, dtype=float)
     inside = np.flatnonzero((times >= start) & (times <= end))
+    # `for_evidence` restores a truck level that was too weak to pin an onset. A
+    # gate disabled for measurement must not also erase the record that the phase
+    # happened -- see `Levels.for_evidence`.
+    permissive = levels.for_evidence
     return {
         phase
         for phase in PHASES
-        if any(TRIGGERS[phase](table, int(i), levels) for i in inside)
+        if any(TRIGGERS[phase](table, int(i), permissive) for i in inside)
     }
 
 

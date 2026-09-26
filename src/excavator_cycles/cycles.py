@@ -104,7 +104,8 @@ class Cycle:
             return f"no {', '.join(absent)} in this span -- no cycle occurred"
         missing = [p for p in PHASES if p not in self.onsets]
         if missing:
-            return f"{', '.join(missing)} occurred but its onset was not located"
+            was = "its onset was" if len(missing) == 1 else "their onsets were"
+            return f"{', '.join(missing)} occurred but {was} not located"
         if self.ends is None:
             return "the closing digging onset occurred but was not located"
         ordered = [self.onsets[p] for p in PHASES] + [self.ends]
