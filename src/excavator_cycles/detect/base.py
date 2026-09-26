@@ -88,9 +88,6 @@ class Detector(Protocol):
         ...
 
 
-
-
-
 def iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
     """Intersection over union: how much two boxes agree.
 
@@ -111,7 +108,3 @@ def iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
     area_b = max(0.0, box_b[2] - box_b[0]) * max(0.0, box_b[3] - box_b[1])
     union = area_a + area_b - intersection
     return float(intersection / union) if union > 0 else 0.0
-
-
-
-

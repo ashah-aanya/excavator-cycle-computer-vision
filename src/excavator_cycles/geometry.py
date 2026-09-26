@@ -27,7 +27,6 @@ from .logging_setup import get_logger
 log = get_logger(__name__)
 
 
-
 def rotation_centre(masks: list[np.ndarray], quantile: float) -> tuple[float, float]:
     """Where the machine pivots.
 
@@ -86,12 +85,6 @@ def arm_reach(
     return float(np.percentile(distances, percentile))
 
 
-
-
-
-
-
-
 def otsu_threshold(values: np.ndarray, bins: int = 64) -> float:
     """The split that best separates a two-humped distribution.
 
@@ -125,5 +118,3 @@ def otsu_threshold(values: np.ndarray, bins: int = 64) -> float:
     between = weight_low * weight_high * (mean_low - mean_high) ** 2
     between[~valid] = -np.inf
     return float(centres[int(np.argmax(between))])
-
-

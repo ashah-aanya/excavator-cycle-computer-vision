@@ -34,7 +34,6 @@ from .logging_setup import get_logger
 log = get_logger(__name__)
 
 
-
 def body_core(masks: list[np.ndarray], quantile: float = 0.9) -> np.ndarray:
     """The part of the machine that is always there: body, cab, undercarriage.
 
@@ -108,11 +107,3 @@ def geodesic_distance(
         distance[frontier.astype(bool)] = step
         reached |= frontier
     return distance
-
-
-
-
-
-
-
-

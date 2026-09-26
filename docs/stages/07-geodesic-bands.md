@@ -22,13 +22,13 @@ metal* cannot rank a midpoint of the arm above its end, however the arm is folde
 All four functions already existed; nothing new was written for the probe.
 
 ```python
-core  = body_core(masks, quantile=0.9)      # pixels occupied most of the time
-arm   = arm_region(mask, core)              # mask minus the dilated body
-g     = geodesic_distance(arm, pivot)       # wavefront dilation, constrained
+core = body_core(masks, quantile=0.9)  # pixels occupied most of the time
+arm = arm_region(mask, core)  # mask minus the dilated body
+g = geodesic_distance(arm, pivot)  # wavefront dilation, constrained
 reach = g[g >= 0].max()
 
 bucket = g >= 0.82 * reach
-stick  = 0.50 * reach <= g < 0.75 * reach   # gap is deliberate: keep the joint out
+stick = 0.50 * reach <= g < 0.75 * reach  # gap is deliberate: keep the joint out
 ```
 
 Rotation per region reuses the existing decomposition, `median((r x F)/|r|^2)`.

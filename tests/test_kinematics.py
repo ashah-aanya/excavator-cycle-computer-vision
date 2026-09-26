@@ -76,13 +76,6 @@ def test_seed_outside_the_mask_still_works():
 # --- the failure this module fixes -----------------------------------------
 
 
-
-
-
-
-
-
-
 def test_body_core_is_what_persists():
     """The body is in every frame; the arm sweeps and is not."""
     frames = []
@@ -109,5 +102,3 @@ def test_boom_base_sits_at_the_top_of_the_body():
 def test_boom_base_needs_a_body():
     with pytest.raises(ValueError, match="body core is empty"):
         boom_base(np.zeros((10, 10), bool))
-
-

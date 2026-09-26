@@ -159,7 +159,6 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
-
 def _cmd_track(args: argparse.Namespace) -> int:
     """Run perception over a whole video and cache the result."""
     from .track import track
@@ -219,7 +218,6 @@ def _cmd_render(args: argparse.Namespace) -> int:
     return 0
 
 
-
 def _cmd_features(args: argparse.Namespace) -> int:
     """Stage 3: derive the scene and every kinematic feature, and plot them."""
     from .features import build_features, save
@@ -248,4 +246,3 @@ def _cmd_features(args: argparse.Namespace) -> int:
         print("  truck box      : none detected (overlap feature is nan)")
     print(f"  wrote          : {args.track_dir}/features.npz, scene.json")
     return 0
-

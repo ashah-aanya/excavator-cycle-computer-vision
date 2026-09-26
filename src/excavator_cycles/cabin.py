@@ -316,9 +316,7 @@ def render_diagnostic(
 
     # Sampled frames are sparse relative to source frames; hold the most recent
     # sample's overlay until the next one arrives, so the video plays smoothly.
-    sample_of_frame = {
-        record.frame_index: index for index, record in enumerate(result.frames)
-    }
+    sample_of_frame = {record.frame_index: index for index, record in enumerate(result.frames)}
     ordered_frames = sorted(sample_of_frame)
 
     written = 0
@@ -404,8 +402,10 @@ def _with_panel(canvas, panel_height: int, static: CabinBox, live, report, windo
             )
         ),
         "rolling edge std   "
-        + "  ".join(f"{name} {rolling_std.get(name, float('nan')):.1f}px" for name in
-                    ("left", "top", "right", "bottom"))
+        + "  ".join(
+            f"{name} {rolling_std.get(name, float('nan')):.1f}px"
+            for name in ("left", "top", "right", "bottom")
+        )
         + "    <- right/bottom are the edges FSM cues should use",
     ]
     for row, text in enumerate(lines):

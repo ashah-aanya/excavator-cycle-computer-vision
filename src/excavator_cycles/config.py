@@ -94,7 +94,6 @@ class DetectionConfig:
     alt_model_id: str = "google/owlv2-base-patch16-ensemble"
 
 
-
 @dataclass(frozen=True)
 class TrackConfig:
     """Stage 2: turning boxes into masks that follow the machine.
@@ -192,7 +191,6 @@ class GeometryConfig:
     # Size of the optical-flow patch below the bucket, in units of L.
     bucket_radius_frac: float = 0.22
 
-
     # Temporal filter on the bucket's position (design doc section 4.3). All in
     # units of the machine's reach L and in seconds, so one set of values serves
     # any video at any scale or frame rate.
@@ -204,7 +202,6 @@ class GeometryConfig:
     tip_process_noise: float = 2.0  # L per second squared
     tip_measurement_noise: float = 0.02  # L, expected error of one pose fit
     tip_gate_sigma: float = 3.0  # reject beyond this many sigmas
-
 
     # Samples slower than this quantile of speed count as "dwelling", and are
     # what the dig/dump location clustering is run on.
@@ -254,11 +251,9 @@ class FeatureConfig:
     # only because it is what was used when all four transitions were verified.
     box_alignment: str = "trailing"
 
-
     # Samples below this confidence are treated as MISSING, not as evidence
     # against a transition. A gap in perception is not a statement about physics.
     min_sample_confidence: float = 0.35
-
 
 
 @dataclass(frozen=True)

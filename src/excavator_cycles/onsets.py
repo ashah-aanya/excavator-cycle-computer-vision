@@ -74,9 +74,6 @@ def _samples(seconds: float, times: np.ndarray) -> int:
     return max(1, round(seconds / _spacing(times)))
 
 
-
-
-
 def noise_scale(signal: np.ndarray) -> float:
     """How big is this signal's noise? MAD of successive differences / sqrt(2).
 
@@ -182,9 +179,7 @@ def motion_boundary(
     if len(rate) != len(times):
         raise ValueError(f"{len(rate)} values but {len(times)} times; they must be parallel")
 
-    window = np.where(
-        (times >= bracket[0]) & (times <= bracket[1]) & np.isfinite(rate)
-    )[0]
+    window = np.where((times >= bracket[0]) & (times <= bracket[1]) & np.isfinite(rate))[0]
     if len(window) < 5:
         return None
 

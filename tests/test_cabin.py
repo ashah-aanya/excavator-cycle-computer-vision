@@ -97,8 +97,12 @@ def test_rolling_window_length_is_seconds_not_frames():
     rate must get the same physical window, not the same number of samples.
     """
     masks = _clip(n=40)
-    slow = stability(masks, 0.90, times_seconds=[i * 0.1 for i in range(40)], window_seconds=1.0)
-    fast = stability(masks, 0.90, times_seconds=[i * 0.2 for i in range(40)], window_seconds=1.0)
+    slow = stability(
+        masks, 0.90, times_seconds=[i * 0.1 for i in range(40)], window_seconds=1.0
+    )
+    fast = stability(
+        masks, 0.90, times_seconds=[i * 0.2 for i in range(40)], window_seconds=1.0
+    )
     assert slow["rolling_window_samples"] == 10  # 1.0s / 0.1s
     assert fast["rolling_window_samples"] == 5  # 1.0s / 0.2s
 

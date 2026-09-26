@@ -76,18 +76,14 @@ def _scene(n=12):
 def test_height_is_up_positive():
     """A bucket whose image y decreases is RISING, so height must increase."""
     excavator, bucket = _scene()
-    table, _ = build_features(
-        _result(12), {"excavator": excavator, "bucket": bucket}, CONFIG
-    )
+    table, _ = build_features(_result(12), {"excavator": excavator, "bucket": bucket}, CONFIG)
     assert table.height[-1] > table.height[0], "bucket rose; height must rise"
     assert np.nanmean(table.dh_dt[3:]) > 0, "dh/dt must be positive while rising"
 
 
 def test_rel_cabin_y_is_positive_when_the_bucket_is_above_the_cabin():
     excavator, bucket = _scene()
-    table, _ = build_features(
-        _result(12), {"excavator": excavator, "bucket": bucket}, CONFIG
-    )
+    table, _ = build_features(_result(12), {"excavator": excavator, "bucket": bucket}, CONFIG)
     assert table.rel_cabin_y[-1] > 0, "bucket ends above the cabin"
 
 
@@ -97,9 +93,7 @@ def test_dx_dt_is_right_positive():
         b = _blob(60 + 4 * i, 60, 5)  # moving right
         excavator[i] = _blob(50, 90, 14) | b
         bucket[i] = b
-    table, _ = build_features(
-        _result(12), {"excavator": excavator, "bucket": bucket}, CONFIG
-    )
+    table, _ = build_features(_result(12), {"excavator": excavator, "bucket": bucket}, CONFIG)
     assert np.nanmean(table.dx_dt[3:]) > 0
     assert np.all(table.speed_x[np.isfinite(table.speed_x)] >= 0)
 

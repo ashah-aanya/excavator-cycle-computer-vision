@@ -266,8 +266,9 @@ def _draw_physics(canvas, mask, table, scene, position: int, scale: float):
 
     if scene.truck_box is not None:
         _dashed_box(canvas, at(scene.truck_box), _TRUCK_COLOR)
-        _label(canvas, "truck", (at(scene.truck_box)[0], at(scene.truck_box)[1] - 4),
-               _TRUCK_COLOR)
+        _label(
+            canvas, "truck", (at(scene.truck_box)[0], at(scene.truck_box)[1] - 4), _TRUCK_COLOR
+        )
 
     cabin = table.cabin_box[position]
     if np.isfinite(cabin).all():
@@ -346,8 +347,9 @@ def _draw_phase_banner(canvas, onsets: dict[str, float], now: float) -> None:
     (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, 2)
     cv2.rectangle(canvas, (8, 8), (8 + tw + 16, 8 + th + base + 12), (18, 18, 18), cv2.FILLED)
     cv2.rectangle(canvas, (8, 8), (8 + tw + 16, 8 + th + base + 12), colour, 2)
-    cv2.putText(canvas, text, (16, 12 + th), cv2.FONT_HERSHEY_SIMPLEX, font, colour, 2,
-                cv2.LINE_AA)
+    cv2.putText(
+        canvas, text, (16, 12 + th), cv2.FONT_HERSHEY_SIMPLEX, font, colour, 2, cv2.LINE_AA
+    )
 
 
 def _graph_column(
@@ -392,11 +394,27 @@ def _graph_column(
                 cv2.line(column, previous, (x, y), colour, 1, cv2.LINE_AA)
             previous = (x, y)
 
-        cv2.putText(column, label, (6, top + 16), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.33, colour, 1, cv2.LINE_AA)
+        cv2.putText(
+            column,
+            label,
+            (6, top + 16),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.33,
+            colour,
+            1,
+            cv2.LINE_AA,
+        )
         if position is not None and np.isfinite(values[position]):
-            cv2.putText(column, f"{values[position]:+.3f}", (6, top + 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.30, _TEXT, 1, cv2.LINE_AA)
+            cv2.putText(
+                column,
+                f"{values[position]:+.3f}",
+                (6, top + 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.30,
+                _TEXT,
+                1,
+                cv2.LINE_AA,
+            )
 
     # Onset markers span every panel, so a boundary can be read against all six
     # signals at once -- which is the point of stacking them.
@@ -409,8 +427,16 @@ def _graph_column(
         colour = _PHASE_COLOUR.get(name, _TEXT)
         for y in range(4, height - 4, 6):  # dashed, so it reads under the traces
             cv2.line(column, (x, y), (x, min(y + 3, height - 4)), colour, 1)
-        cv2.putText(column, name[:4], (x + 3, height - 6), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.3, colour, 1, cv2.LINE_AA)
+        cv2.putText(
+            column,
+            name[:4],
+            (x + 3, height - 6),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.3,
+            colour,
+            1,
+            cv2.LINE_AA,
+        )
 
     if position is not None:
         x = left + round(span * position / total)
