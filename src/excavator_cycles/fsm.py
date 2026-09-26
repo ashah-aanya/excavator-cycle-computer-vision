@@ -709,3 +709,52 @@ def _rest_band(values: np.ndarray, sigma: float, floor_fraction: float = 0.02) -
     steps = np.abs(np.diff(values))
     quiet = float(np.quantile(steps, 0.25)) * 1.4826 / np.sqrt(2)
     return max(sigma * quiet, floor_fraction * float(np.ptp(values)))
+
+
+# Which signal each transition's onset lives in, and what shape it has.
+#
+# These are the cues the recovered detector used, and the reason they belong in
+# pass 2 as well as pass 1 is that they describe the EVENT rather than the state
+# around it. `digging` is the bucket stopping its descent, which is contact;
+# `hauling` is the kink where scooping becomes lifting; `swinging` is the machine
+# leaving rest; `dumping` is the bucket's silhouette at its most stretched, which
+# is the closest thing available to "it has tipped".
+REFINEMENTS: dict[str, tuple[str, Mode]] = {
+    "digging": ("dh_dt", "arrives"),
+    "hauling": ("d2h_dt2", "arrives"),
+    "dumping": ("aspect_ratio", "peak"),
+    "swinging": ("speed_x", "departs"),
+}
+
+
+def locate(detections: list[Detection], table, config) -> list[tuple[str, float]]:
+    """Turn pass 1's windows into instants: the join between the two passes.
+
+    A detection whose cue finds nothing in its window is DROPPED rather than
+    given the trigger time as a fallback. A made-up onset would flow into a
+    duration and be indistinguishable from a measured one; a missing onset is
+    visible, and `Cycle.reason` can say so.
+
+    Ordering needs no enforcement here -- pass 1's windows cannot overlap, so a
+    refined time cannot cross its neighbour. That is checked by a test rather
+    than asserted at runtime, because if it ever breaks the symptom is a
+    negative phase duration rather than an exception.
+    """
+    times = np.asarray(table.time_seconds, dtype=float)
+    out: list[tuple[str, float]] = []
+    for detection in detections:
+        column, mode = REFINEMENTS[detection.phase]
+        when = refine(getattr(table, column), times, detection.window, mode)
+        if when is None:
+            log.info(
+                "%s at sample %d: the %s cue found no %s in [%d, %d); dropped",
+                detection.phase,
+                detection.fired_at,
+                column,
+                mode,
+                detection.window.lo,
+                detection.window.hi,
+            )
+            continue
+        out.append((detection.phase, when))
+    return out

@@ -809,3 +809,61 @@ def test_the_rest_band_never_collapses_to_zero():
     from excavator_cycles.fsm import _rest_band
 
     assert _rest_band(np.r_[np.zeros(20), np.arange(10) * 0.1], sigma=3.0) > 0
+
+
+# --- the whole pass: detections -> refined onsets --------------------------
+
+
+def test_locate_refines_a_detection_into_a_time():
+    """Hand it a window that definitely contains the event, and it returns the
+    instant rather than the trigger sample."""
+    from excavator_cycles.config import Config
+    from excavator_cycles.fsm import Detection, Window, locate
+
+    n = 80
+    table = _CueTable(n=n)
+    # dh/dt falls, then ARRIVES at rest at sample 40 -- which is contact
+    table.dh_dt = np.r_[np.full(40, -0.3), np.zeros(n - 40)]
+    found = locate([Detection("digging", Window(25, 60), 45)], table, Config.load())
+    assert len(found) == 1
+    phase, when = found[0]
+    assert phase == "digging"
+    assert when == pytest.approx(4.0, abs=0.3), f"arrival is at 4.0s, got {when}"
+
+
+def test_locate_drops_what_it_cannot_refine_rather_than_guessing():
+    """A window with no event in it yields nothing. A made-up onset would flow
+    into a duration and be indistinguishable from a measured one."""
+    from excavator_cycles.config import Config
+    from excavator_cycles.fsm import Detection, Window, locate
+
+    table = _CueTable(n=80)
+    table.dh_dt = np.full(80, -0.3)  # never arrives at rest
+    assert locate([Detection("digging", Window(10, 40), 20)], table, Config.load()) == []
+
+
+def test_locate_keeps_the_onsets_in_order():
+    """Refinement must not be able to reorder what the walk ordered. The windows
+    cannot overlap, so this is guaranteed by construction -- pinned because if
+    it ever breaks, the symptom is a negative phase duration."""
+    from excavator_cycles.config import Config
+    from excavator_cycles.fsm import locate, walk
+
+    n = 200
+    table = _CueTable(n=n)
+    table.height = np.r_[np.linspace(0.5, 0.0, 30), np.zeros(40), np.linspace(0, 0.6, n - 70)]
+    table.dh_dt = np.gradient(table.height, table.time_seconds)
+    found = walk(table, _lv(low=0.1, moving=5.0), hold_samples=3, lookback_samples=8)
+    times = [when for _phase, when in locate(found, table, Config.load())]
+    assert times == sorted(times), times
+
+
+def test_locate_drops_a_detection_whose_cue_found_nothing():
+    """refine() returning None means the window held no transition. The
+    detection is dropped rather than given a made-up time."""
+    from excavator_cycles.config import Config
+    from excavator_cycles.fsm import Detection, Window, locate
+
+    table = _CueTable(n=60)  # every signal is flat: nothing to find
+    bogus = [Detection("digging", Window(10, 30), 20)]
+    assert locate(bogus, table, Config.load()) == []
