@@ -117,12 +117,16 @@ AST so a mention in a comment cannot hide one. Removed on
 `video.read_frames_at`/`sample_times`, `track.load_bucket_masks`,
 `render._signal_strip`, `onsets.smooth`.
 
-**Still orphaned, config side:** `CycleConfig.duration_band`,
+**Config side, now clear.** Four keys had no reader: `CycleConfig.duration_band`,
 `CycleConfig.min_mean_confidence`, `GeometryConfig.dwell_speed_quantile`,
-`GeometryConfig.min_zone_separation`. The dead-code gate does not see these,
-because it walks `src/` rather than the YAML, so they are listed here until they are
-either wired or deleted. `FSMConfig.strict_hold_seconds` briefly joined them and has
-been wired back.
+`GeometryConfig.min_zone_separation`. All four are deleted, and `CycleConfig` went
+with them since those were its only two fields. `FSMConfig.strict_hold_seconds`
+briefly joined them and has been wired back instead.
+
+The dead-code gate cannot see config keys -- it walks `src/` for definitions with no
+reference, and a dataclass field with a default is *defined* whether or not anything
+reads it. So a new orphaned key would still slip through; the check for that is
+`grep` and this list.
 
 Two things must be **rescued out of `signals.py` before it is deleted**, because
 they are geometric and load-bearing: `truck_overlap` (T3's location gate) and

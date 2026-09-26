@@ -203,15 +203,6 @@ class GeometryConfig:
     tip_measurement_noise: float = 0.02  # L, expected error of one pose fit
     tip_gate_sigma: float = 3.0  # reject beyond this many sigmas
 
-    # Samples slower than this quantile of speed count as "dwelling", and are
-    # what the dig/dump location clustering is run on.
-    dwell_speed_quantile: float = 0.25
-
-    # The two derived locations must be at least this far apart (in units of `L`)
-    # to be believed. Closer than this and the clustering is reported as failed
-    # rather than silently returning two overlapping blobs.
-    min_zone_separation: float = 0.40
-
 
 @dataclass(frozen=True)
 class FeatureConfig:
@@ -296,18 +287,6 @@ class FSMConfig:
 
 
 @dataclass(frozen=True)
-class CycleConfig:
-    """What counts as a complete cycle."""
-
-    # A cycle whose duration falls outside this band, relative to the median
-    # cycle duration in the same video, is flagged as an outlier.
-    duration_band: tuple[float, float] = (0.4, 2.5)
-
-    # Mean per-sample confidence a cycle needs to contribute to the averages.
-    min_mean_confidence: float = 0.50
-
-
-@dataclass(frozen=True)
 class QAConfig:
     """Pass/fail bands for the perception quality gate.
 
@@ -337,7 +316,6 @@ class Config:
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
     fsm: FSMConfig = field(default_factory=FSMConfig)
-    cycles: CycleConfig = field(default_factory=CycleConfig)
     qa: QAConfig = field(default_factory=QAConfig)
 
     @classmethod

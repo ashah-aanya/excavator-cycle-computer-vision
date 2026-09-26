@@ -53,8 +53,6 @@ geometry:
   tip_process_noise: 2.0       # L/s^2  -- how much the bucket may accelerate
   tip_measurement_noise: 0.02  # L      -- expected error of one pose fit
   tip_gate_sigma: 3.0          # reject measurements beyond this many sigmas
-  dwell_speed_quantile: 0.25 # "slow enough to count as lingering"
-  min_zone_separation: 0.40  # dig and dump must be this far apart, in units of L
 
 features:
   derivative_window_seconds: 0.9 # Savitzky-Golay; symmetric, so it moves no extremum
@@ -69,10 +67,6 @@ fsm:
   lookback_seconds: 0.80       # how far a coarse window reaches back before the trigger
   rest_sigma: 3.0              # pass 2: multiples of a window's own noise that count as rest
   rest_floor_fraction: 0.02    # ...floored at this fraction of the window's range
-
-cycles:
-  duration_band: [0.4, 2.5]      # relative to the median cycle in the same video
-  min_mean_confidence: 0.50
 
 qa:
   min_excavator_coverage: 0.97
