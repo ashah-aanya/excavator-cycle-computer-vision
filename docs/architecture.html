@@ -416,7 +416,7 @@
         <ul>
           <li>• <strong>fsm.py</strong> and <strong>cycles.py</strong> — stages 3 and 4. The agreed pause point.</li>
           <li>• So there is no <code>answer.json</code> yet: the pipeline produces the <em>evidence</em>, not the conclusion.</li>
-          <li>• The pass-2 primitives already exist and are tested — <code>motion_boundary()</code>, <code>otsu_threshold()</code> — they just have no caller.</li>
+          <li>• The pass-2 primitives exist: <code>motion_boundary()</code> is tested; <code>otsu_threshold()</code> reached this diagram with <strong>no caller and no test</strong>, and a tie-breaking bug that pinned its threshold to the bottom of the gap. <code>fsm.calibrate()</code> now calls it, and it now has tests.</li>
           <li>• Two known gaps for stage 3: only the first cycle is measured, and a mid-video re-dig would count as a complete one.</li>
         </ul>
       </div>

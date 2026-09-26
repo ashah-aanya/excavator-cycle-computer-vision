@@ -153,4 +153,23 @@ def otsu_threshold(values: np.ndarray, bins: int = 64) -> float:
     )
     between = weight_low * weight_high * (mean_low - mean_high) ** 2
     between[~valid] = -np.inf
-    return float(centres[int(np.argmax(between))])
+
+    # Every split inside an empty gap scores IDENTICALLY: `weight_low`,
+    # `weight_high` and both means stop changing the moment no mass lies between
+    # the candidate and the next one. So the objective does not have a single
+    # peak, it has a plateau spanning the gap -- and `argmax` resolves a tie at
+    # the lowest index, which pins the threshold to the BOTTOM of the gap,
+    # hugging the lower population. That error grows with the separation, so the
+    # method fails hardest on exactly the cleanly-bimodal data it is best suited
+    # to. The midpoint of the plateau is the conventional resolution and the only
+    # one that is symmetric in the two groups.
+    #
+    # The comparison needs a tolerance rather than `==` because bins holding a
+    # few stray samples belong to the same plateau in every practical sense while
+    # differing in the last bits. The scale is machine epsilon, not a tuned
+    # number: it asks "is this the same value, to the precision we computed it
+    # in", which is a fact about float64 and not about excavators.
+    peak = between.max()
+    tolerance = abs(peak) * np.finfo(float).eps * between.size
+    tied = np.flatnonzero(between >= peak - tolerance)
+    return float((centres[tied[0]] + centres[tied[-1]]) / 2.0)
