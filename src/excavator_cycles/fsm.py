@@ -244,3 +244,118 @@ class MachineState:
         enough to say when it started.
         """
         self.occurred.add(phase)
+
+
+@dataclass(frozen=True)
+class Window:
+    """A half-open span of SAMPLE INDICES, not seconds.
+
+    Seconds and indices are deliberately different types. Config is always in
+    seconds; the conversion happens once, at the boundary. Mixing them is how a
+    window ends up right on one video and wrong on another.
+    """
+
+    lo: int
+    hi: int
+
+    def __len__(self) -> int:
+        return max(0, self.hi - self.lo)
+
+
+@dataclass(frozen=True)
+class Detection:
+    """A transition the walk believes happened, and roughly where.
+
+    Not a time yet. Pass 2 turns the window into an instant; until then this
+    says only "the transition into `phase` happened somewhere in here".
+    """
+
+    phase: str
+    window: Window
+    fired_at: int  # the sample where the evidence STARTED, not where it was confirmed
+    out_of_sequence: bool = False  # a dig that interrupted another phase
+
+
+def walk(
+    table,
+    levels: Levels,
+    fires=None,
+    hold_samples: int = 3,
+    strict_hold_samples: int | None = None,
+    lookback_samples: int = 8,
+) -> list[Detection]:
+    """Slide over the samples, watching for the one transition that can come next.
+
+    Args:
+        fires: ``(phase, table, index, levels, config) -> bool`` -- does the
+            trigger for ``phase`` hold at this sample? Injected so the walk's
+            sequencing can be tested without a view on whether any cue is good.
+        hold_samples: how long evidence must persist before it is believed. A
+            trigger is not a transition; one noisy sample must not advance the
+            state.
+        strict_hold_samples: the bar for an out-of-sequence digging trigger.
+            Higher by default, because expected evidence is cheap and unexpected
+            evidence should be expensive -- a spurious dig mid-haul would
+            silently truncate a good cycle. Defaults to twice ``hold_samples``.
+        lookback_samples: how far the coarse window reaches back before the
+            trigger. An onset is where a signal LEFT rest, and that is found by
+            walking backward from the excursion, so a window starting at the
+            trigger would exclude the thing it is looking for.
+
+    Returns the detections in the order they were found. Multi-cycle is not
+    special-cased: the loop simply keeps going.
+    """
+    if fires is None:  # pragma: no cover - the real cues arrive in stage 5
+        raise NotImplementedError("the built-in cues are not wired yet")
+    strict = strict_hold_samples if strict_hold_samples is not None else hold_samples * 2
+
+    times = np.asarray(table.time_seconds, dtype=float)
+    count = len(times)
+    state = MachineState()
+    found: list[Detection] = []
+    index = 0
+
+    def sustained(phase: str, start: int, needed: int) -> bool:
+        """Did the trigger hold from `start` for `needed` consecutive samples?"""
+        if start + needed > count:
+            return False
+        return all(fires(phase, table, i, levels, None) for i in range(start, start + needed))
+
+    while index < count:
+        target = state.looking_for
+
+        # The transition we are expecting.
+        if sustained(target, index, hold_samples):
+            found.append(_detect(state, target, index, hold_samples, lookback_samples, times))
+            index += hold_samples
+            continue
+
+        # Digging, always, at a higher bar -- it is the only transition that
+        # re-establishes where we are.
+        if target != "digging" and sustained("digging", index, strict):
+            log.info(
+                "digging at sample %d interrupted %s; the cycle being built is abandoned",
+                index,
+                state.curr_stage,
+            )
+            state.curr_stage = "swinging"  # so digging is legal again
+            state.pending.clear()
+            state.occurred.clear()
+            state.since = None
+            detection = _detect(state, "digging", index, strict, lookback_samples, times)
+            found.append(
+                Detection(detection.phase, detection.window, detection.fired_at, True)
+            )
+            index += strict
+            continue
+
+        index += 1
+
+    return found
+
+
+def _detect(state, phase, index, held, lookback, times) -> Detection:
+    """Record the transition and move the state into it."""
+    window = Window(max(0, index - lookback), min(len(times), index + held))
+    state.advance(phase, float(times[index]))  # provisional; pass 2 refines it
+    return Detection(phase, window, index)

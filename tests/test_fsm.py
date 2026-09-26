@@ -252,3 +252,170 @@ def test_elapsed_before_anything_has_started_is_none():
     from excavator_cycles.fsm import MachineState
 
     assert MachineState().elapsed(3.0) is None
+
+
+# --- the walk -------------------------------------------------------------
+#
+# The trigger is injected throughout. The walk's job is sequencing, validation
+# and recovery; whether a cue is any good is a separate question, tested
+# separately. Mixing the two would mean a cue change could break a sequencing
+# test for reasons that have nothing to do with sequencing.
+
+
+def _walk_table(n=200):
+    return _Table(height=np.zeros(n), truck_overlap=np.zeros(n), speed_x=np.zeros(n))
+
+
+def _scripted(schedule):
+    """A trigger that fires for `phase` exactly on the sample indices given.
+
+    schedule: {phase: set_of_indices}
+    """
+
+    def fires(phase, table, index, levels, config):
+        return index in schedule.get(phase, set())
+
+    return fires
+
+
+def _levels():
+    from excavator_cycles.fsm import Levels, Split
+
+    clean = Split(0.5, 0.95, 100, 100)
+    return Levels(low_height=clean, over_truck=clean, moving=clean)
+
+
+def test_a_clean_run_of_triggers_produces_onsets_in_order():
+    from excavator_cycles.fsm import walk
+
+    hold = 3
+    schedule = {
+        "digging": set(range(10, 10 + hold)),
+        "hauling": set(range(40, 40 + hold)),
+        "dumping": set(range(70, 70 + hold)),
+        "swinging": set(range(100, 100 + hold)),
+    }
+    found = walk(_walk_table(), _levels(), fires=_scripted(schedule), hold_samples=hold)
+    assert [d.phase for d in found] == ["digging", "hauling", "dumping", "swinging"]
+
+
+def test_three_cycles_are_walked_without_anything_written_per_cycle():
+    """Multi-cycle is meant to fall out of the loop, not be special-cased."""
+    from excavator_cycles.fsm import walk
+
+    hold, schedule = 3, {}
+    for cycle in range(3):
+        base = 10 + cycle * 60
+        for offset, phase in enumerate(("digging", "hauling", "dumping", "swinging")):
+            schedule.setdefault(phase, set()).update(
+                range(base + offset * 12, base + offset * 12 + hold)
+            )
+    found = walk(_walk_table(), _levels(), fires=_scripted(schedule), hold_samples=hold)
+    assert [d.phase for d in found].count("digging") == 3
+    assert len(found) == 12
+
+
+def test_a_single_noisy_sample_does_not_advance_the_state():
+    """Validation is the whole reason a trigger is not a transition."""
+    from excavator_cycles.fsm import walk
+
+    schedule = {"digging": {10}}  # fires once, then stops
+    assert walk(_walk_table(), _levels(), fires=_scripted(schedule), hold_samples=3) == []
+
+
+def test_evidence_held_long_enough_does_advance():
+    from excavator_cycles.fsm import walk
+
+    schedule = {"digging": set(range(10, 13))}
+    found = walk(_walk_table(), _levels(), fires=_scripted(schedule), hold_samples=3)
+    assert len(found) == 1 and found[0].phase == "digging"
+
+
+def test_the_onset_is_credited_to_where_the_evidence_STARTED():
+    """Validation costs latency -- you only believe it after k samples -- and
+    that latency must not be baked into the answer."""
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": set(range(10, 13))}),
+        hold_samples=3,
+    )
+    assert found[0].fired_at == 10, "credited to the confirming sample, not the first"
+
+
+def test_the_coarse_window_reaches_back_before_the_trigger():
+    """An onset is where a signal LEFT rest, which is found by walking BACKWARD
+    from the excursion. A window starting at the trigger would exclude it."""
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": set(range(30, 33))}),
+        hold_samples=3,
+        lookback_samples=8,
+    )
+    assert found[0].window.lo <= 30 - 8
+    assert found[0].window.hi >= 33
+
+
+def test_a_window_cannot_reach_back_past_the_start_of_the_clip():
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": set(range(1, 4))}),
+        hold_samples=3,
+        lookback_samples=50,
+    )
+    assert found[0].window.lo == 0
+
+
+def test_digging_is_watched_even_when_we_are_looking_for_something_else():
+    """Digging is the cycle boundary, so it is the only way back from
+    confusion. Watched only in sequence, one missed onset loses every later
+    cycle."""
+    from excavator_cycles.fsm import walk
+
+    hold = 3
+    schedule = {
+        # the second dig is out of turn, so it must clear the HIGHER bar: the
+        # default strict hold is twice `hold`, hence six samples, not three
+        "digging": set(range(10, 13)) | set(range(50, 56)),
+        "hauling": set(range(20, 23)),
+        # dumping never fires -- the machine re-dug instead
+    }
+    found = walk(_walk_table(), _levels(), fires=_scripted(schedule), hold_samples=hold)
+    phases = [d.phase for d in found]
+    assert phases == ["digging", "hauling", "digging"], phases
+    assert found[-1].out_of_sequence, "the second dig interrupted hauling"
+
+
+def test_an_out_of_sequence_dig_must_clear_a_higher_bar():
+    """Expected evidence is cheap; unexpected evidence should be expensive. A
+    spurious dig mid-haul would silently truncate a perfectly good cycle."""
+    from excavator_cycles.fsm import walk
+
+    schedule = {
+        "digging": set(range(10, 13)) | set(range(50, 53)),  # only `hold`, not strict
+        "hauling": set(range(20, 23)),
+    }
+    found = walk(_walk_table(), _levels(), fires=_scripted(schedule), hold_samples=3)
+    assert [d.phase for d in found] == ["digging", "hauling"], (
+        "three samples is enough in sequence and must not be enough out of it"
+    )
+
+
+def test_an_in_sequence_dig_is_not_marked_out_of_sequence():
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": set(range(10, 13))}),
+        hold_samples=3,
+    )
+    assert not found[0].out_of_sequence
