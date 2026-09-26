@@ -55,7 +55,7 @@ def test_config_digest_ignores_key_order():
 def test_config_digest_changes_with_any_threshold():
     """The cache key must notice a changed threshold, or stale results get reused."""
     base = Config.load().to_dict()
-    tweaked = Config.load(overrides={"fsm": {"alpha_uncurl_rate": 0.9}}).to_dict()
+    tweaked = Config.load(overrides={"fsm": {"hold_seconds": 0.9}}).to_dict()
     assert config_digest(base) != config_digest(tweaked)
 
 

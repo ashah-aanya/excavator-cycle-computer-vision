@@ -246,6 +246,23 @@ class MachineState:
         self.occurred.add(phase)
 
 
+def samples_for(seconds: float, times: np.ndarray) -> int:
+    """How many samples span ``seconds``, from the observed spacing.
+
+    The single place a duration becomes a count. The median spacing is used
+    rather than the mean so one dropped frame cannot stretch every window, and
+    the result is never below 1 -- a parameter shorter than the sample interval
+    means "as soon as possible", not "never".
+    """
+    times = np.asarray(times, dtype=float)
+    if len(times) < 2:
+        return 1
+    spacing = float(np.median(np.diff(times)))
+    if not np.isfinite(spacing) or spacing <= 0:
+        raise ValueError(f"timestamps are not increasing (median spacing {spacing})")
+    return max(1, round(seconds / spacing))
+
+
 @dataclass(frozen=True)
 class Window:
     """A half-open span of SAMPLE INDICES, not seconds.
@@ -280,9 +297,10 @@ def walk(
     table,
     levels: Levels,
     fires=None,
-    hold_samples: int = 3,
+    config=None,
+    hold_samples: int | None = None,
     strict_hold_samples: int | None = None,
-    lookback_samples: int = 8,
+    lookback_samples: int | None = None,
 ) -> list[Detection]:
     """Slide over the samples, watching for the one transition that can come next.
 
@@ -301,15 +319,27 @@ def walk(
             trigger. An onset is where a signal LEFT rest, and that is found by
             walking backward from the excursion, so a window starting at the
             trigger would exclude the thing it is looking for.
+        config: supplies all three as DURATIONS, which is how callers should
+            pass them -- the sample counts above exist for tests that want to
+            pin an exact number of samples, and override the config when given.
 
     Returns the detections in the order they were found. Multi-cycle is not
     special-cased: the loop simply keeps going.
     """
     if fires is None:
         fires = default_fires
-    strict = strict_hold_samples if strict_hold_samples is not None else hold_samples * 2
 
     times = np.asarray(table.time_seconds, dtype=float)
+    if config is not None:
+        hold_samples = hold_samples or samples_for(config.fsm.hold_seconds, times)
+        strict_hold_samples = strict_hold_samples or samples_for(
+            config.fsm.strict_hold_seconds, times
+        )
+        lookback_samples = lookback_samples or samples_for(config.fsm.lookback_seconds, times)
+    hold_samples = hold_samples if hold_samples is not None else 3
+    lookback_samples = lookback_samples if lookback_samples is not None else 8
+    strict = strict_hold_samples if strict_hold_samples is not None else hold_samples * 2
+
     count = len(times)
     state = MachineState()
     found: list[Detection] = []

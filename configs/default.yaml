@@ -64,14 +64,10 @@ features:
   min_sample_confidence: 0.35    # below this, a sample is MISSING, not negative
 
 fsm:
-  hold_seconds: 0.40             # same for all four transitions, so lag is common-mode
-  max_evidence_gap_seconds: 0.30
-  max_lookback_seconds: 2.0      # how far pass 2 searches back for the true onset
-  alpha_contact_speed: 0.35      # T1  swinging -> digging
-  alpha_clearance_margin: 0.05   # T2  digging  -> hauling
-  alpha_uncurl_rate: 0.50        # T3  hauling  -> dumping
-  alpha_swing_rate: 0.40         # T4  dumping  -> swinging
-  min_phase_seconds: null        # derived from this video; flags, never blocks
+  hold_seconds: 0.30           # evidence must persist this long to be believed
+  strict_hold_seconds: 0.60    # the higher bar for an out-of-turn digging trigger
+  lookback_seconds: 0.80       # how far a coarse window reaches back before the trigger
+  timeout_cycles: 1.5          # abandon a phase running longer than this x the median cycle
 
 cycles:
   duration_band: [0.4, 2.5]      # relative to the median cycle in the same video

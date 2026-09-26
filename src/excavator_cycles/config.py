@@ -258,37 +258,35 @@ class FeatureConfig:
 
 @dataclass(frozen=True)
 class FSMConfig:
-    """State machine: how long evidence must persist, and how strong it must be.
+    """The state machine's parameters. Every one is a DURATION, never a count.
 
-    The alphas are the multipliers described in ``FeatureConfig.threshold_percentile``.
-    Every one of them is a candidate for the sensitivity sweep: we want a plateau
-    (answers stable across a wide range), not a knife-edge optimum.
+    A window given in samples means something different at every frame rate: 3
+    samples is 0.3 s at 10 Hz and 0.15 s at 20 Hz, so the same footage sampled
+    differently would produce different onsets. Seconds convert through the
+    observed sample spacing exactly once, at the boundary.
     """
 
-    # Pass 1: how long a transition's evidence must hold before it is confirmed.
-    # The SAME value for all four transitions, on purpose -- any residual
-    # confirmation lag is then common-mode and cancels in phase durations.
-    hold_seconds: float = 0.40
+    # How long a transition's evidence must persist before it is believed. A
+    # trigger is not a transition; one noisy sample must not advance the state.
+    # The SAME value for all four, on purpose: any residual confirmation lag is
+    # then common-mode and cancels in the phase DURATIONS, which is what the
+    # task grades.
+    hold_seconds: float = 0.30
 
-    # Gaps in perception shorter than this are bridged rather than breaking a run
-    # of sustained evidence.
-    max_evidence_gap_seconds: float = 0.30
+    # The bar for a DIGGING trigger that arrives out of turn. Higher, because
+    # expected evidence is cheap and unexpected evidence should be expensive --
+    # a spurious dig mid-haul would silently truncate a good cycle.
+    strict_hold_seconds: float = 0.60
 
-    # Pass 2 searches this far back from the confirmation point for the true
-    # onset (the extremum or level crossing).
-    max_lookback_seconds: float = 2.0
+    # How far the coarse window reaches back before the trigger. An onset is
+    # where a signal LEFT rest, found by walking backward from the excursion, so
+    # a window starting at the trigger would exclude what it is looking for.
+    lookback_seconds: float = 0.80
 
-    # Evidence strength multipliers, per transition. Named for what they gate.
-    alpha_contact_speed: float = 0.35  # T1: bucket decelerating into material
-    alpha_clearance_margin: float = 0.05  # T2: margin above surface, in units of L
-    alpha_uncurl_rate: float = 0.50  # T3: how fast the bucket must open
-    alpha_swing_rate: float = 0.40  # T4: how fast the machine must rotate back
-
-    # Minimum phase duration. None means: derive it from this video's own measured
-    # phase durations and use it to FLAG a suspicious phase, never to block a
-    # transition from firing. A hard lockout delays triggers in one direction
-    # only, and can swallow a genuinely short dumping phase.
-    min_phase_seconds: float | None = None
+    # A phase running longer than this multiple of the median cycle seen so far
+    # is abandoned. A constant here would be tuned to one video; there is no
+    # timeout on the first cycle, since there is no history to derive it from.
+    timeout_cycles: float = 1.5
 
 
 @dataclass(frozen=True)

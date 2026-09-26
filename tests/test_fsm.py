@@ -663,3 +663,52 @@ def test_the_first_window_has_nothing_to_clip_against():
         lookback_samples=8,
     )
     assert found[0].window.lo == 22, "free to use the full lookback"
+
+
+# --- every parameter is a duration ----------------------------------------
+
+
+def test_walk_parameters_come_from_config_in_seconds():
+    """A window given in SAMPLES means something different at every frame rate.
+    The config holds durations; the conversion happens once, at the boundary."""
+    from excavator_cycles.config import Config
+
+    fsm = Config.load().fsm
+    for field in ("hold_seconds", "strict_hold_seconds", "lookback_seconds"):
+        assert hasattr(fsm, field), f"FSMConfig is missing {field}"
+        assert isinstance(getattr(fsm, field), float)
+
+
+def test_the_same_duration_is_more_samples_at_a_higher_rate():
+    """The property the whole seconds-not-samples rule exists for."""
+    from excavator_cycles.fsm import samples_for
+
+    assert samples_for(0.3, np.arange(50) * 0.1) == 3  # 10 Hz
+    assert samples_for(0.3, np.arange(50) * 0.05) == 6  # 20 Hz
+
+
+def test_a_duration_shorter_than_one_sample_still_gets_one():
+    from excavator_cycles.fsm import samples_for
+
+    assert samples_for(0.01, np.arange(50) * 0.1) == 1
+
+
+def test_a_broken_time_base_is_refused_not_guessed():
+    from excavator_cycles.fsm import samples_for
+
+    with pytest.raises(ValueError, match="not increasing"):
+        samples_for(0.3, np.zeros(10))
+
+
+def test_walk_accepts_a_config_and_converts_for_itself():
+    """Callers should pass seconds, not pre-computed sample counts."""
+    from excavator_cycles.config import Config
+    from excavator_cycles.fsm import walk
+
+    found = walk(
+        _walk_table(),
+        _levels(),
+        fires=_scripted({"digging": set(range(10, 20))}),
+        config=Config.load(),
+    )
+    assert [d.phase for d in found] == ["digging"]
