@@ -1,4 +1,20 @@
-"""The cabin reference box, and a diagnostic video that shows how stable it is.
+"""DIAGNOSTIC, not pipeline. How stable is the cabin reference?
+
+Not imported by anything under ``src/``. It answered one question -- can the
+cabin be used as a fixed reference for the phase cues -- and the answer is
+recorded in docs/. Kept so it can be re-run on a video we have not seen.
+
+    PYTHONPATH=src python scripts/cabin_stability.py outputs/track/dual
+
+One caveat found by the physics review and not fixed here: ``stability()``
+measures the core alone, while the feature layer actually uses ``mask & core``.
+Re-measured on the quantity in use, the right edge moves 0.107 L across the
+quantile sweep -- the worst of the four, not the best as the note below claims.
+The centroid, which is what the pipeline uses, is sound either way.
+
+Original header follows.
+
+The cabin reference box, and a diagnostic video that shows how stable it is.
 
 Why this exists
 ---------------
@@ -54,10 +70,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .logging_setup import get_logger
-from .masks import load as load_masks
-from .track import load_result
-from .video import probe
+from excavator_cycles.geometry import stable_core
+from excavator_cycles.logging_setup import get_logger
+from excavator_cycles.masks import load as load_masks
+from excavator_cycles.track import load_result
+from excavator_cycles.video import probe
 
 log = get_logger(__name__)
 
@@ -93,45 +110,6 @@ class CabinBox:
     def bottom(self) -> float:
         """The other trustworthy edge."""
         return self.box[3]
-
-
-def occupancy(masks: list[np.ndarray]) -> np.ndarray:
-    """Per-pixel fraction of frames in which that pixel was machine.
-
-    The long exposure. Float in [0, 1], same shape as one mask.
-    """
-    if not masks:
-        raise ValueError("no masks given; cannot compute occupancy")
-    return np.mean(np.stack(masks).astype(np.float32), axis=0)
-
-
-def stable_core(masks: list[np.ndarray], quantile: float) -> tuple[np.ndarray, float]:
-    """The pixels that are machine in almost every frame -- the body.
-
-    Args:
-        masks: one boolean mask per sample.
-        quantile: position in *this video's* occupancy distribution, not a
-            pixel value and not an occupancy level. 0.90 means "keep the most
-            persistent tenth of the pixels that were ever machine".
-
-    Returns:
-        The boolean core mask, and the occupancy cutoff it worked out to. The
-        cutoff is returned so callers can report what the quantile actually
-        meant on this video, which differs between videos by design.
-    """
-    occ = occupancy(masks)
-    ever = occ[occ > 0]
-    if ever.size == 0:
-        raise ValueError("masks are empty; no machine pixels anywhere")
-
-    threshold = float(np.quantile(ever, quantile))
-    core = occ >= max(threshold, np.finfo(np.float32).tiny)
-    if not core.any():
-        # Degenerate only if every pixel shares one occupancy value; fall back
-        # to "was ever machine" rather than returning an empty core.
-        log.warning("occupancy quantile %.2f produced an empty core; using all", quantile)
-        core = occ > 0
-    return core, threshold
 
 
 def cabin_box(masks: list[np.ndarray], quantile: float) -> CabinBox:
@@ -420,3 +398,21 @@ def _with_panel(canvas, panel_height: int, static: CabinBox, live, report, windo
             cv2.LINE_AA,
         )
     return np.vstack([canvas, panel])
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    from excavator_cycles.config import Config
+
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("track_dir", type=Path)
+    parser.add_argument("--window-seconds", type=float, default=3.0)
+    args = parser.parse_args()
+    report = render_diagnostic(
+        args.track_dir,
+        quantile=Config.load().geometry.occupancy_quantile,
+        window_seconds=args.window_seconds,
+    )
+    print(json.dumps({k: v for k, v in report.items() if k != "quantile_sweep"}, indent=2))

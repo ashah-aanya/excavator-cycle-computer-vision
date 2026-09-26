@@ -37,15 +37,17 @@ log = get_logger(__name__)
 def body_core(masks: list[np.ndarray], quantile: float = 0.9) -> np.ndarray:
     """The part of the machine that is always there: body, cab, undercarriage.
 
-    The arm sweeps through the frame while the body stays put, so occupancy over
-    time separates them with no detection of either.
+    Delegates to :func:`geometry.stable_core`. This used to be its own copy of
+    the same arithmetic -- there were three -- which is exactly how the three
+    drift apart.
     """
-    occupancy = np.mean(np.stack(masks).astype(np.float32), axis=0)
-    occupied = occupancy[occupancy > 0]
-    if occupied.size == 0:
-        return np.zeros_like(occupancy, dtype=bool)
-    threshold = float(np.quantile(occupied, quantile))
-    return occupancy >= max(threshold, 1e-6)
+    from .geometry import stable_core
+
+    try:
+        core, _threshold = stable_core(masks, quantile)
+    except ValueError:  # no machine pixels anywhere
+        return np.zeros(np.shape(masks[0]), dtype=bool)
+    return core
 
 
 def boom_base(core: np.ndarray) -> tuple[float, float]:

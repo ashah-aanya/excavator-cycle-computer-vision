@@ -7,6 +7,7 @@ __pycache__/
 # Pipeline outputs and caches: regenerable, and large
 outputs/
 .cache/
+CACHE/
 data/
 *.mp4
 !docs/**/*.mp4
@@ -21,6 +22,8 @@ data/
 # copilot workspaces: personal working state, not project source
 .claude/workspaces/
 
-# Recovered session scratchpad: 179MB of regenerable media.
-# The CODE from it is committed under reference/box-physics/.
+# Recovered session scratchpad: 179MB of regenerable media. The code from it
+# lives on the `reference/box-physics` branch, off main so the pipeline stays
+# submittable -- `git show reference/box-physics:reference/box-physics/README.md`.
 recovered-scratchpad/
+reference/

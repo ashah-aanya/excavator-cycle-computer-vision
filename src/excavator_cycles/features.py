@@ -57,9 +57,8 @@ from typing import Any
 import numpy as np
 
 from .boxes import BoxTrack, raw_boxes, smooth_boxes
-from .cabin import stable_core
 from .config import Config
-from .geometry import arm_reach, farthest_point, rotation_centre
+from .geometry import arm_reach, farthest_point, rotation_centre, stable_core
 from .logging_setup import get_logger
 from .onsets import derivative
 from .track import TrackResult

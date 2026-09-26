@@ -64,12 +64,12 @@ when reading this repo.
 | Path | Status |
 |---|---|
 | `src/excavator_cycles/` | Production. v3 only: boxes, no flow, no chain. 7,399 -> 5,332 lines. |
-| `reference/box-physics/` | **Recovered v3. Verified working** — re-run on recovery. Port **from** it; never import it. Its README lists the hardcoding that blocks direct reuse. |
+| `reference/box-physics/` | **Moved off main** to the `reference/box-physics` branch, so the pipeline stays submittable. `git show reference/box-physics:reference/box-physics/README.md` |
 | `recovered-scratchpad/` | 179 MB of media from the same session. **Gitignored**, regenerable by re-running the scripts. |
 | `eval/` | Ground-truth labels + scorer. **Walled off**: nothing in `src/` may import or read it, and `tests/test_eval_labels.py` enforces that by grepping the package. |
 | `docs/stages/` | Findings per stage, including the negative results. Keep. |
 | `docs/evidence/` | ~20 MB of screenshots — 83 % of the repo's tracked bytes. |
-| `outputs/`, `CACHE/` | Cached runs. `CACHE/` is tracked and shouldn't be; no code hardcodes its path, so it can't corrupt a run. |
+| `outputs/`, `CACHE/` | Cached runs, both gitignored. `CACHE/` used to be tracked -- a frozen run of one video, which is not a deliverable. |
 
 ---
 
@@ -90,10 +90,12 @@ is committed in the same commit.**
 
 ## What is production, prior art, archive, and dead
 
-**Production** (survives the rebuild): `track.py`, `seeding.py`, `masks.py`,
-`video.py`, `geometry.py` (scene landmarks), `kinematics.body_core`/`boom_base`/
-`geodesic_distance`, `onsets.motion_boundary`/`noise_scale`/`smooth`/`derivative`,
-`render.py`, `config.py`, `cabin.py`, `detect/`.
+**Production**: `track.py`, `seeding.py`, `masks.py`, `video.py`, `geometry.py`,
+`boxes.py`, `features.py`, `kinematics.boom_base`/`geodesic_distance`,
+`onsets.motion_boundary`/`noise_scale`/`smooth`/`derivative`, `render.py`,
+`plots.py`, `config.py`, `detect/`.
+
+**Diagnostics** live in `scripts/`, never imported by `src/`.
 
 **Prior art** (reference, not imported): `reference/box-physics/`.
 
@@ -119,9 +121,8 @@ src/excavator_cycles/
   seeding.py     geodesic bucket seed                         diagram 1
   track.py       SAM 2, two objects                           diagram 1
   masks.py  video.py  config.py  devices.py  logging_setup.py  provenance.py
-  geometry.py    slew centre, reach L, Otsu
+  geometry.py    occupancy, stable core, slew centre, reach L, Otsu
   kinematics.py  body_core, boom_base, geodesic_distance  (seeding needs these)
-  cabin.py       the cabin reference + its stability diagnostic
   boxes.py       boxes + smoothing + centres                  diagram 1.5
   features.py    trajectories, dh/dt, dx/dt, relative
                  position, bucket-truck overlap               diagram 2
