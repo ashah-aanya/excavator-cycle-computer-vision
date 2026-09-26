@@ -43,7 +43,7 @@ arbitrary and the gate built on it should not be trusted.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from statistics import NormalDist
 from typing import Literal
 
@@ -346,21 +346,18 @@ class MachineState:
     curr_stage: str = "swinging"
     since: float | None = None
 
-    # Onsets located in the cycle currently being built.
-    pending: dict[str, float] = field(default_factory=dict)
-    # Phases that left evidence of having happened, whether or not an onset was
-    # located for them. This is the weak second check, and it is what separates
-    # "the cue failed" from "no cycle happened" when a cycle is closed.
-    occurred: set[str] = field(default_factory=set)
+    # NOTE: this class deliberately carries no per-cycle bookkeeping. It used to
+    # hold `pending` (onsets located so far) and `occurred` ("the weak second
+    # check... what separates 'the cue failed' from 'no cycle happened'"), and
+    # nothing in `src/` ever read either one -- `advance` wrote them, `walk` cleared
+    # them, and that was all. Three paragraphs of docstring for a mechanism that
+    # lived somewhere else entirely: `cycles.Cycle.occurred` and
+    # `evidence_within` do that job, per cycle, where the cycle is.
 
     @property
     def looking_for(self) -> str:
         """The one transition that can legally come next."""
         return PHASES[(PHASES.index(self.curr_stage) + 1) % len(PHASES)]
-
-    def elapsed(self, now: float) -> float | None:
-        """How long we have been in this phase. ``None`` before the first onset."""
-        return None if self.since is None else now - self.since
 
     def advance(self, phase: str, when: float) -> None:
         """Accept a located onset and move into that phase.
@@ -376,8 +373,6 @@ class MachineState:
             )
         if self.since is not None and when < self.since:
             raise ValueError(f"onset at {when:.3f}s runs backwards from {self.since:.3f}s")
-        self.pending[phase] = when
-        self.occurred.add(phase)
         self.curr_stage = phase
         self.since = when
 
@@ -611,8 +606,6 @@ def walk(
                 state.curr_stage,
             )
             state.curr_stage = "swinging"  # so digging is legal again
-            state.pending.clear()
-            state.occurred.clear()
             state.since = None
             detection = _detect(
                 state, "digging", index, strict_held, lookback_samples, times, previous

@@ -249,7 +249,6 @@ def test_advancing_records_the_onset_and_moves_on():
     state.advance("digging", 4.2)
     assert state.curr_stage == "digging"
     assert state.since == 4.2
-    assert state.pending["digging"] == 4.2
     assert state.looking_for == "hauling"
 
 
@@ -271,28 +270,6 @@ def test_time_must_move_forward():
     state.advance("digging", 4.2)
     with pytest.raises(ValueError, match="backwards"):
         state.advance("hauling", 3.0)
-
-
-def test_elapsed_reports_how_long_we_have_been_in_this_phase():
-    from excavator_cycles.fsm import MachineState
-
-    state = MachineState()
-    state.advance("digging", 4.0)
-    assert state.elapsed(6.5) == pytest.approx(2.5)
-
-
-def test_elapsed_before_anything_has_started_is_none():
-    from excavator_cycles.fsm import MachineState
-
-    assert MachineState().elapsed(3.0) is None
-
-
-# --- the walk -------------------------------------------------------------
-#
-# The trigger is injected throughout. The walk's job is sequencing, validation
-# and recovery; whether a cue is any good is a separate question, tested
-# separately. Mixing the two would mean a cue change could break a sequencing
-# test for reasons that have nothing to do with sequencing.
 
 
 def _walk_table(n=200):
