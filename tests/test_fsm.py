@@ -8,6 +8,7 @@ changed -- and the second is worth noticing.
 from __future__ import annotations
 
 from itertools import pairwise
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -98,12 +99,19 @@ def test_a_constant_signal_is_not_trustworthy():
 class _Table:
     """Only the columns calibrate() reads."""
 
-    def __init__(self, height, truck_overlap, speed_x, times=None):
+    def __init__(self, height, truck_overlap, speed_x, times=None, rel_cabin_x=None):
         self.height = np.asarray(height, float)
         self.truck_overlap = np.asarray(truck_overlap, float)
         self.speed_x = np.asarray(speed_x, float)
         self.time_seconds = (
             np.arange(len(self.height)) * 0.1 if times is None else np.asarray(times, float)
+        )
+        # `calibrate` reads this to derive which side the truck is on. Positive by
+        # default, i.e. the truck is on the machine's right, as in the dev clip.
+        self.rel_cabin_x = (
+            np.full(len(self.height), 0.4)
+            if rel_cabin_x is None
+            else np.asarray(rel_cabin_x, float)
         )
 
 
@@ -124,14 +132,40 @@ def test_calibrate_returns_a_level_for_each_gate():
 
 def test_calibrate_is_levels_only_and_says_nothing_about_time():
     """The design's central rule: a global statistic may say what 'low' MEANS,
-    and may not say WHEN anything happened. If calibrate ever returns an
-    interval, the old bracket-first design has crept back in."""
+    and may not say WHEN anything happened.
+
+    This test COULD NOT FAIL as written. It asserted each field was
+    `not isinstance(value, (list, tuple))`, and the fields are `Split | None` or a
+    float -- never a list. Mutating `calibrate` to return a completely wrong
+    `Split(1.0, 1.0, 1, 1)` left it green, and an interval returned as a `Window`
+    or any two-field dataclass would have passed too, which is exactly the shape
+    it claimed to be guarding against.
+
+    It now asserts the concrete types, and that no field carries two numbers.
+    """
+    from excavator_cycles.fsm import Window
+
     levels = calibrate(_table())
-    for field in vars(levels):
-        value = getattr(levels, field)
-        assert not isinstance(value, (list, tuple)), (
-            f"{field} looks like a segmentation, not a level"
+    for name, value in vars(levels).items():
+        if name == "dump_side":
+            assert isinstance(value, float), f"{name} should be a bare sign, got {value!r}"
+            assert value in (-1.0, 1.0), f"{name} must be a sign, got {value!r}"
+            continue
+        assert value is None or isinstance(value, Split), (
+            f"{name} is a {type(value).__name__}, not a Split -- only levels belong here"
         )
+        assert not isinstance(value, Window), f"{name} is an interval, not a level"
+    # A level is ONE position plus how much to trust it. If `Split` ever grows a
+    # second bound, that is the bracket-first design returning, and this is the
+    # assertion that notices -- naming the fields rather than counting floats,
+    # since `separability` is a quality measure and not a second bound.
+    assert set(Split.__dataclass_fields__) == {
+        "threshold",
+        "separability",
+        "below",
+        "above",
+        "min_side",
+    }, f"Split's fields changed: {sorted(Split.__dataclass_fields__)}"
 
 
 def test_calibrate_survives_a_video_with_no_truck():
@@ -1243,3 +1277,79 @@ def test_the_separability_of_a_clean_two_mode_signal_survives_clipping():
     assert split.trustworthy
     assert split.threshold == pytest.approx(0.5, abs=0.1)
     assert split.below == pytest.approx(150, abs=5)
+
+
+# --- orientation ---------------------------------------------------------------
+
+
+def _mirror(table):
+    """The same footage shot from the other side: every horizontal sign flips.
+
+    `FeatureTable` is frozen, so this rebuilds it rather than mutating -- which is
+    the right shape anyway, since a mirrored clip is a different table.
+    """
+    import dataclasses
+
+    return dataclasses.replace(table, rel_cabin_x=-np.asarray(table.rel_cabin_x, dtype=float))
+
+
+def _dumpable_table(n=200, *, side=1.0):
+    """A clip where the bucket goes over the bed on a given side of the cabin.
+
+    `_CueTable` rather than `_walk_table`, because `trigger_dumping` reads
+    `rel_cabin_x` and `found`, which the calibrate-only table does not carry.
+    """
+    table = _CueTable(n=n)
+    table.height = np.r_[np.zeros(n // 2), np.ones(n // 2)]
+    table.speed_x = np.r_[np.zeros(n // 2), np.ones(n // 2)]
+    table.truck_overlap = np.r_[np.zeros(120), np.full(50, 0.6), np.zeros(n - 170)]
+    table.rel_cabin_x = np.full(n, 0.4 * side)
+    return table
+
+
+def test_the_dump_side_is_read_from_the_video_not_assumed():
+    """`rel_cabin_x > 0` hardcoded that the truck is on the machine's RIGHT.
+
+    On the dev clip all 86 over-the-bed samples happen to be positive, which is
+    why it never bit. Mirror the footage, or park the truck on the other side, and
+    every horizontal sign flips: condition 3.2 is never satisfied and dumping is
+    never detected on that video at all.
+
+    The module's own comment claims "there is no absolute number anywhere in this
+    section". `> 0` is an absolute number, and what it encodes is a scene layout.
+    """
+    from excavator_cycles.fsm import calibrate
+
+    right = calibrate(_dumpable_table(side=+1.0), None)
+    left = calibrate(_dumpable_table(side=-1.0), None)
+    assert right.dump_side == pytest.approx(+1.0)
+    assert left.dump_side == pytest.approx(-1.0), "the truck is on the other side here"
+
+
+def test_dumping_is_detected_on_mirrored_footage():
+    """The behaviour the hardcoded sign made impossible."""
+    from excavator_cycles.fsm import calibrate, trigger_dumping
+
+    for side in (+1.0, -1.0):
+        table = _dumpable_table(side=side)
+        levels = calibrate(table, None)
+        assert trigger_dumping(table, 130, levels), f"side={side:+.0f} must dump over the bed"
+        assert not trigger_dumping(table, 10, levels), f"side={side:+.0f} must not dump away"
+
+
+def test_mirroring_the_dev_clip_changes_nothing_about_dumping():
+    """The strongest form: the real table and its mirror must agree exactly."""
+    from excavator_cycles.config import Config
+    from excavator_cycles.features import load as load_features
+    from excavator_cycles.fsm import calibrate, trigger_dumping
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "dev_clip"
+    table, _scene = load_features(fixture)
+    mirrored = _mirror(table)
+    config = Config()
+    original = [trigger_dumping(table, i, calibrate(table, config)) for i in range(0, 296, 7)]
+    flipped = [
+        trigger_dumping(mirrored, i, calibrate(mirrored, config)) for i in range(0, 296, 7)
+    ]
+    assert any(original), "the fixture must actually dump somewhere, or this proves nothing"
+    assert original == flipped

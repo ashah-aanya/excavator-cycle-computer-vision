@@ -182,9 +182,14 @@ class Levels:
     low_height: Split  # "the bucket is down in the material"
     over_truck: Split | None  # "the bucket is at the bed"; None with no truck
     moving: Split  # "the machine is traversing"
+    # Which side of the cabin the truck is on: +1 right, -1 left. A level like the
+    # others -- read off this video rather than assumed. See `calibrate`.
+    dump_side: float = 1.0
 
     def report(self) -> str:
-        lines = [f"  low height   {self.low_height.describe()}"]
+        side = "right" if self.dump_side >= 0 else "left"
+        lines = [f"  dump side    the truck is on the machine's {side}"]
+        lines.append(f"  low height   {self.low_height.describe()}")
         lines.append(
             f"  over truck   {self.over_truck.describe()}"
             if self.over_truck is not None
@@ -239,6 +244,35 @@ def calibrate(table, config=None) -> Levels:
             )
             over_truck = None
 
+    # WHICH SIDE the truck is on, derived rather than assumed. `rel_cabin_x > 0`
+    # hardcoded "the truck is on the machine's right": true of the dev clip, where
+    # all 86 over-the-bed samples are positive, and false the moment the footage is
+    # mirrored or the truck is parked on the other side -- condition 3.2 would then
+    # never be satisfied and dumping would never be detected on that video at all.
+    #
+    # The question the data can answer is: at the samples where the bucket is most
+    # over the bed, which side of the cabin is it on? The median sign of those is
+    # the dump side. A median rather than a mean so a few bad boxes cannot flip it.
+    dump_side = 1.0
+    if over_truck is not None:
+        overlap_finite = np.isfinite(overlap)
+        at_bed = overlap_finite & (overlap > over_truck.threshold)
+        rel = np.asarray(table.rel_cabin_x, dtype=float)
+        usable = rel[at_bed & np.isfinite(rel)]
+        if usable.size:
+            middle = float(np.median(usable))
+            # A median of exactly 0 means the bucket straddles the cabin at the bed
+            # and the signal cannot say. Keeping +1 there is arbitrary, so say so.
+            if middle == 0.0:
+                log.warning(
+                    "the bucket straddles the cabin over the bed; the dump side "
+                    "cannot be determined and is assumed to be the machine's right"
+                )
+            else:
+                dump_side = 1.0 if middle > 0 else -1.0
+        else:
+            log.warning("no usable rel_cabin_x over the bed; assuming the dump side is right")
+
     for name, split in (("low height", low_height), ("moving", moving)):
         if not split.trustworthy:
             log.warning(
@@ -249,7 +283,12 @@ def calibrate(table, config=None) -> Levels:
                 name,
                 split.describe(),
             )
-    return Levels(low_height=low_height, over_truck=over_truck, moving=moving)
+    return Levels(
+        low_height=low_height,
+        over_truck=over_truck,
+        moving=moving,
+        dump_side=dump_side,
+    )
 
 
 # The cycle, in order. Fixed by the task definition, not by this video: digging,
@@ -647,10 +686,15 @@ def trigger_dumping(table, index: int, levels: Levels) -> bool:
            separates "near the truck" from "not". The diagram's "closest to the
            truck".
 
-      3.2  the bucket is OUT PAST THE CABIN -- `rel_cabin_x > 0`. The diagram's
-           "cabin is to the left of the bucket" and "higher x value than cabin",
-           expressed as a sign so it does not depend on which way the machine
-           happens to face.
+      3.2  the bucket is OUT PAST THE CABIN, on the side the truck is actually on
+           -- `rel_cabin_x * dump_side > 0`. The diagram's "cabin is to the left of
+           the bucket" and "higher x value than cabin".
+
+           `dump_side` comes from `calibrate`, which reads it off the footage. The
+           earlier version tested `rel_cabin_x > 0`, which is not orientation
+           independent -- it IS the orientation, hardcoded. It held on the dev clip
+           (86 of 86 over-the-bed samples positive) and would have silently made
+           dumping undetectable on any mirrored clip.
 
     THE GAP WORTH KNOWING ABOUT. The spec's anti-spillage rule really asks for
     the bucket's own ROTATION -- material falling during transport is still
@@ -669,7 +713,7 @@ def trigger_dumping(table, index: int, levels: Levels) -> bool:
         return False
     return (
         table.truck_overlap[index] > levels.over_truck.threshold
-        and table.rel_cabin_x[index] > 0
+        and table.rel_cabin_x[index] * levels.dump_side > 0
     )
 
 
