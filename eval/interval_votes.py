@@ -1534,7 +1534,7 @@ def main(argv=None) -> int:
         found, steps, stop = from_found(t, F, side)
 
     data = {
-        "clip": args.clip,
+        "clip": args.features.parent.name if args.features is not None else args.clip,
         "side": side,
         "anchor": args.anchor,
         "stop": stop,
