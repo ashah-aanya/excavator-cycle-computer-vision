@@ -1185,8 +1185,8 @@ def combine(t, phase, graphs, windows, cue_from):
     return (max(lo, mid - MAX_HALF), min(hi, mid + MAX_HALF)), n, total / 2, (a, b)
 
 
-def step(t, F, side, found, phase, anchor, cycle):
-    if phase == "digging" and anchor <= t[0] + 1e-9:
+def step(t, F, side, found, phase, anchor, cycle, clip_start=True):
+    if clip_start and phase == "digging" and anchor <= t[0] + 1e-9:
         c = clip_start_dig(t, F, side)
         if c is not None:
             window = (max(c - MIN_HALF, t[0]), c + MIN_HALF)
@@ -1319,14 +1319,124 @@ def from_marks(t, F, side, marks):
 PHASE_ORDER = ("digging", "hauling", "dumping", "swinging")
 
 
-def from_found(t, F, side):
-    """NO LABELS: each stage is searched for after the window this code found for the
-    stage before it -- dig, haul, dump, swing, round again -- starting at the clip's
-    first frame. A stage is never skipped: if one gets no window, the search stops
-    there and says so, instead of jumping ahead to the next stage.
+def dump_stretches(t, F):
+    """Where the bucket is over the truck long enough to dump: overlap stretches at
+    least half as long as the longest one in the video. The short passes over the
+    truck at the start of each return swing (about 1 s here) do not count."""
+    runs = cc._runs(F["truck_overlap"] > 0, t)
+    if not runs:
+        return []
+    longest = max(b - a for a, b in runs)
+    return [(a, b) for a, b in runs if b - a >= 0.5 * longest]
 
-    The next search starts at the middle of the previous stage's core (where its cues
-    agree -- the code's own estimate of when that transition happened)."""
+
+def open_stretches(t, F):
+    """The stretches between dump stretches: where dig, haul and the swing happen."""
+    edges = [float(t[0])] + [x for d in dump_stretches(t, F) for x in d] + [float(t[-1])]
+    return [(a, b) for a, b in zip(edges[0::2], edges[1::2], strict=True) if b > a]
+
+
+def climb_start(t, h, a, b, last):
+    """Where the lift to the truck leaves pile level, in the open stretch (a, b): the
+    last time height rises through HALFWAY between the stretch's pile level (its 5th
+    percentile) and its height on arriving over the truck, walked back to where it was
+    still within a tenth of that climb of pile level. A dig must end before this:
+    "how do we make sure that it doesn't accidentally encompass haul?" The last
+    stretch has no truck after it, so no bound."""
+    if last:
+        return b
+    m = (t >= a) & (t <= b)
+    lo, hi = pile_and_arrival(t, h, a, b, last)
+    if hi <= lo:
+        return b
+    idx = np.flatnonzero(m)
+    ups = [i for i in idx[1:] if h[i - 1] < (lo + hi) / 2 <= h[i]]
+    if not ups:
+        return b
+    k = ups[-1]
+    while k > idx[0] and h[k] > lo + 0.1 * (hi - lo):
+        k -= 1
+    return float(t[k])
+
+
+def pile_and_arrival(t, h, a, b, last):
+    """The open stretch's pile level (5th percentile of its height) and its height on
+    arriving over the truck at its end (95th percentile for the last stretch, which
+    has no truck after it)."""
+    m = (t >= a) & (t <= b)
+    lo = float(np.nanpercentile(h[m], 5))
+    hi = float(np.nanpercentile(h[m], 95)) if last else float(h[max(_i(t, b) - 1, 0)])
+    return lo, hi
+
+
+def settled_in_pile(t, F, side, a, b, levels):
+    """WEAK dig signal, used only when the dig cues find nothing in the stretch: the
+    first moment in (a, b) the bucket is low (within a quarter of the way from the
+    stretch's pile level to its arrival height), on the pile side, off the truck and
+    at rest (2D speed within 3x its noise, at least 2% of its range)."""
+    m = (t >= a) & (t <= b)
+    if not m.any():
+        return None
+    h, speed = F["height"], F["speed_2d"]
+    p5, p95 = levels
+    rest = max(3 * noise_scale(speed), 0.02 * float(np.nanmax(speed) - np.nanmin(speed)))
+    with np.errstate(invalid="ignore"):
+        ok = (
+            m
+            & (h <= p5 + 0.25 * (p95 - p5))
+            & (side_signals(F, side)[0][2] < 0)
+            & (F["truck_overlap"] <= 0)
+            & (speed <= rest)
+        )
+    idx = np.flatnonzero(ok)
+    return None if idx.size == 0 else float(t[idx[0]])
+
+
+def find_dig(t, F, side, found, anchor, cycle):
+    """A dig, in the open stretch the search is in -- or, if nothing there, the next
+    one (Aanya: "if you can't find a cue for digging in that then look at the next one
+    and it has to be within one of those two"). In each stretch: the dig cues first,
+    then the weak "settled in the pile" signal, before moving on -- so a clip that
+    opens mid-dig, with no return swing before it for the cues to read, keeps its
+    first dig. Every dig ends before the stretch's climb to the truck."""
+    stretches = open_stretches(t, F)
+    near = [k for k, (a, b) in enumerate(stretches) if b > anchor + 1e-6][:2]
+    for k in near:
+        a, b = stretches[k]
+        lo = max(a, anchor)
+        hi = climb_start(t, F["height"], a, b, last=k == len(stretches) - 1)
+        if hi <= lo:
+            continue
+        s = step(t, F, side, found, "digging", lo, cycle, clip_start=False)
+        if s is not None and s["window"] is not None:
+            ca, cb = s.get("core") or s["window"]
+            if lo - 1e-9 <= (ca + cb) / 2 <= hi:
+                w = (s["window"][0], min(s["window"][1], hi))
+                return {**s, "window": w, "how": "dig cues", "region": (lo, hi)}
+        levels = pile_and_arrival(t, F["height"], a, b, last=k == len(stretches) - 1)
+        c = settled_in_pile(t, F, side, lo, hi, levels)
+        if c is not None:
+            w = (max(c - MIN_HALF, lo), min(c + MIN_HALF, hi))
+            base = s or step(t, F, side, found, "digging", lo, cycle, clip_start=False)
+            return {
+                **base,
+                "window": w,
+                "core": w,
+                "weak": True,
+                "clip_start": c,
+                "how": "settled in the pile (weak: no dig cue in this stretch)",
+                "region": (lo, hi),
+            }
+    return None
+
+
+def from_found(t, F, side):
+    """NO LABELS: each stage is searched for after the END of the window this code
+    found for the stage before it -- dig, haul, dump, swing, round again -- from the
+    clip's first frame (Aanya: "we need to make sure the condition of the end of the
+    prev interval holds before looking for the next stage"). A stage is never
+    skipped: if one gets no window, the search stops there and says so. Digs are
+    found by find_dig (inside an open stretch, before its climb to the truck)."""
     found = {
         ph: [g for g in lst if g["id"] not in SEEN_ONLY]
         for ph, lst in finders(t, F, side).items()
@@ -1336,15 +1446,16 @@ def from_found(t, F, side):
         phase = PHASE_ORDER[k % len(PHASE_ORDER)]
         if phase == "digging":
             cycle = {}
-        s = step(t, F, side, found, phase, anchor, cycle)
+            s = find_dig(t, F, side, found, anchor, cycle)
+        else:
+            s = step(t, F, side, found, phase, anchor, cycle)
         if s is None or s["window"] is None:
             stop = {"phase": phase, "search_from": anchor, "why": "no window found"}
             break
         if phase == "digging":
             cycle["dig_window"] = s.get("core") or s["window"]
         out.append(s)
-        a, b = s.get("core") or s["window"]
-        nxt = (a + b) / 2
+        nxt = s["window"][1]
         if nxt <= anchor + 1e-6:
             stop = {"phase": phase, "search_from": anchor, "why": "did not move forward"}
             break
