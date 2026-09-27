@@ -1376,20 +1376,42 @@ def settled_in_pile(t, F, side, a, b, levels):
     at rest (2D speed within 3x its noise, at least 2% of its range)."""
     m = (t >= a) & (t <= b)
     if not m.any():
-        return None
+        return None, []
     h, speed = F["height"], F["speed_2d"]
     p5, p95 = levels
     rest = max(3 * noise_scale(speed), 0.02 * float(np.nanmax(speed) - np.nanmin(speed)))
+    low = p5 + 0.25 * (p95 - p5)
     with np.errstate(invalid="ignore"):
-        ok = (
-            m
-            & (h <= p5 + 0.25 * (p95 - p5))
-            & (side_signals(F, side)[0][2] < 0)
-            & (F["truck_overlap"] <= 0)
-            & (speed <= rest)
-        )
+        conditions = [
+            (
+                "low",
+                f"height <= {low:+.2f} (a quarter of the way up to the truck)",
+                "height",
+                h <= low,
+            ),
+            (
+                "pile side",
+                "pile-to-truck position < 0",
+                "pile_truck_pos",
+                side_signals(F, side)[0][2] < 0,
+            ),
+            (
+                "off the truck",
+                "no overlap with the truck box",
+                "truck_overlap",
+                F["truck_overlap"] <= 0,
+            ),
+            ("at rest", f"2D speed <= {rest:.3f} (its rest band)", "speed_2d", speed <= rest),
+        ]
+    ok = m.copy()
+    for *_, c in conditions:
+        ok &= c
+    drawn = [
+        {"id": cid, "label": lab, "key": key, "runs": _runs_in(t, c & m, a, b)}
+        for cid, lab, key, c in conditions
+    ]
     idx = np.flatnonzero(ok)
-    return None if idx.size == 0 else float(t[idx[0]])
+    return (None if idx.size == 0 else float(t[idx[0]])), drawn
 
 
 def find_dig(t, F, side, found, anchor, cycle):
@@ -1414,7 +1436,7 @@ def find_dig(t, F, side, found, anchor, cycle):
                 w = (s["window"][0], min(s["window"][1], hi))
                 return {**s, "window": w, "how": "dig cues", "region": (lo, hi)}
         levels = pile_and_arrival(t, F["height"], a, b, last=k == len(stretches) - 1)
-        c = settled_in_pile(t, F, side, lo, hi, levels)
+        c, conditions = settled_in_pile(t, F, side, lo, hi, levels)
         if c is not None:
             w = (max(c - MIN_HALF, lo), min(c + MIN_HALF, hi))
             base = s or step(t, F, side, found, "digging", lo, cycle, clip_start=False)
@@ -1425,6 +1447,7 @@ def find_dig(t, F, side, found, anchor, cycle):
                 "weak": True,
                 "clip_start": c,
                 "how": "settled in the pile (weak: no dig cue in this stretch)",
+                "weak_signal": {"at": c, "conditions": conditions},
                 "region": (lo, hi),
             }
     return None

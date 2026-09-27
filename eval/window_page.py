@@ -157,6 +157,32 @@ def marks_svg(marks, TOP, H, BOT):
     )
 
 
+def weak_graph(ci, steps, marks):
+    """One condition of the weak dig signal: shaded where it holds inside the search
+    region, and ▾ where all four first hold (the chosen moment)."""
+    weak = [s for s in steps if s.get("weak_signal")]
+    c0 = weak[0]["weak_signal"]["conditions"][ci]
+    H, TOP, BOT = 110, 12, 22
+    o = [
+        f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="weak signal {html.escape(c0["id"])}">',
+        ticks(TOP, H - BOT, H),
+    ]
+    for st in weak:
+        for a, b in st["weak_signal"]["conditions"][ci]["runs"]:
+            o.append(
+                f'<rect x="{X(a):.1f}" y="{TOP}" width="{max(X(b) - X(a), 1):.1f}" height="{H - TOP - BOT}" fill="var(--c)" fill-opacity=".22"/>'
+            )
+        x = X(st["weak_signal"]["at"])
+        o.append(f'<path d="M{x:.1f},{TOP + 1} l-5,-7 h10 z" fill="var(--c)"/>')
+    o.append(trace(c0["key"], H, TOP, BOT))
+    o.append(marks_svg(marks, TOP, H, BOT))
+    o.append("</svg>")
+    return (
+        f"<figure><figcaption><b>{html.escape(c0['key'])}</b> · {html.escape(c0['id'])}: {html.escape(c0['label'])} "
+        f'<span class="dim">(shaded = holds inside the search region, ▾ = all four first hold)</span></figcaption><div class="plot">{"".join(o)}</div></figure>'
+    )
+
+
 def gate_graph(_phase, gi, steps, marks):
     g0 = steps[0]["gates"][gi]
     H, TOP, BOT = 110, 12, 22
@@ -381,6 +407,16 @@ def render():
         finders = D["finders"][phase]
         gates_txt, req_txt, sup_txt = ORDER_TEXT[phase]
         gated = next((s for s in steps if s["gates"]), None)
+        weak_steps = [s for s in steps if s.get("weak_signal")]
+        weak_figs = (
+            "<h3>Weak signal · settled in the pile</h3><p class='note'>Used only when no dig cue fires in the search region — here because the clip opens mid-dig, with no return swing before it for the dig cues to read. The window is the first moment all four hold, ± 0.75 s. “If you're at the start of a video, maybe have weaker signals.”</p>"
+            + "".join(
+                weak_graph(ci, weak_steps, marks)
+                for ci in range(len(weak_steps[0]["weak_signal"]["conditions"]))
+            )
+            if weak_steps
+            else ""
+        )
         gate_figs = (
             "".join(
                 gate_graph(phase, gi, [s for s in steps if s["gates"]], marks)
@@ -404,7 +440,7 @@ def render():
         sections.append(f"""<section class="phase" style="--c:{COL[phase]}"><h2><span class="dot"></span>{NAME[phase]}</h2>
     <ol class="order"><li><b>Gates</b> — nothing below is considered until these hold: {html.escape(gates_txt)}</li>
     <li><b>Required cue</b> — {html.escape(req_txt)}</li><li><b>Supporting cues</b> — {html.escape(sup_txt)}; the window is then the full extent of the cues that agree, at most 2.4 s</li></ol>
-    <h3>1 · Gates</h3>{gate_figs}<h3>2 · Required cue</h3>{lead_figs}<h3>3 · Supporting cues</h3>{rest_figs}
+    <h3>1 · Gates</h3>{gate_figs}{weak_figs}<h3>2 · Required cue</h3>{lead_figs}<h3>3 · Supporting cues</h3>{rest_figs}
     {window_strip(phase, steps, marks)}{table(phase, steps, marks, finders)}{note}</section>""")
 
     page = f"""<title>{html.escape(D["clip"])} phase windows</title>
