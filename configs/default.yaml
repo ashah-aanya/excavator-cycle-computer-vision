@@ -44,6 +44,7 @@ track:
   bucket_min_component_fraction: 0.01  # the bucket mask is ~8x smaller, so 0.05 would cut real fragments
   bucket_point_count: 5            # positives, when bucket_prompt is "points"
   bucket_negative_count: 3         # negatives on the stick, so SAM does not claim the arm
+  streaming: true                  # TEMPORARY: false = previous all-frames-up-front tracker, for comparison
 
 geometry:
   occupancy_quantile: 0.90   # what counts as the machine's persistent core

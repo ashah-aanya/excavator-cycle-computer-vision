@@ -5,8 +5,8 @@ good everything downstream can be. It runs the two models -- Grounding DINO to
 find the machine, SAM 2 to outline and follow it -- and writes masks, prompts and
 quality metrics to a cache that later stages read without a GPU.
 
-Three decisions here were made from measurements on real footage, recorded in
-docs/stages/02-tracking-findings.md:
+Four decisions here were made from measurements on real footage, recorded in
+docs/stages/02-tracking-findings.md and, for streaming, in the fix/sam2-streaming PR:
 
 1. **Detection runs at 1 Hz, tracking at 10 Hz.** On this footage the detector
    merges the excavator and the dump truck into one box in about half the frames,
@@ -18,9 +18,17 @@ docs/stages/02-tracking-findings.md:
    to ~7% (the excavator alone). The truck box is taken from frames where the two
    are cleanly separated, since a parked truck does not move.
 
-3. **One seed, propagated both ways.** SAM 2 can propagate in reverse, so the
-   seed does not have to be the first frame -- it is the best-scoring frame that
-   is not merged.
+3. **One seed, tracked both ways.** Frames are fed from the seed to the end,
+   then -- in a second stream -- from the seed back to the start, so the seed
+   does not have to be the first frame: it is the best-scoring frame that is not
+   merged.
+
+4. **Frames are streamed, never prepared all at once.** SAM 2 is handed one
+   frame at a time, and each is dropped once used, along with outputs that have
+   fallen out of the model's memory window. Tracking memory is therefore flat in
+   the clip's length. Preparing every frame up front, as this stage used to,
+   asked for 9.75 GiB in a single allocation on an 83 s clip at 10 Hz and failed
+   on a shared GPU; see ``forget`` and ``stream``.
 
 Two objects, two sessions
 -------------------------
@@ -28,12 +36,13 @@ Three of the four phase onsets need the bucket separated from the rest of the
 machine, and no detector can box it -- measured across 19 detector x prompt
 combinations on two architectures (docs/stages/06-bucket-mask.md). The bucket is
 therefore found by geometry (``seeding.py``), which needs the excavator's masks
-to exist first. So the stage runs **two sessions, one object each**:
+to exist first. So the stage tracks **one object at a time, each in sessions of
+its own** -- one session per direction, so four in all:
 
 1. the excavator: seeded from the detector's best box at ``choose_seed``'s
-   frame, propagated forward and backward over the whole clip;
+   frame, tracked forward and backward over the whole clip;
 2. the bucket: seeded from *all* of those masks by ``seeding.choose_seed``, on
-   whichever frame that ranking picks, and propagated both ways from there.
+   whichever frame that ranking picks, and tracked both ways from there.
 
 One object per session rather than two objects in one, because SAM 2's forward
 loop couples objects to a shared frame cursor. An object flagged as having new
@@ -45,11 +54,13 @@ Sharing a session would therefore force both prompts onto the same frame -- the
 detector's frame, chosen for detection confidence, which on the development
 video was sample 290 of 296 and bypassed the bucket ranking entirely.
 
-The price is that the video is encoded twice: roughly 2x the SAM time, with the
-detector unchanged at ~5% of the total. It cannot be avoided by resetting one
-session instead, because the session caches vision features for
-``max_vision_features_cache_size`` frames and that is **1** by default -- there
-is no whole-video encoding to keep. See docs/stages/06-bucket-mask.md.
+The price is that the video is encoded once per object: roughly 2x the SAM time,
+with the detector unchanged at ~5% of the total. Each direction starts a FRESH
+session rather than resetting one: a session remembers its object in its memory
+bank, and a reset would buy nothing anyway, because the session caches vision
+features for ``max_vision_features_cache_size`` frames and that is **1** by
+default -- there is no whole-video encoding to keep. See
+docs/stages/06-bucket-mask.md.
 
 Nothing here is specific to a particular video: every threshold is either a
 dimensionless constant from the config or a statistic of the video being
@@ -394,7 +405,12 @@ def bucket_prompt_payload(seed: BucketSeed, form: str) -> dict[str, Any]:
 
 
 def register_prompt(
-    processor, session, frame_idx: int, obj_id: int, prompt: dict[str, Any]
+    processor,
+    session,
+    frame_idx: int,
+    obj_id: int,
+    prompt: dict[str, Any],
+    original_size: tuple[int, int] | None = None,
 ) -> None:
     """Attach one object's prompt to one frame of one session.
 
@@ -406,16 +422,104 @@ def register_prompt(
     per session there is no second registration and nothing to clobber -- the
     workaround is gone, and the reason it existed is recorded in
     docs/stages/06-bucket-mask.md so it is not rediscovered the hard way.
+
+    ``original_size`` is the frame's (height, width). A streaming session holds no
+    video to read it from, and SAM 2 refuses a box or point prompt without it:
+    boxes and points are in pixels, and it has to know what they are pixels OF.
     """
+    extra = {} if original_size is None else {"original_size": original_size}
     processor.add_inputs_to_inference_session(
-        inference_session=session, frame_idx=frame_idx, obj_ids=obj_id, **prompt
+        inference_session=session, frame_idx=frame_idx, obj_ids=obj_id, **prompt, **extra
     )
+
+
+def output_window(model) -> int:
+    """How many recent per-frame outputs a streaming session must keep.
+
+    SAM 2 reads back at most ``num_maskmem - 1`` earlier frames for its mask
+    memory and ``max_object_pointers_in_encoder - 1`` for its object pointers,
+    always at stride 1 (6 and 15 for sam2.1). Anything older is never read again.
+    Twice the larger reach is kept, so a library change that widens the look-back
+    a little degrades nothing -- and ``test_bucket_track`` pins the arithmetic.
+    Read from the model's own config rather than hardcoded, so a checkpoint with a
+    longer memory is handled; the fallbacks are sam2.1's values.
+    """
+    config = getattr(model, "config", None)
+    reach = max(
+        int(getattr(config, "num_maskmem", 7)),
+        int(getattr(config, "max_object_pointers_in_encoder", 16)),
+    )
+    return 2 * reach
+
+
+def forget(session, step: int, window: int) -> None:
+    """Drop what a streaming session will never read again, so memory stays flat.
+
+    Two things grow by one per frame, and both are released here:
+
+    * the prepared frame itself, about 12 MiB at 1024 x 1024. SAM 2 reads a raw
+      frame only on a vision-feature cache miss for the frame being processed,
+      never for an earlier one (``_prepare_vision_features``), so it is dead the
+      moment the model returns;
+    * that frame's output, about 5.6 MiB, mostly a full-resolution mask. The
+      memory bank reads outputs back only within ``window`` frames, so the one
+      that has just fallen out of the window goes. "Within" counts the NEXT
+      frame's own output, which SAM 2 stores before this runs again -- so after
+      step ``s`` the outputs kept are steps ``s - window + 2 .. s``, and the peak,
+      current frame included, is exactly ``window``. Popping ``s - window``
+      instead held ``window + 1`` for an instant, which the bound test caught.
+
+    The conditioning (prompted) frame's output lives in ``cond_frame_outputs``
+    and is never touched: it is the anchor every later frame attends to.
+
+    This reaches into two of the session's internals, ``processed_frames`` and
+    ``output_dict_per_obj``. That is a deliberate dependency on transformers'
+    SAM 2 layout, pinned by ``uv.lock`` and by the bound tests, because without it
+    memory grows with video length -- which is what crashed an 83 s clip at 10 Hz
+    on a shared GPU by asking for 9.75 GiB in one allocation.
+    """
+    session.processed_frames.pop(step, None)
+    for outputs in session.output_dict_per_obj.values():
+        outputs["non_cond_frame_outputs"].pop(step - window + 1, None)
+
+
+def stream(model, processor, session, frames, order, obj_id: int, prompt, window: int):
+    """Feed ``frames[order]`` to a fresh session one at a time; prompt the first.
+
+    Yields ``(sample, output)``, where ``sample`` indexes ``frames`` and ``output``
+    is SAM 2's prediction for it. Inside the session every frame is numbered by
+    its STEP in the stream, 0 upwards, which is what makes a backward pass just
+    another stream: fed the samples seed, seed-1, ... it sees time running forward.
+
+    Three details, each of which fails silently if got wrong:
+
+    * ``frame=`` is passed on EVERY call, the prompted one included. That is what
+      puts SAM 2 in streaming mode, and outside it the model bounds its pointer
+      look-back by ``len(processed_frames)`` -- a count that shrinks as frames are
+      forgotten.
+    * ``frame_idx`` is passed explicitly. Left out, ``add_new_frame`` numbers a
+      frame ``len(processed_frames)``, which collides once frames are dropped.
+    * one frame is prepared at a time, on the inference device. That is the whole
+      point: nothing proportional to the clip's length is ever allocated.
+    """
+    for step, sample in enumerate(order):
+        inputs = processor(
+            images=frames[sample], device=session.inference_device, return_tensors="pt"
+        )
+        if step == 0:
+            register_prompt(
+                processor, session, 0, obj_id, prompt, original_size=inputs.original_sizes[0]
+            )
+        output = model(inference_session=session, frame_idx=step, frame=inputs.pixel_values[0])
+        yield sample, output
+        forget(session, step, window)
 
 
 def track_object(
     model,
     processor,
-    session,
+    new_session,
+    frames,
     obj_id: int,
     frame_idx: int,
     prompt: dict[str, Any],
@@ -423,11 +527,19 @@ def track_object(
     keep_empty: bool = True,
     label: str = "object",
 ) -> tuple[dict[int, np.ndarray], dict[int, float]]:
-    """Prompt a session with a single object and propagate it over the whole clip.
+    """Track a single object over the whole clip, streaming, from one seed frame.
 
-    One seed, both directions. SAM 2 propagates in reverse as well as forward, so
-    the conditioning frame does not have to be the first one -- it can be the
-    best one, which is the entire reason the bucket gets its own session.
+    One seed, both directions. The conditioning frame does not have to be the
+    first one -- it can be the best one, which is the entire reason the bucket
+    gets its own session. The two directions are two STREAMS, each in a session
+    of its own from ``new_session()``: seed to end, then seed back to the start.
+    The seed's own mask is taken from the forward stream; the backward stream
+    computes the identical prompted prediction and it is not stored twice.
+
+    Streaming is what keeps memory flat: one prepared frame and a fixed window of
+    outputs are held at any moment, whatever the clip's length (see ``forget``).
+    The earlier design prepared every frame up front, which asked for 9.75 GiB in
+    one allocation on an 83 s clip at 10 Hz and failed on a shared GPU.
 
     ``unpack`` turns one model output into ``{object id: (mask, confidence)}``;
     it is injected rather than built here so that the post-processing work
@@ -443,6 +555,58 @@ def track_object(
     on every frame whether or not it still believes the object is there, so
     storing the empty ones would make bucket coverage 100% by construction and
     say nothing. Confidences are recorded for every frame either way.
+    """
+    masks: dict[int, np.ndarray] = {}
+    confidences: dict[int, float] = {}
+    window = output_window(model)
+
+    def store(sample: int, output) -> None:
+        found = unpack(output)
+        if sorted(found) != [obj_id]:
+            raise RuntimeError(
+                f"the session reported objects {sorted(found)} while tracking "
+                f"{obj_id} alone; each session must carry exactly one object"
+            )
+        mask, confidence = found[obj_id]
+        confidences[sample] = confidence
+        if keep_empty or mask.any():
+            masks[sample] = mask
+
+    log.info("%s: propagating forward from sample %d", label, frame_idx)
+    forward = range(frame_idx, len(frames))
+    for sample, output in stream(
+        model, processor, new_session(), frames, forward, obj_id, prompt, window
+    ):
+        store(sample, output)
+    if frame_idx > 0:
+        log.info("%s: propagating backward from sample %d", label, frame_idx)
+        backward = range(frame_idx, -1, -1)
+        for sample, output in stream(
+            model, processor, new_session(), frames, backward, obj_id, prompt, window
+        ):
+            if sample != frame_idx:
+                store(sample, output)
+
+    log.info("%s: %d mask(s) over %d sample(s)", label, len(masks), len(confidences))
+    return masks, confidences
+
+
+def track_object_offline(
+    model,
+    processor,
+    session,
+    obj_id: int,
+    frame_idx: int,
+    prompt: dict[str, Any],
+    unpack,
+    keep_empty: bool = True,
+    label: str = "object",
+) -> tuple[dict[int, np.ndarray], dict[int, float]]:
+    """The previous tracker: every frame prepared up front, then propagated.
+
+    TEMPORARY. Kept only behind ``track.streaming = false`` so the streaming
+    rewrite can be compared against it on the same machine; removed once that
+    comparison is done. Memory here grows with the clip's length.
     """
     register_prompt(processor, session, frame_idx, obj_id, prompt)
 
@@ -600,17 +764,54 @@ def track(
         frames_rgb = [cv2.cvtColor(s.image, cv2.COLOR_BGR2RGB) for s in samples]
         height, width = samples[0].image.shape[:2]
 
+        streaming = config.track.streaming
+
         def new_session():
-            # Frames stay on the CPU; only the model's working tensors go to the
-            # accelerator. Pushing the whole decoded video onto the device costs
-            # memory the machine may not have, and a swapping run is
-            # indistinguishable from a hung one until you check CPU time.
+            if streaming:
+                # Frames live on the inference device. Streaming holds ONE at a
+                # time, so there is nothing to offload -- and the offload was not
+                # free: the GPU->CPU->GPU copies are `non_blocking`, and on MPS the
+                # read raced the copy, so identical runs disagreed (seed-frame IoU
+                # down to 0.55 in 4 of 5 rounds; 0 of 4 with device storage).
+                return processor.init_video_session(
+                    inference_device=resolved_device,
+                    video_storage_device=resolved_device,
+                    dtype=torch.float32,
+                )
+            # TEMPORARY offline path, for comparison only: every frame up front.
             return processor.init_video_session(
                 video=frames_rgb,
                 inference_device=resolved_device,
                 video_storage_device="cpu",
                 dtype=torch.float32,
             )
+
+        def follow(obj_id, seed, prompt, keep_empty, label):
+            with torch.inference_mode():
+                if streaming:
+                    return track_object(
+                        model,
+                        processor,
+                        new_session,
+                        frames_rgb,
+                        obj_id,
+                        seed,
+                        prompt,
+                        unpack,
+                        keep_empty=keep_empty,
+                        label=label,
+                    )
+                return track_object_offline(
+                    model,
+                    processor,
+                    new_session(),
+                    obj_id,
+                    seed,
+                    prompt,
+                    unpack,
+                    keep_empty=keep_empty,
+                    label=label,
+                )
 
         excavator_prompt: dict[str, Any] = {"input_boxes": [[seed_box.tolist()]]}
         if negatives:
@@ -638,24 +839,13 @@ def track(
 
         # --- session A: the excavator, alone ---------------------------------
         log.info("tracking the excavator from sample %d of %d", seed_position, len(samples))
-        excavator_session = new_session()
-        with torch.inference_mode():
-            masks, confidences = track_object(
-                model,
-                processor,
-                excavator_session,
-                EXCAVATOR_OBJECT_ID,
-                seed_position,
-                excavator_prompt,
-                unpack,
-                keep_empty=True,
-                label="excavator",
-            )
-        # A session remembers its object in its memory bank, so the bucket gets
-        # a new one rather than this one reset: `reset_inference_session` clears
-        # the vision-feature cache anyway, and that cache holds one frame, so
-        # there is nothing to save by reusing it.
-        del excavator_session
+        masks, confidences = follow(
+            EXCAVATOR_OBJECT_ID,
+            seed_position,
+            excavator_prompt,
+            keep_empty=True,
+            label="excavator",
+        )
 
         # --- session B: the bucket, alone, on its own best frame --------------
         bucket_masks: dict[int, np.ndarray] = {}
@@ -673,20 +863,13 @@ def track(
                 bucket_seed.sample,
                 seed_position,
             )
-            bucket_session = new_session()
-            with torch.inference_mode():
-                bucket_masks, bucket_confidences = track_object(
-                    model,
-                    processor,
-                    bucket_session,
-                    BUCKET_OBJECT_ID,
-                    bucket_seed.sample,
-                    bucket_prompt_payload(bucket_seed, config.track.bucket_prompt),
-                    unpack,
-                    keep_empty=False,
-                    label="bucket",
-                )
-            del bucket_session
+            bucket_masks, bucket_confidences = follow(
+                BUCKET_OBJECT_ID,
+                bucket_seed.sample,
+                bucket_prompt_payload(bucket_seed, config.track.bucket_prompt),
+                keep_empty=False,
+                label="bucket",
+            )
 
         records = _build_records(
             samples,
