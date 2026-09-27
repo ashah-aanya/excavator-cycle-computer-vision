@@ -163,12 +163,6 @@ class TrackConfig:
     bucket_point_count: int = 5
     bucket_negative_count: int = 3
 
-    # TEMPORARY: True streams frames to SAM 2 one at a time, so tracking memory is
-    # flat in the clip's length; False is the previous tracker, which prepared
-    # every frame up front. Kept only to compare the two on the same machine, and
-    # removed once that comparison is done.
-    streaming: bool = True
-
 
 @dataclass(frozen=True)
 class GeometryConfig:

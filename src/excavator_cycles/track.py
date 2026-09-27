@@ -6,7 +6,7 @@ find the machine, SAM 2 to outline and follow it -- and writes masks, prompts an
 quality metrics to a cache that later stages read without a GPU.
 
 Four decisions here were made from measurements on real footage, recorded in
-docs/stages/02-tracking-findings.md and, for streaming, in the fix/sam2-streaming PR:
+docs/stages/02-tracking-findings.md and, for streaming, in PR #6:
 
 1. **Detection runs at 1 Hz, tracking at 10 Hz.** On this footage the detector
    merges the excavator and the dump truck into one box in about half the frames,
@@ -591,57 +591,6 @@ def track_object(
     return masks, confidences
 
 
-def track_object_offline(
-    model,
-    processor,
-    session,
-    obj_id: int,
-    frame_idx: int,
-    prompt: dict[str, Any],
-    unpack,
-    keep_empty: bool = True,
-    label: str = "object",
-) -> tuple[dict[int, np.ndarray], dict[int, float]]:
-    """The previous tracker: every frame prepared up front, then propagated.
-
-    TEMPORARY. Kept only behind ``track.streaming = false`` so the streaming
-    rewrite can be compared against it on the same machine; removed once that
-    comparison is done. Memory here grows with the clip's length.
-    """
-    register_prompt(processor, session, frame_idx, obj_id, prompt)
-
-    masks: dict[int, np.ndarray] = {}
-    confidences: dict[int, float] = {}
-
-    def store(output) -> None:
-        found = unpack(output)
-        if sorted(found) != [obj_id]:
-            raise RuntimeError(
-                f"the session reported objects {sorted(found)} while tracking "
-                f"{obj_id} alone; each session must carry exactly one object"
-            )
-        mask, confidence = found[obj_id]
-        confidences[output.frame_idx] = confidence
-        if keep_empty or mask.any():
-            masks[output.frame_idx] = mask
-
-    store(model(inference_session=session, frame_idx=frame_idx))
-    log.info("%s: propagating forward from sample %d", label, frame_idx)
-    for output in model.propagate_in_video_iterator(
-        inference_session=session, start_frame_idx=frame_idx
-    ):
-        store(output)
-    if frame_idx > 0:
-        log.info("%s: propagating backward from sample %d", label, frame_idx)
-        for output in model.propagate_in_video_iterator(
-            inference_session=session, start_frame_idx=frame_idx, reverse=True
-        ):
-            store(output)
-
-    log.info("%s: %d mask(s) over %d sample(s)", label, len(masks), len(confidences))
-    return masks, confidences
-
-
 def split_objects(
     object_ids,
     processed_masks,
@@ -764,47 +713,25 @@ def track(
         frames_rgb = [cv2.cvtColor(s.image, cv2.COLOR_BGR2RGB) for s in samples]
         height, width = samples[0].image.shape[:2]
 
-        streaming = config.track.streaming
-
         def new_session():
-            if streaming:
-                # Frames live on the inference device. Streaming holds ONE at a
-                # time, so there is nothing to offload -- and the offload was not
-                # free: the GPU->CPU->GPU copies are `non_blocking`, and on MPS the
-                # read raced the copy, so identical runs disagreed (seed-frame IoU
-                # down to 0.55 in 4 of 5 rounds; 0 of 4 with device storage).
-                return processor.init_video_session(
-                    inference_device=resolved_device,
-                    video_storage_device=resolved_device,
-                    dtype=torch.float32,
-                )
-            # TEMPORARY offline path, for comparison only: every frame up front.
+            # Frames live on the inference device. Streaming holds ONE at a time,
+            # so there is nothing to offload -- and offloading was not free: the
+            # GPU->CPU->GPU copies are `non_blocking`, and on MPS the read raced
+            # the copy, so identical runs disagreed (seed-frame IoU down to 0.55
+            # in 4 of 5 rounds; 0 of 4 with frames kept on the device).
             return processor.init_video_session(
-                video=frames_rgb,
                 inference_device=resolved_device,
-                video_storage_device="cpu",
+                video_storage_device=resolved_device,
                 dtype=torch.float32,
             )
 
         def follow(obj_id, seed, prompt, keep_empty, label):
             with torch.inference_mode():
-                if streaming:
-                    return track_object(
-                        model,
-                        processor,
-                        new_session,
-                        frames_rgb,
-                        obj_id,
-                        seed,
-                        prompt,
-                        unpack,
-                        keep_empty=keep_empty,
-                        label=label,
-                    )
-                return track_object_offline(
+                return track_object(
                     model,
                     processor,
-                    new_session(),
+                    new_session,
+                    frames_rgb,
                     obj_id,
                     seed,
                     prompt,
