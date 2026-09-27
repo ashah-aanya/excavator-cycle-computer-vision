@@ -129,14 +129,18 @@ def test_cycles_prints_the_levels_it_derived(tmp_path, capsys):
         assert expected in out, f"the run summary must mention {expected!r}"
 
 
-def test_the_unrefined_onsets_are_reported_as_warnings(caplog):
+def test_the_unrefined_onsets_are_reported_as_warnings(caplog, monkeypatch):
     """A silently missing onset is how `cycle_count: 0` went unnoticed for a branch.
 
-    The dev clip's two digging refinements fail, and that must be loud -- it is the
-    reason five of the six graded fields are zero -- the four phase averages,
-    the cycle average, and everything except `cycle_count`.
+    When pass 2 finds nothing, that must be loud -- it zeroes the phase averages.
+    The dev clip used to fail this way on its own; with the shape cues it no longer
+    does, so the failure is forced here by making every refinement come back empty.
     """
     import logging
+
+    import excavator_cycles.fsm as fsm
+
+    monkeypatch.setattr(fsm, "refine", lambda *a, **k: None)
 
     args = argparse.Namespace(
         track_dir=FIXTURE,

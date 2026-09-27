@@ -105,3 +105,68 @@ Standard library only, so it runs without the pipeline's dependencies installed.
 Tests live in `tests/test_eval_labels.py` (the labels' arithmetic is
 self-consistent) and `tests/test_eval_score.py` (the scorer's verdicts and exit
 codes).
+
+## Checking a cue: `check_cues.py`
+
+`score.py` grades a finished `answer.json`. `check_cues.py` works one level lower,
+on a single candidate cue, before anything goes into the pipeline.
+
+A cue is a **shape in one feature**, like "2D speed: drop ends -> flat". The state
+machine only looks for a phase once the previous phase has started, so a shape
+that also appears earlier in the cycle does no harm. The checker asks the question
+that matters: *scanning forward from the previous phase's labelled start, is the
+first stretch with this shape the true start?*
+
+```bash
+# one cue, on the 83 s clip (three cycles)
+uv run python eval/check_cues.py --phase dig --feature speed_2d --shape "drop ends -> flat"
+
+# every feature x shape for a phase, ranked
+uv run python eval/check_cues.py --phase dumping --search
+
+# the same cue on the 29 s dev clip -- the one the cues were NOT studied on
+uv run python eval/check_cues.py --clip dev --phase dig --feature speed_2d --shape "drop ends -> flat"
+
+uv run python eval/check_cues.py --list-features
+```
+
+For each labelled onset it prints the first matching stretch, whether that
+stretch contains the true start (within ±0.6 s), and how far the stretch's start
+and centre are from it. **Exit code 0** when every cycle's first match contains
+the start, **1** when one does not, **2** when the inputs cannot be read.
+
+Shapes: at each sample, a line is fitted to the 2 s before and the 2 s after.
+Each side is rising, falling or flat (it moves less than 8% of the feature's
+p95–p5 range over 2 s). The pair names the shape: `peak`, `dip`,
+`drop ends -> flat`, `flat -> starts rising`, `keeps rising` and so on, plus
+`--detail "speeds up"` / `"slows down"` when the slope changes by 1.5×.
+
+Two limits to keep in mind:
+
+- The scan starts from the previous phase's **labelled** start. In the pipeline
+  it starts from the **detected** one, so an error there carries forward.
+  `--anchor-back 2` scans from two phases back, to see what happens when the
+  previous phase is missed.
+- A cue found by studying the 83 s clip will look better there than on a video
+  it has not seen. Check it with `--clip dev` too.
+
+It uses `labels_long_clip.json` (the 83 s clip, which shares its filename with
+the dev clip but is a different video) and `tests/fixtures/long_clip/features.npz`.
+Like `score.py`, it imports nothing from `excavator_cycles`; its derivative
+re-implements the pipeline's, and `tests/test_check_cues.py` holds the two equal.
+
+## Checking the whole pipeline: `check_onsets.py`
+
+`check_cues.py` scores one cue on paper. `check_onsets.py` runs the pipeline's real
+state machine (`calibrate`, `walk`, `locate`) on a clip's `features.npz` and
+compares every onset it finds with the labels:
+
+```bash
+uv run python eval/check_onsets.py              # the 83 s clip
+uv run python eval/check_onsets.py --clip dev   # the dev clip
+```
+
+It prints each labelled onset with the pipeline's nearest detection of that phase:
+pass 1's time, pass 2's refined time, and whether the refined time is within ±0.6 s.
+Exit code 0 only when every labelled onset is. It imports the pipeline, which is the
+allowed direction; the pipeline still may not name anything in `eval/`.

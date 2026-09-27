@@ -219,14 +219,18 @@ def test_no_measurable_cycles_is_reported_not_crashed():
 class _SyntheticTable:
     """A machine doing `cycles` clean cycles at `rate_hz`.
 
-    Built from the PHASE STRUCTURE the spec describes rather than from any
-    recording, so it shares none of the development clip's accidents. Each phase
-    gets the signals it should have:
+    Built from the PHASE STRUCTURE rather than from any recording, so it shares
+    none of the development clip's accidents. Each phase gets the motion measured
+    on the 83 s clip's three cycles -- the shapes the onset cues read -- and the
+    levels the state conditions read:
 
-        digging    bucket low, not traversing
-        hauling    bucket rising, traversing
-        dumping    bucket high, not traversing, over the bed, silhouette stretched
-        swinging   bucket falling, traversing
+        digging    bucket low and still
+        hauling    bucket lifts and travels toward the truck, then arrives and holds
+        dumping    over the bed; the bucket lifts a little as it uncurls
+        swinging   the empty bucket is pushed up and out, clear of the bed, then
+                   swings back and down, braking onto the pile
+
+    The truck is on the +x side (`rel_cabin_x > 0` while hauling and dumping).
     """
 
     def __init__(self, cycles=3, rate_hz=10.0, cycle_seconds=20.0, truck=True):
@@ -240,21 +244,35 @@ class _SyntheticTable:
         haul = (phase_of >= 1) & (phase_of < 2)
         dump = (phase_of >= 2) & (phase_of < 3)
         swing = phase_of >= 3
+        w = phase_of % 1.0  # 0..1 through whichever phase we are in
 
-        within = phase_of % 1.0  # 0..1 through whichever phase we are in
+        lifting = np.clip(w / 0.5, 0.0, 1.0)  # haul: rise over its first half, then hold
+        push = swing & (w < 0.2)  # swing: pushed clear of the bed first
+        back = np.clip((w - 0.2) / 0.8, 0.0, 1.0)  # ...then back down to the pile
         self.height = np.select(
             [dig, haul, dump, swing],
-            [-0.10, -0.10 + within * 0.40, 0.30, 0.30 - within * 0.40],
+            [
+                -0.10,
+                -0.10 + 0.40 * lifting,
+                0.30 + 0.10 * w,
+                np.where(push, 0.40 + 0.25 * w, 0.45 - 0.55 * back),
+            ],
         )
-        self.dh_dt = np.select([dig, haul, dump, swing], [0.0, 0.20, 0.0, -0.20])
+        # Horizontal velocity: + is toward the truck. The swing back brakes to a
+        # stop over its last 40%, which is where the dig begins.
+        brake = np.clip((1.0 - back) / 0.4, 0.0, 1.0)
+        self.dx_dt = np.select(
+            [dig, haul, dump, swing],
+            [0.0, np.where(w < 0.5, 0.5, 0.0), 0.0, np.where(push, 0.3, -0.5 * brake)],
+        )
+        self.dh_dt = np.gradient(self.height, self.time_seconds)
         self.d2h_dt2 = np.gradient(self.dh_dt, self.time_seconds)
-        # traversing during the two transits, still while digging and dumping
-        self.speed_x = np.select([dig, haul, dump, swing], [0.01, 0.50, 0.01, 0.50])
+        self.speed_x = np.abs(self.dx_dt)
         self.truck_overlap = np.where(dump, 0.40, 0.0) if truck else np.full(n, np.nan)
         self.rel_cabin_x = np.where(haul | dump, 0.5, -0.5)
         self.aspect_ratio = np.where(dump, 1.8, 1.2)
-        self.bucket_x = np.zeros(n)
-        self.bucket_y = np.zeros(n)
+        self.bucket_x = np.cumsum(self.dx_dt) * step
+        self.bucket_y = -self.height  # image y points down
         self.found = np.ones(n, bool)
 
 
@@ -316,36 +334,26 @@ def test_a_clip_too_short_for_a_cycle_reports_zero_rather_than_raising():
 
 
 def test_what_is_frame_rate_invariant_and_what_is_not():
-    """The count is stable across realistic sampling rates. Below a floor it is not.
+    """The same clip sampled at 5-30 Hz yields the same cycle count.
 
     This test previously asserted "denser sampling should never make FEWER cycles
-    measurable" from a single pair of rates, and that claim is FALSE -- sweeping the
+    measurable" from a single pair of rates, and that claim was FALSE -- sweeping the
     same fixture showed 1 measurable at 12.5 Hz and 0 at 15 Hz. It passed only for
-    the pair it happened to sample. Both of its assertions later became vacuous too:
-    `measurable` is 0 at every rate on this fixture, so `0 >= 0` proved nothing.
+    the pair it happened to sample.
 
-    What is actually true, measured across 10-30 Hz: the same three-cycle fixture
-    yields the same cycle count, because the windows are the same DURATION at every
-    rate. At 5 Hz it differs -- one extra closing dig is detected -- and the reason is
-    a genuine sampling floor rather than a seconds-versus-samples slip: a 0.30 s hold
-    is only 2 samples there, so the tail of the clip clears a bar it cannot clear once
-    the same duration spans 3 or more samples. That floor is worth recording; it is
-    not worth asserting as desirable.
+    It then recorded a floor: at 5 Hz one extra closing dig was detected, because
+    the clip tail cleared a truncated-hold bar it could not clear at 3+ samples. The
+    shape cues removed that difference -- the edge of the clip where a shape cannot
+    be read is now a DURATION (`shape_min_side_seconds`), so the fallback there
+    behaves the same at every rate -- and 5 Hz now joins the rest. The 83 s clip is
+    sampled at 5 Hz, so this is not a hypothetical rate.
     """
     counts = {
         rate: len(_run(_SyntheticTable(cycles=3, rate_hz=rate))[0])
-        for rate in (10.0, 12.5, 15.0, 20.0, 25.0, 30.0)
+        for rate in (5.0, 10.0, 12.5, 15.0, 20.0, 25.0, 30.0)
     }
     assert len(set(counts.values())) == 1, (
-        f"the cycle count must not depend on sampling rate above the floor: {counts}"
+        f"the cycle count must not depend on sampling rate: {counts}"
     )
     stable = next(iter(counts.values()))
     assert stable > 0, "and it must actually find cycles, or the above proves nothing"
-
-    # The floor itself, recorded so a cue fix that removes it is visible as a change.
-    coarse = len(_run(_SyntheticTable(cycles=3, rate_hz=5.0))[0])
-    assert coarse != stable, (
-        f"documented: at 5 Hz a 0.30 s hold is 2 samples and the clip tail clears a "
-        f"bar it cannot clear at 3+, so the count differs ({coarse} vs {stable}). "
-        "If a cue fix makes these agree, delete this assertion."
-    )

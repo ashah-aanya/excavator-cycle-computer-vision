@@ -64,15 +64,16 @@ EXPECTED_SEQUENCE = (
     ("digging", "cycle_ends"),
 )
 
-# Measured on this fixture, 2026-09-26, and every one of them is a defect. These
-# are a floor to work up from, not a target: the grading tolerance is 0.6 s, so
-# only the last of these five would score at all. Tighten each as cues improve.
+# Measured on this fixture, 2026-09-26, after the onset cues were changed from
+# levels to shapes (`shapes.py`). The level cues scored 0.77 / 1.97 / 5.14 / 2.67 /
+# 1.23 s here. Four of five are now inside the 0.6 s grading tolerance; dumping is
+# the exception, 1.77 s late. Tighten each as cues improve.
 BASELINE_ABS_ERROR = {
-    "digging_begins": 0.77,
-    "hauling_begins": 1.97,
-    "dumping_begins": 5.14,
-    "swinging_begins": 2.67,
-    "cycle_ends": 1.23,
+    "digging_begins": 0.17,
+    "hauling_begins": 0.24,
+    "dumping_begins": 1.77,
+    "swinging_begins": 0.24,
+    "cycle_ends": 0.14,
 }
 SLACK = 0.05  # absorbs float noise in the timestamps; far below the 0.6 s budget
 
@@ -134,10 +135,10 @@ def test_onset_errors_do_not_regress(detections, truth):
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "All five windows miss their onset. Pass 2 searches inside the window, so "
-        "each of these is currently unreachable. Fixing the cues is what turns this "
-        "green -- and when it does, this marker must be deleted, which is what "
-        "strict=True is for."
+        "Four of five windows now contain their onset (the level cues missed all "
+        "five). Dumping's does not: its window [19.62, 20.72] s misses the labelled "
+        "18.65 s by 0.97 s. Fixing the dumping cue is what turns this green -- and "
+        "when it does, this marker must be deleted, which is what strict=True is for."
     ),
 )
 def test_every_window_contains_its_onset(detections, truth):
