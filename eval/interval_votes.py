@@ -54,7 +54,7 @@ MIN_HALF = 0.75
 RATE_MIN_HALF = 0.75
 MAX_HALF = 1.2
 SLOPE_SIDE = 1.0  # seconds either side of an event for the slope-change estimate
-RATES = {"dx_dt", "dh_dt", "speed_2d", "d2x_dt2", "speed_x"}
+RATES = {"dx_dt", "dh_dt", "speed_2d", "d2x_dt2", "speed_x", "pile_truck_pos_dt"}
 GATE_LOOKAHEAD = 1.0  # s after a haul event in which its gates may be met
 HAUL_HEIGHT_SECONDS = 1.5  # "a second long or something", broadened from 1.0
 NEAR = 5.0  # s: a haul cue further than this from height's window is not counted
@@ -159,6 +159,13 @@ def finders(t, F, side):
         # a hopper would break this, and most of the rules with it.
         x = -F["truck_distance"]
         dx = -F["truck_distance_dt"]
+        rel_truck_x = x
+    elif HORIZONTAL["mode"] == "pile_truck":
+        # "the goal is to get rid of the position specific ones": where the bucket is
+        # along the line from the pile to the truck (-1 pile, 0 truck, + past it), the
+        # line's direction found from the video, not assumed to be image left-right
+        x = F["pile_truck_pos"]
+        dx = F["pile_truck_pos_dt"]
         rel_truck_x = x
     elif HORIZONTAL["mode"] == "truck_x":
         # "can you do like x distance to truck?": the signed LEFT-RIGHT gap to the
@@ -634,6 +641,10 @@ def finders(t, F, side):
         candidates=None,
         before_end=False,
     ):
+        if HORIZONTAL["mode"] == "pile_truck" and key in PILE_TRUCK_NAMES:
+            # name the signal the cue actually reads
+            key, (old, new) = PILE_TRUCK_NAMES[key]
+            label = label.replace(old, new)
         return {
             "id": id_,
             "key": key,
@@ -881,7 +892,7 @@ def clip_start_dig(t, F, side):
     with np.errstate(invalid="ignore"):
         ok = (
             (F["height"] < 0)
-            & (F["rel_truck_x"] * side < 0)
+            & (side_signals(F, side)[0][2] < 0)
             & (F["truck_overlap"] <= 0)
             & (speed <= rest)
             & (t <= t[0] + CLIP_START_SECONDS)
@@ -954,21 +965,43 @@ def dig_reference(t, F, anchor, cycle):
     return cc._running_median(F["height"], int(np.searchsorted(t, anchor)))
 
 
+def side_signals(F, side):
+    """The two "which side" signals the gates read: the bucket's side of the TRUCK
+    (< 0 = pile side) and of the CABIN (> 0 = truck side). With the default pile-truck
+    line both come from positions along that line, so no image direction is assumed;
+    otherwise from image x, signed toward the truck."""
+    if HORIZONTAL["mode"] == "pile_truck":
+        pos = F["pile_truck_pos"]
+        return (
+            ("pile_truck_pos", "pile-to-truck position < 0", pos),
+            (
+                "pos_past_cabin",
+                "pile-to-truck position past the cabin's",
+                pos - F["cabin_pile_truck_pos"],
+            ),
+        )
+    return (
+        ("rel_truck_x", "bucket - truck x < 0", F["rel_truck_x"] * side),
+        ("rel_cabin_x", "bucket - cabin x > 0", F["rel_cabin_x"] * side),
+    )
+
+
 def gates(t, F, side, phase, anchor, cycle):
     """STEP 1 -- the necessary thresholds. None of a phase's cues are considered
     until all of its gates hold (Aanya: "some of the things are above a certain
     threshold that's necessary, so none of the cues are even considered until that
     happens"). Each is (id, label, signal key, mask)."""
     h, overlap = F["height"], F["truck_overlap"]
+    (tk, tlabel, tgap), (ck, clabel, cgap) = side_signals(F, side)
     with np.errstate(invalid="ignore"):
         if phase == "digging":
             return [
                 ("D1", "no overlap with the truck box", "truck_overlap", overlap <= 0),
                 (
                     "D2",
-                    "on the pile side of the truck (bucket - truck x < 0)",
-                    "rel_truck_x",
-                    F["rel_truck_x"] * side < 0,
+                    f"on the pile side of the truck ({tlabel})",
+                    tk,
+                    tgap < 0,
                 ),
             ]
         if phase == "hauling":
@@ -985,9 +1018,9 @@ def gates(t, F, side, phase, anchor, cycle):
             return [
                 (
                     "P1",
-                    "on the truck side of the cabin",
-                    "rel_cabin_x",
-                    F["rel_cabin_x"] * side > 0,
+                    f"on the truck side of the cabin ({clabel})",
+                    ck,
+                    cgap > 0,
                 ),
                 (
                     "P2",
@@ -1043,7 +1076,17 @@ def coverage(t, windows):
 # happen on another video (the universality audit). Aanya: "let's get rid of the only
 # seen on graphs (radius) cues". Their finders stay, so a new clip can confirm one and
 # bring it back; they don't vote.
-HORIZONTAL = {"mode": "x"}  # "x" (bucket x) or "distance" (to the truck); set by main
+# In the pile-truck mode the horizontal cues read the pile-to-truck line: the signal
+# key and the label's prefix each cue shows
+PILE_TRUCK_NAMES = {
+    "bucket_x": ("pile_truck_pos", ("bucket x (toward truck +)", "pile-to-truck position")),
+    "rel_truck_x": (
+        "pile_truck_pos",
+        ("bucket - truck x (toward truck +)", "pile-to-truck position"),
+    ),
+    "dx_dt": ("pile_truck_pos_dt", ("dx/dt (toward truck +)", "pile-to-truck speed")),
+}
+HORIZONTAL = {"mode": "pile_truck"}  # x | distance | truck_x | pile_truck; set by main
 
 SEEN_ONLY = {
     "radius_turn",
@@ -1273,9 +1316,10 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument(
         "--horizontal",
-        choices=("x", "distance", "truck_x"),
-        default="x",
-        help="horizontal cues from bucket x, the distance to the truck, or the x gap to it",
+        choices=("pile_truck", "x", "distance", "truck_x"),
+        default="pile_truck",
+        help="horizontal cues from the position along the pile-to-truck line (default), "
+        "bucket x, the distance to the truck, or the x gap to it",
     )
     args = ap.parse_args(argv)
     HORIZONTAL["mode"] = args.horizontal
@@ -1305,11 +1349,17 @@ def main(argv=None) -> int:
             "rel_cabin_x": [_clean(v) for v in F["rel_cabin_x"] * side],
             "rel_cabin_y": [_clean(v) for v in F["rel_cabin_y"]],
             "truck_overlap": [_clean(v) for v in F["truck_overlap"]],
+            "pile_truck_pos": [_clean(v) for v in F["pile_truck_pos"]],
+            "pos_past_cabin": [
+                _clean(v) for v in F["pile_truck_pos"] - F["cabin_pile_truck_pos"]
+            ],
             # x vs straight-line distance to the truck, drawn side by side
             "truck_distance": [_clean(v) for v in F["truck_distance"]],
             "toward_dist_dt": [_clean(v) for v in -F["truck_distance_dt"]],
             "toward_dx_dt": [_clean(v) for v in F["dx_dt"] * side],
         },
+        "horizontal_mode": HORIZONTAL["mode"],
+        "pile_truck_angle": float(F["pile_truck_angle"][0]),
         # the big dips the dig "dx crosses back to 0" cue picks from, per signal
         "horizontal_dips": {
             "toward_dx_dt": [

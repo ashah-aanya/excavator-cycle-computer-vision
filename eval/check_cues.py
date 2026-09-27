@@ -191,7 +191,38 @@ def load_features(path: Path) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     if "rel_truck_x" in feats and "rel_truck_y" in feats:
         feats["truck_distance"] = np.hypot(feats["rel_truck_x"], feats["rel_truck_y"])
         feats["truck_distance_dt"] = derivative(feats["truck_distance"], t)
+        feats.update(pile_truck_axis(feats, t))
     return t, feats
+
+
+PILE_QUANTILE = 0.10  # the lowest tenth of bucket heights: where it digs
+
+
+def pile_truck_axis(feats: dict[str, np.ndarray], t: np.ndarray) -> dict[str, np.ndarray]:
+    """Where the bucket is along the line from the PILE to the TRUCK: -1 at the pile,
+    0 at the truck's centre, + past the truck on the far side.
+
+    Aanya: "can we not add that information back like on the opposite side of the dig
+    location". Straight-line distance loses which side of the truck the bucket is on;
+    this keeps it without assuming a side-on camera. The pile is found from the video
+    (the bucket's median position over its lowest tenth of heights, off the truck),
+    so the line can point in any image direction. Image vectors with y DOWN, in L.
+    """
+    bucket = np.stack([feats["rel_truck_x"], -feats["rel_truck_y"]], axis=1)  # - truck
+    low = feats["height"] <= np.nanquantile(feats["height"], PILE_QUANTILE)
+    low &= ~(feats.get("truck_overlap", np.zeros(len(t))) > 0)
+    pile = np.nanmedian(bucket[low], axis=0)  # the pile, relative to the truck
+    norm2 = float(pile @ pile)
+    pos = -(bucket @ pile) / norm2
+    # the cabin on the same line: (bucket - truck) - (bucket - cabin)
+    cabin = bucket - np.stack([feats["rel_cabin_x"], -feats["rel_cabin_y"]], axis=1)
+    return {
+        "pile_truck_pos": pos,
+        "pile_truck_pos_dt": derivative(pos, t),
+        "cabin_pile_truck_pos": -(cabin @ pile) / norm2,
+        # the line's direction in the image, for reporting: 0 deg = level, pile to truck
+        "pile_truck_angle": np.full(len(t), float(np.degrees(np.arctan2(pile[1], -pile[0])))),
+    }
 
 
 # ------------------------------------------------------------------------ shape
