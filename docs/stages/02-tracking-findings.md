@@ -224,6 +224,8 @@ is the argument for building the renderer early rather than last.
 
 The same command took 3 minutes on one run and stalled for two hours on the next.
 Cause: the machine was 12 GB into swap, and the session was pushing all 296
-decoded frames onto the accelerator. Frames now stay on the CPU, and propagation
-logs progress every 10% so a stalled run is distinguishable from a slow one --
-previously both looked like silence.
+decoded frames onto the accelerator. The first fix kept frames on the CPU; that
+still prepared every frame up front, and on an 83 s clip at 10 Hz it asked for
+9.75 GiB in one allocation. Tracking now streams (PR #6): one frame is prepared,
+tracked and dropped at a time, on the inference device, so memory no longer grows
+with the clip's length. See ``track.stream`` and ``track.forget``.
