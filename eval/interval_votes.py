@@ -1200,8 +1200,18 @@ def step(t, F, side, found, phase, anchor, cycle):
                 "agreed": True,
                 "start": window[0],
                 "clip_start": c,
-                "gates": [],
-                "gates_open": anchor,
+                # the clip-start rule includes the dig gates (no overlap, pile side):
+                # recorded over its first seconds so the page shows where they hold
+                "gates": [
+                    {
+                        "id": gid,
+                        "label": lab,
+                        "key": key,
+                        "runs": _runs_in(t, m, anchor, anchor + CLIP_START_SECONDS),
+                    }
+                    for gid, lab, key, m in gates(t, F, side, phase, anchor, cycle)
+                ],
+                "gates_open": c,
                 "cue_from": anchor,
             }
     graphs = found[phase]
@@ -1306,6 +1316,67 @@ def from_marks(t, F, side, marks):
     return found, out
 
 
+PHASE_ORDER = ("digging", "hauling", "dumping", "swinging")
+
+
+def from_found(t, F, side):
+    """NO LABELS: each stage is searched for after the window this code found for the
+    stage before it -- dig, haul, dump, swing, round again -- starting at the clip's
+    first frame. A stage is never skipped: if one gets no window, the search stops
+    there and says so, instead of jumping ahead to the next stage.
+
+    The next search starts at the middle of the previous stage's core (where its cues
+    agree -- the code's own estimate of when that transition happened)."""
+    found = {
+        ph: [g for g in lst if g["id"] not in SEEN_ONLY]
+        for ph, lst in finders(t, F, side).items()
+    }
+    out, cycle, anchor, k, stop = [], {}, float(t[0]), 0, None
+    while anchor < t[-1]:
+        phase = PHASE_ORDER[k % len(PHASE_ORDER)]
+        if phase == "digging":
+            cycle = {}
+        s = step(t, F, side, found, phase, anchor, cycle)
+        if s is None or s["window"] is None:
+            stop = {"phase": phase, "search_from": anchor, "why": "no window found"}
+            break
+        if phase == "digging":
+            cycle["dig_window"] = s.get("core") or s["window"]
+        out.append(s)
+        a, b = s.get("core") or s["window"]
+        nxt = (a + b) / 2
+        if nxt <= anchor + 1e-6:
+            stop = {"phase": phase, "search_from": anchor, "why": "did not move forward"}
+            break
+        anchor, k = nxt, k + 1
+    return found, out, stop
+
+
+def score(steps, marks):
+    """Marks are used ONLY here: for each labelled onset, the found window of the same
+    stage that contains it, or else the nearest one."""
+    rows = []
+    for phase, m in marks:
+        same = [s for s in steps if s["phase"] == phase and s["window"]]
+        if not same:
+            rows.append({"phase": phase, "mark": m, "inside": False, "gap": None})
+            continue
+        best = min(same, key=lambda s: max(s["window"][0] - m, m - s["window"][1], 0.0))
+        gap = max(best["window"][0] - m, m - best["window"][1], 0.0)
+        rows.append(
+            {
+                "phase": phase,
+                "mark": m,
+                "inside": gap == 0.0,
+                "gap": gap,
+                "window": best["window"],
+            }
+        )
+    used = {tuple(r["window"]) for r in rows if r.get("window")}
+    extra = [s["window"] for s in steps if s["window"] and tuple(s["window"]) not in used]
+    return {"rows": rows, "extra_windows": extra}
+
+
 def _clean(v):
     return None if v is None or not np.isfinite(v) else round(float(v), 4)
 
@@ -1313,6 +1384,19 @@ def _clean(v):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--clip", choices=sorted(cc.CLIPS), default="long")
+    ap.add_argument(
+        "--features", type=Path, help="any pipeline features.npz (instead of --clip)"
+    )
+    ap.add_argument(
+        "--labels", type=Path, help="labels for --features, used only to score (optional)"
+    )
+    ap.add_argument(
+        "--anchor",
+        choices=("found", "marks"),
+        default="found",
+        help="start each stage's search after the window found for the stage before "
+        "(default: runs with no labels) or after the labelled mark (testing only)",
+    )
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument(
         "--horizontal",
@@ -1323,16 +1407,27 @@ def main(argv=None) -> int:
     )
     args = ap.parse_args(argv)
     HORIZONTAL["mode"] = args.horizontal
-    feat_path, label_path = cc.CLIPS[args.clip]
+    if args.features is not None:
+        feat_path, label_path = args.features, args.labels
+    else:
+        feat_path, label_path = cc.CLIPS[args.clip]
     t, F = cc.load_features(feat_path)
     side = cc.truck_side(F)
-    marks = cc.load_onsets(label_path)
-    found, steps = from_marks(t, F, side, marks)
+    marks = cc.load_onsets(label_path) if label_path is not None else []
+    stop = None
+    if args.anchor == "marks":
+        if not marks:
+            raise SystemExit("--anchor marks needs labels")
+        found, steps = from_marks(t, F, side, marks)
+    else:
+        found, steps, stop = from_found(t, F, side)
 
     data = {
         "clip": args.clip,
         "side": side,
-        "anchor": "marks",
+        "anchor": args.anchor,
+        "stop": stop,
+        "score": score(steps, marks) if marks else None,
         "limits": {
             "min_half": MIN_HALF,
             "rate_min_half": RATE_MIN_HALF,
@@ -1416,6 +1511,21 @@ def main(argv=None) -> int:
         )
         print(f"  {s['phase']:<9} from {s['search_from']:6.2f}s  half-widths {halves}  -> {w}")
     print("  (* = hit the maximum)")
+    if stop:
+        print(
+            f"  stopped at {stop['phase']} (searched from {stop['search_from']:.2f}s): "
+            f"{stop['why']}"
+        )
+    if marks:
+        sc = data["score"] if data["score"] else score(steps, marks)
+        n_in = sum(r["inside"] for r in sc["rows"])
+        print(f"  labels (scoring only): {n_in}/{len(sc['rows'])} marks inside a window")
+        for r in sc["rows"]:
+            if not r["inside"]:
+                gap = "no window" if r["gap"] is None else f"{r['gap']:.2f} s outside"
+                print(f"    missed {r['phase']} at {r['mark']:.2f}s: {gap}")
+        if sc["extra_windows"]:
+            print(f"  windows with no mark: {len(sc['extra_windows'])}")
     return 0
 
 
