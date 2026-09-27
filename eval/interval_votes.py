@@ -1,36 +1,33 @@
-"""Phase windows: each graph's event, widened by its own timing uncertainty, then voted.
+"""Phase windows: gates, then the required cue, then a majority of supporting cues.
 
 **Evaluation scaffolding, not pipeline code.** Imports nothing from the pipeline.
 
-For each phase, three graphs each look for their own event (the end of a big drop,
-a knee, the bottom of a dip with a spike after ...). Walking the clip in phase
-order, a phase is searched for only after the previous phase has started:
+Each phase is searched for after the hand-marked start of the previous phase (the
+first dig: from the clip's start, with the clip-start rule). For each phase, in
+this ORDER (Aanya, 2026-09-27):
 
-1. each graph finds its FIRST event after the search start (haul's events must
-   also pass its hard gates);
-2. the event has a CENTRE -- where that graph says the phase starts;
-3. the centre is widened into a window by that graph's timing uncertainty there:
+1. GATES -- the necessary thresholds. None of the phase's cues are considered until
+   all of its gates hold; cues may begin ``GATE_LOOKAHEAD`` s before that, and an
+   event only counts if the gates hold somewhere in it or the second after it.
+   Dig: no truck overlap, on the pile side of the truck. Haul: height above this
+   cycle's dig height, no truck overlap. Dump: on the truck side of the cabin,
+   height above the dig height, above the cabin. Return swing: none.
+2. REQUIRED CUE -- haul: height must be part of the window. Dump: the aspect
+   ratio's steepest drop IS the window.
+3. SUPPORTING CUES -- a majority of the cues that found something must agree
+   (overlap the window; for dump, a majority of the rest must overlap the aspect
+   window). Every cue is a pattern from Aanya's key, skipping graphs that are only
+   a constant shift of another.
 
-       half-width = noise of the signal / |slope after - slope before|
-
-   with the two slopes fitted over ``SLOPE_SIDE`` s either side of the centre. The
-   events are all turning points (a corner, the end of a drop, a peak), where the
-   slope itself is about zero; what pins a turning point down is how sharply the
-   slope CHANGES there. A sharp corner gets a tight window, a rounded one a wide one;
-4. the half-width is clamped: at least ``MIN_HALF`` (``RATE_MIN_HALF`` for rate
-   signals, whose 0.9 s smoothing blurs any event by about that much) and at most
-   ``MAX_HALF``. Equal on both sides. A window is cut at the search start and the
-   width is not moved to the other side. A window that hit the maximum is flagged;
-5. the phase's window is where at least 2 of the 3 windows overlap.
-
-The next phase's search starts at the start of this phase's window (``--anchor
-chain``) or at the hand-marked start of this phase (``--anchor marks``). Every
-number drawn from the output is computed here; the marks are loaded only to be
-shown and, with ``--anchor marks``, to set where each search starts.
+A cue's window is its event's centre widened by its timing uncertainty (noise /
+slope change), clamped to ``MIN_HALF``..``MAX_HALF``; a span cue is its span padded
+by the minimum; a "check" cue (dump) is a condition read inside the aspect window.
+Every number drawn from the output is computed here; the marks are loaded to set
+where each search starts and to be shown.
 
 Usage::
 
-    uv run python eval/interval_votes.py --clip long --anchor marks --out votes.json
+    uv run python eval/interval_votes.py --clip long --out votes.json
 """
 
 from __future__ import annotations
@@ -50,13 +47,17 @@ ORDER = ("digging", "hauling", "dumping", "swinging")
 # (1.2 s wide) -- Aanya, 2026-09-27; the minimum was first 0.25 s. Rate signals are
 # smoothed over 0.9 s, so their events cannot be placed more tightly than about
 # +/-0.45 s, which overrides the 0.4 s floor.
-MIN_HALF = 0.5  # broadened from 0.4 (Aanya: "can we broaden the windows")
-RATE_MIN_HALF = 0.5
-MAX_HALF = 0.8  # broadened from 0.6
+# Broadened again (Aanya: wider is safer once several cues validate a window --
+# missing the transition cannot be undone). The maximum stays under the shortest
+# phase (a dump, about 2.5 s), so no window can hold two phase starts.
+MIN_HALF = 0.75
+RATE_MIN_HALF = 0.75
+MAX_HALF = 1.2
 SLOPE_SIDE = 1.0  # seconds either side of an event for the slope-change estimate
 RATES = {"dx_dt", "dh_dt", "speed_2d", "d2x_dt2", "speed_x"}
 GATE_LOOKAHEAD = 1.0  # s after a haul event in which its gates may be met
 HAUL_HEIGHT_SECONDS = 1.5  # "a second long or something", broadened from 1.0
+NEAR = 5.0  # s: a haul cue further than this from height's window is not counted
 STEEP = 0.25  # a 2 s line moving >= this fraction of the spread is a steep rise
 CLIP_START_SECONDS = 5.0  # how far into a clip the opening-dig rule may look
 
@@ -155,6 +156,22 @@ def finders(t, F, side):
     dx_dips = cc.excursion_windows(dx, t, "dip", min_size=0.5)
     h_drops = cc.big_drops(h, t, min_drop=0.5, max_seconds=6.0)
     aspect_drops = cc.big_drops(F["aspect_ratio"], t)
+    # "You can detect them multiple times, and then you can figure out which is the
+    # real signal based on validating across multiple": every drop of >= 30% of the
+    # range is a candidate tip; step() keeps the one the other cues support most
+    aspect_candidates = cc.big_drops(F["aspect_ratio"], t, min_drop=0.3)
+
+    def aspect_all(anchor, _cycle):
+        return [
+            {
+                "event": (d["onset"], d["bottom"]),
+                "centre": d["steepest"],
+                "context": (d["onset"], d["bottom"]),
+            }
+            for d in aspect_candidates
+            if d["steepest"] >= anchor
+        ]
+
     spread = np.nanpercentile(h, 95) - np.nanpercentile(h, 5)
     from scipy.signal import find_peaks
 
@@ -333,8 +350,10 @@ def finders(t, F, side):
         lo = top + int(np.nanargmin(rel_cabin_x[top : dip + 1]))
         return (lo, e) if e - lo >= 2 else None
 
-    def cabin_x_going_up(anchor, _cycle):
-        found = cabin_down_bump(anchor)
+    def cabin_x_going_up(anchor, cycle):
+        # the down-bump is read from the phase's search start (the haul's start), not
+        # from where the gates open: "skip the haul's rise" needs the rise in view
+        found = cabin_down_bump(cycle.get("search_from", anchor))
         if found is None:
             return None
         dip, e = found
@@ -344,12 +363,12 @@ def finders(t, F, side):
             "context": None,
         }
 
-    def aspect_steepest(anchor, _cycle):
+    def aspect_steepest(anchor, cycle):
         """The first big aspect-ratio drop whose steepest point comes after bucket -
         cabin x's down-bump: validated by it. A drop before it -- such as the
         tracking glitch mid-haul -- is not the tip."""
-        found = cabin_down_bump(anchor)
-        after = float(t[found[0]]) if found else anchor
+        found = cabin_down_bump(cycle.get("search_from", anchor))
+        after = max(float(t[found[0]]), anchor) if found else anchor
         d = next((d for d in aspect_drops if d["steepest"] >= after), None)
         if d is None:
             return None
@@ -381,9 +400,159 @@ def finders(t, F, side):
         q = top
         while q > lo and h[q] > level:
             q -= 1
-        return {"event": (float(t[q]), float(t[top])), "centre": float(t[q]), "context": None}
+        # "it should be in the middle. It shouldn't contain the maximum. I was just
+        # saying that you need to know that there is a maximum coming": centred where
+        # height is halfway up the climb; the maximum is required but not included
+        half = base + 0.5 * (h[top] - base)
+        m = next((j for j in range(q, top + 1) if h[j] >= half), q)
+        # the window stops where the climb is 90% of the way up -- before the rounded top
+        high = base + 0.9 * (h[top] - base)
+        near_top = next((j for j in range(m, top + 1) if h[j] >= high), top)
+        # "make this in the middle, like it's in the valley": centred on the bottom
+        # of the valley, where the climb into the second hump begins
+        return {
+            "event": (float(t[q]), float(t[near_top])),
+            "centre": float(t[q]),
+            "context": (float(t[q]), float(t[top])),
+        }
 
-    # ---- swing (unchanged)
+    # ---- features added from Aanya's key (2026-09-27), skipping constant shifts
+    radius = F["radius"]
+    dh = F["dh_dt"]
+    dh_noise = noise_scale(dh)
+    x_drops = cc.big_drops(x, t, min_drop=0.5, max_seconds=6.0)
+    x_noise = noise_scale(x)
+    radius_dips = cc.excursion_windows(radius, t, "dip", min_size=0.5)
+
+    def dig_dh(anchor, _cycle):
+        """dh/dt, key: "negative approaching 0" -- after the big height drop, where
+        dh/dt comes back up to 0 (within its noise)."""
+        d = next((d for d in h_drops if d["bottom"] >= anchor), None)
+        if d is None:
+            return None
+        j = next((j for j in range(_i(t, d["steepest"]), len(t)) if dh[j] >= -dh_noise), None)
+        if j is None:
+            return None
+        return {
+            "event": (d["steepest"], float(t[j])),
+            "centre": float(t[j]),
+            "context": (d["onset"], d["bottom"]),
+        }
+
+    def dig_radius(anchor, _cycle):
+        """radius, key: "after big dip and upswing downward trend" -- after the big
+        dip, the top of the upswing, where the downward trend begins."""
+        dip = next((d for d in radius_dips if d["apex"] >= anchor), None)
+        if dip is None:
+            return None
+        k = _i(t, dip["apex"])
+        while k + 1 < len(t) and radius[k + 1] >= radius[k]:
+            k += 1
+        return {
+            "event": (dip["apex"], float(t[k])),
+            "centre": float(t[k]),
+            "context": (dip["start"], dip["end"]),
+        }
+
+    def dig_x(anchor, _cycle):
+        """bucket x, key: "just dropped a lot and now its increasing" -- and Aanya:
+        the bucket's distance from the truck is valuable, and for dig bucket x carries
+        it (bucket - truck x is the same curve, shifted). After the big drop the bucket
+        keeps sinking slowly toward the pile, so its low point is inconsistent; what
+        is consistent is ARRIVAL: the first time x is within 10% of the drop of the
+        lowest it gets before rising back up. The window runs from that arrival, up to
+        2 x MAX_HALF long. (The end of the steep fall was 0.9-2.0 s before every dig.)"""
+        d = next((d for d in x_drops if d["bottom"] >= anchor), None)
+        if d is None:
+            return None
+        k = _i(t, d["bottom"])
+        low = k
+        while low + 1 < len(t) and x[low + 1] <= x[low] + x_noise:
+            low += 1  # on down, past slow sinking, to where it comes back up
+        low = k + int(np.nanargmin(x[k : low + 1]))
+        top = float(x[_i(t, d["onset"])])
+        level = x[low] + 0.1 * (top - x[low])
+        a = next((j for j in range(_i(t, d["onset"]), low + 1) if x[j] <= level), low)
+        return {
+            "event": (float(t[a]), min(float(t[a]) + 2 * MAX_HALF, float(t[-1]))),
+            "centre": float(t[a]),
+            "context": (d["onset"], d["bottom"]),
+        }
+
+    def haul_radius(anchor, _cycle):
+        """radius, key: "start of dip" -- where the big V-shaped dip starts. (A knee
+        from FLAT to falling found almost nothing: radius is never flat going in.)"""
+        dip = next((d for d in radius_dips if d["apex"] >= anchor), None)
+        if dip is None:
+            return None
+        return {
+            "event": (dip["start"], dip["apex"]),
+            "centre": dip["start"],
+            "context": (dip["start"], dip["end"]),
+        }
+
+    with np.errstate(invalid="ignore"):
+        dump_dh_mask = np.abs(dh) <= 3 * dh_noise  # key: "close to or at 0"
+        dump_dx_mask = dx > 0  # key: "positive"
+        dump_overlap_mask = overlap > 0  # key (bucket - truck x): "overlap"
+        swing_dh_mask = (dh > dh_noise) & (np.gradient(dh, t) < 0)  # "positive decreasing"
+    radius_peaks = cc.excursion_windows(radius, t, "peak", min_size=0.5)
+    radius_slope = np.gradient(radius, t)
+
+    def swing_radius(anchor, _cycle):
+        """radius, key: "start of bump after" -- where the STEEP part of the big bump
+        begins: back from its peak while the rise is at least a quarter of its
+        steepest. (Back to where it stopped falling lands seconds early: radius creeps
+        up slowly before the bump.)"""
+        bump = next((d for d in radius_peaks if d["apex"] >= anchor), None)
+        if bump is None:
+            return None
+        a, p = _i(t, bump["start"]), _i(t, bump["apex"])
+        if p <= a:
+            return None
+        steepest = float(np.nanmax(radius_slope[a:p]))
+        q = p
+        while q > a and radius_slope[q - 1] >= 0.25 * steepest:
+            q -= 1
+        return {
+            "event": (float(t[q]), bump["apex"]),
+            "centre": float(t[q]),
+            "context": (bump["start"], bump["end"]),
+        }
+
+    def swing_dx_bump(anchor, _cycle):
+        """dx/dt, key: "upward bump right after" -- the bump just before the big
+        dip of the swing back: the highest dx/dt between the search start and it."""
+        dip = next((d for d in dx_dips if d["apex"] >= anchor), None)
+        if dip is None or dip["start"] <= anchor:
+            return None
+        lo, hi = _i(t, anchor), _i(t, dip["start"]) + 1
+        top = lo + int(np.nanargmax(dx[lo:hi]))
+        # the swing starts where dx/dt starts rising INTO the bump, not at its top:
+        # walk back from the top to the low point before it (the top was 1-1.5 s late)
+        k = top
+        while k > lo and dx[k - 1] <= dx[k]:
+            k -= 1
+        return {
+            "event": (float(t[k]), float(t[top])),
+            "centre": float(t[k]),
+            "context": (dip["start"], dip["end"]),
+        }
+
+    def first_run(mask, at="start"):
+        def find(anchor, _cycle):
+            e = first_event(cc._runs(mask, t), anchor)
+            if e is None:
+                return None
+            return {
+                "event": e,
+                "centre": e[0] if at == "start" else sum(e) / 2,
+                "context": None,
+            }
+
+        return find
+
+    # ---- swing
     x_takeoff = cc.knee_windows(x, t, "rising", "flat_to_steep")
     overlap_end = shape_runs(overlap, t, "drop ends -> flat")
     h_peak_runs = shape_runs(h, t, "peak")
@@ -395,7 +564,20 @@ def finders(t, F, side):
 
         return find
 
-    def g(id_, key, values, label, find, mode="centre", min_half=None, background=()):
+    def g(
+        id_,
+        key,
+        values,
+        label,
+        find,
+        mode="centre",
+        min_half=None,
+        background=(),
+        role="support",
+        mask=None,
+        candidates=None,
+        before_end=False,
+    ):
         return {
             "id": id_,
             "key": key,
@@ -405,7 +587,23 @@ def finders(t, F, side):
             "mode": mode,
             "min_half": min_half,
             "background": list(background),
+            "role": role,  # "required" (haul), "primary" (dump) or "support"
+            "mask": mask,  # mode "check": a condition checked inside the primary window
+            "candidates": candidates,  # primary only: every candidate event, to validate
+            "before_end": before_end,  # the window must stop before the event's end
         }
+
+    def check(id_, key, values, label, mask):
+        return g(
+            id_,
+            key,
+            values,
+            label,
+            None,
+            mode="check",
+            mask=mask,
+            background=cc._runs(mask, t),
+        )
 
     return {
         "digging": [
@@ -435,6 +633,31 @@ def finders(t, F, side):
                 mode="span",
                 background=[(d["start"], d["end"]) for d in dx_dips],
             ),
+            g(
+                "dh_back_to_0",
+                "dh_dt",
+                dh,
+                "dh/dt: negative, approaching 0 -- back to 0 after the big height drop",
+                dig_dh,
+                background=[(d["onset"], d["bottom"]) for d in h_drops],
+            ),
+            g(
+                "radius_turn",
+                "radius",
+                radius,
+                "radius: after the big dip and upswing, where the downward trend begins",
+                dig_radius,
+                background=[(d["start"], d["end"]) for d in radius_dips],
+            ),
+            g(
+                "x_drop_end",
+                "bucket_x",
+                x,
+                "bucket x (toward truck +): arrived back at the pile side after the big drop",
+                dig_x,
+                mode="fixed",
+                background=[(d["onset"], d["bottom"]) for d in x_drops],
+            ),
         ],
         "hauling": [
             g(
@@ -445,6 +668,7 @@ def finders(t, F, side):
                 "1 s from there",
                 haul_height,
                 mode="fixed",
+                role="required",
             ),
             g(
                 "dx_min",
@@ -465,16 +689,26 @@ def finders(t, F, side):
                 min_half=0.5,
                 background=cc._runs(takeoff_tx, t),
             ),
+            g(
+                "radius_dip_start",
+                "radius",
+                radius,
+                "radius: the start of a dip -- a knee from flat to falling",
+                haul_radius,
+                background=[(d["start"], d["end"]) for d in radius_dips],
+            ),
         ],
         "dumping": [
             g(
                 "aspect_steepest",
                 "aspect_ratio",
                 F["aspect_ratio"],
-                "box aspect ratio: the steepest part of the first big drop after bucket - "
-                "cabin x's down-bump",
+                "box aspect ratio: the steepest part of a drop -- every drop of >= 30% "
+                "is a candidate; the one the other cues support most is kept",
                 aspect_steepest,
-                background=[(d["onset"], d["bottom"]) for d in aspect_drops],
+                background=[(d["onset"], d["bottom"]) for d in aspect_candidates],
+                role="primary",
+                candidates=aspect_all,
             ),
             g(
                 "cabin_x_going_up",
@@ -490,11 +724,28 @@ def finders(t, F, side):
                 "height_second_hump",
                 "height",
                 h,
-                "height: the second hump's going-up part -- backtracked from its maximum "
-                "to where its climb begins",
+                "height: the middle of the climb into the second hump (the hump's "
+                "maximum must exist, but is not in the window)",
                 height_second_hump,
-                mode="span",
+                before_end=True,
                 background=[(float(t[p]) - 0.1, float(t[p]) + 0.1) for p in h_peaks],
+            ),
+            check(
+                "dh_near_0",
+                "dh_dt",
+                dh,
+                "dh/dt: close to or at 0 (within 3x its noise)",
+                dump_dh_mask,
+            ),
+            check(
+                "dx_positive", "dx_dt", dx, "dx/dt (toward truck +): positive", dump_dx_mask
+            ),
+            check(
+                "overlapping",
+                "truck_overlap",
+                overlap,
+                "bucket ^ truck box: overlapping the truck",
+                dump_overlap_mask,
             ),
         ],
         "swinging": [
@@ -521,6 +772,30 @@ def finders(t, F, side):
                 "height: peak",
                 from_spans(h_peak_runs),
                 background=h_peak_runs,
+            ),
+            g(
+                "dh_positive_falling",
+                "dh_dt",
+                dh,
+                "dh/dt: positive and decreasing",
+                first_run(swing_dh_mask, "mid"),
+                background=cc._runs(swing_dh_mask, t),
+            ),
+            g(
+                "dx_bump",
+                "dx_dt",
+                dx,
+                "dx/dt (toward truck +): where the upward bump starts, before the big dip",
+                swing_dx_bump,
+                background=[(d["start"], d["end"]) for d in dx_dips],
+            ),
+            g(
+                "radius_bump_start",
+                "radius",
+                radius,
+                "radius: where the steep part of the big bump begins",
+                swing_radius,
+                background=[(d["start"], d["end"]) for d in radius_peaks],
             ),
         ],
     }
@@ -597,60 +872,203 @@ def widen(t, graph, found, anchor):
             "window": (max(a - pad, anchor), b + pad),
         }
     half, raw, capped = half_width(graph["values"], t, c, graph["key"], graph["min_half"])
+    hi = c + half
+    if graph.get("before_end"):  # e.g. dump height: the hump's maximum must not be inside
+        hi = min(hi, b - 1e-3)
     return {
         **found,
         "half": half,
         "raw": raw,
         "capped": capped,
-        "window": (max(c - half, anchor), c + half),
+        "window": (max(c - half, anchor), hi),
     }
 
 
-def vote(t, windows, anchor):
-    """Where at least 2 windows overlap: the first such stretch at or after ``anchor``."""
+def _runs_in(t, mask, lo, hi):
+    return [(a, b) for a, b in cc._runs(mask, t) if b >= lo and a <= hi]
+
+
+def dig_reference(t, F, anchor, cycle):
+    """This cycle's dig height: the median height inside the dig window (the running
+    median since the search start when no dig window was found)."""
+    w = cycle.get("dig_window")
+    if w is not None:
+        inside = (t >= w[0]) & (t <= w[1])
+        return np.full(len(t), float(np.nanmedian(F["height"][inside])))
+    return cc._running_median(F["height"], int(np.searchsorted(t, anchor)))
+
+
+def gates(t, F, side, phase, anchor, cycle):
+    """STEP 1 -- the necessary thresholds. None of a phase's cues are considered
+    until all of its gates hold (Aanya: "some of the things are above a certain
+    threshold that's necessary, so none of the cues are even considered until that
+    happens"). Each is (id, label, signal key, mask)."""
+    h, overlap = F["height"], F["truck_overlap"]
+    with np.errstate(invalid="ignore"):
+        if phase == "digging":
+            return [
+                ("D1", "no overlap with the truck box", "truck_overlap", overlap <= 0),
+                (
+                    "D2",
+                    "on the pile side of the truck (bucket - truck x < 0)",
+                    "rel_truck_x",
+                    F["rel_truck_x"] * side < 0,
+                ),
+            ]
+        if phase == "hauling":
+            return [
+                (
+                    "H1",
+                    "height above this cycle's dig height",
+                    "height",
+                    h > dig_reference(t, F, anchor, cycle),
+                ),
+                ("H0", "no overlap with the truck box", "truck_overlap", overlap <= 0),
+            ]
+        if phase == "dumping":
+            return [
+                (
+                    "P1",
+                    "on the truck side of the cabin",
+                    "rel_cabin_x",
+                    F["rel_cabin_x"] * side > 0,
+                ),
+                (
+                    "P2",
+                    "height above this cycle's dig height",
+                    "height",
+                    h > dig_reference(t, F, anchor, cycle),
+                ),
+                (
+                    "P3",
+                    "above the cabin (bucket - cabin y > 0)",
+                    "rel_cabin_y",
+                    F["rel_cabin_y"] > 0,
+                ),
+            ]
+    return []
+
+
+def fill_checks(t, graphs, windows, primary):
+    """Dump's "check" cues: a condition read inside the primary (aspect) window."""
+    for k, g in enumerate(graphs):
+        if g["mode"] != "check":
+            continue
+        windows[k] = None
+        if primary is None:
+            continue
+        a, b = primary["window"]
+        inside = [(max(x, a), min(y, b)) for x, y in _runs_in(t, g["mask"], a, b)]
+        if inside:
+            windows[k] = {
+                "event": (inside[0][0], inside[-1][1]),
+                "centre": None,
+                "context": None,
+                "half": None,
+                "raw": None,
+                "capped": False,
+                "window": (inside[0][0], inside[-1][1]),
+            }
+
+
+def coverage(t, windows):
     count = np.zeros(len(t), int)
     for w in windows:
         if w is not None:
-            a, b = w["window"]
-            count += (t >= a - 1e-9) & (t <= b + 1e-9)
-    runs = cc._runs((count >= 2) & (t >= anchor - 1e-9), t)
+            count += (t >= w["window"][0] - 1e-9) & (t <= w["window"][1] + 1e-9)
+    return count
+
+
+# Tier weights -- strong 3, medium 2, weak 1 -- agreed with Aanya on 2026-09-27
+# ("some of these are a lot more valuable cues than others"). Set by judgment about
+# which motions really mark a phase, informed by (not fitted to) how often each cue
+# contained the marks: fitting them to these marks would only learn these clips.
+WEIGHTS = {
+    ("digging", "speed_min"): 3,
+    ("digging", "height_drop_end"): 3,
+    ("digging", "x_drop_end"): 3,  # the bucket back at the pile side: distance to the truck
+    ("digging", "dx_crossing"): 2,
+    ("digging", "radius_turn"): 2,
+    ("digging", "dh_back_to_0"): 1,
+    ("hauling", "height_takeoff"): 3,
+    ("hauling", "truck_x_takeoff"): 3,
+    ("hauling", "radius_dip_start"): 2,
+    ("hauling", "dx_min"): 1,
+    ("dumping", "cabin_x_going_up"): 2,
+    ("dumping", "height_second_hump"): 2,
+    ("dumping", "dh_near_0"): 1,
+    ("dumping", "dx_positive"): 1,
+    ("dumping", "overlapping"): 1,
+    ("swinging", "x_takeoff"): 3,
+    ("swinging", "overlap_end"): 2,
+    ("swinging", "radius_bump_start"): 2,
+    ("swinging", "dh_positive_falling"): 1,
+    ("swinging", "height_peak"): 1,
+    ("swinging", "dx_bump"): 1,
+}
+
+
+def combine(t, phase, graphs, windows, cue_from):
+    """STEPS 2 and 3, WEIGHTED: a window needs more than half of the total weight of
+    the cues that found something. Returns (window, weight agreeing, weight needed,
+    core) -- the core being where they overlap."""
+    roles = [g["role"] for g in graphs]
+    wt = [WEIGHTS.get((phase, g["id"]), 1) for g in graphs]
+    if phase == "dumping":  # the aspect ratio's window, if most of the rest's weight agrees
+        k0 = roles.index("primary")
+        primary = windows[k0]
+        if primary is None:
+            return None, 0, 0, None
+        a, b = primary["window"]
+        support = [(w, wt[k]) for k, w in enumerate(windows) if k != k0 and w is not None]
+        total = sum(x for _, x in support)
+        agree = sum(x for w, x in support if w["window"][0] <= b and w["window"][1] >= a)
+        return (a, b), agree, total / 2, (a, b)
+    if phase == "hauling":  # height must be one of them
+        req = windows[roles.index("required")]
+        if req is None:
+            return None, 0, 0, None
+        # A supporting cue whose event is far from height's window found something
+        # else -- not evidence about this haul: not counted.
+        ra, rb = req["window"]
+        windows = [
+            None
+            if w is None or w["window"][0] > rb + NEAR or w["window"][1] < ra - NEAR
+            else w
+            for w in windows
+        ]
+    present = [(w, wt[k]) for k, w in enumerate(windows) if w is not None]
+    total = sum(x for _, x in present)
+    count = np.zeros(len(t))
+    for w, x in present:
+        count += x * ((t >= w["window"][0] - 1e-9) & (t <= w["window"][1] + 1e-9))
+    ok = (2 * count > total) & (t >= cue_from - 1e-9)
+    if phase == "hauling":
+        ok &= (t >= ra - 1e-9) & (t <= rb + 1e-9)
+    runs = cc._runs(ok, t)
     if not runs:
-        return None, 0
+        # "there has to be something for that given stage transition ... have the bar
+        # for triggering the stage lower, but we just rely on these cues to try to
+        # centralize where it happened": no location has more than half the weight,
+        # so take where the MOST weight agrees -- inside height's window for haul --
+        # and flag it as low agreement rather than dropping the phase
+        allowed = t >= cue_from - 1e-9
+        if phase == "hauling":
+            allowed &= (t >= ra - 1e-9) & (t <= rb + 1e-9)
+        if not allowed.any() or count[allowed].max() <= 0:
+            return None, 0, total / 2, None
+        best = count[allowed].max()
+        runs = cc._runs(allowed & (count >= best - 1e-9), t)
     a, b = runs[0]
-    return (a, b), int(count[(t >= a) & (t <= b)].max())
-
-
-def required(t, windows, anchor):
-    """Haul: height is necessary (Aanya: "height is a requirement so make that like a
-    necessary"). The window is where height's window overlaps at least one of the
-    other haul graphs' windows -- the first such stretch. No height, no window."""
-    height, others = windows[0], [w for w in windows[1:] if w is not None]
-    if height is None or not others:
-        return None, 0
-    a, b = height["window"]
-    inside = (t >= a - 1e-9) & (t <= b + 1e-9)
-    count = np.zeros(len(t), int)
-    for w in others:
-        count += (t >= w["window"][0] - 1e-9) & (t <= w["window"][1] + 1e-9)
-    runs = cc._runs(inside & (count >= 1) & (t >= anchor - 1e-9), t)
-    if not runs:
-        return None, 1
-    lo, hi = runs[0]
-    return (lo, hi), 1 + int(count[(t >= lo) & (t <= hi)].max())
-
-
-def validated(windows):
-    """Dump: the aspect ratio's window IS the window -- "the window for dump should
-    include the steepest drops in aspect ratio" -- accepted only when at least one of
-    the supporting graphs overlaps it: "it needs to be very validated by some of the
-    other things". The supporting graphs are wide, so letting them vote with each
-    other would give a window that does not depend on the aspect ratio at all."""
-    primary, support = windows[0], windows[1:]
-    if primary is None:
-        return None, 0
-    a, b = primary["window"]
-    n = 1 + sum(w is not None and w["window"][0] <= b and w["window"][1] >= a for w in support)
-    return ((a, b), n) if n >= 2 else (None, n)
+    n = float(count[(t >= a) & (t <= b)].max())
+    # Once most of the weight agrees, the window is the FULL extent of the cues that
+    # agree -- "if it's validated across three cues, then wider is better" -- capped
+    # at 2 x MAX_HALF around the middle of their overlap.
+    agreeing = [w for w, _ in present if w["window"][0] <= b and w["window"][1] >= a]
+    lo = max(min(w["window"][0] for w in agreeing), cue_from)
+    hi = max(w["window"][1] for w in agreeing)
+    mid = (a + b) / 2
+    return (max(lo, mid - MAX_HALF), min(hi, mid + MAX_HALF)), n, total / 2, (a, b)
 
 
 def step(t, F, side, found, phase, anchor, cycle):
@@ -661,42 +1079,100 @@ def step(t, F, side, found, phase, anchor, cycle):
             return {
                 "phase": phase,
                 "search_from": anchor,
-                "graphs": [None, None, None],
+                "graphs": [None] * len(found[phase]),
                 "window": window,
                 "votes": 0,
+                "need": 0,
                 "agreed": True,
                 "start": window[0],
                 "clip_start": c,
+                "gates": [],
+                "gates_open": anchor,
+                "cue_from": anchor,
             }
     graphs = found[phase]
-    events = [g["find"](anchor, cycle) for g in graphs]
-    if all(e is None for e in events):
-        return None
-    windows = [
-        None if e is None else widen(t, g, e, anchor)
-        for g, e in zip(graphs, events, strict=True)
+    cycle["search_from"] = anchor
+    gate_list = gates(t, F, side, phase, anchor, cycle)
+    gate = np.ones(len(t), bool)
+    for *_, m in gate_list:
+        gate &= m
+    open_idx = next((j for j in range(_i(t, anchor), len(t)) if gate[j]), None)
+    gate_info = [
+        {"id": gid, "label": lab, "key": key, "runs": _runs_in(t, m, anchor, anchor + 40)}
+        for gid, lab, key, m in gate_list
     ]
+    base = {"phase": phase, "search_from": anchor, "gates": gate_info}
+    if open_idx is None:
+        return {
+            **base,
+            "graphs": [None] * len(graphs),
+            "window": None,
+            "votes": 0,
+            "need": 0,
+            "agreed": False,
+            "start": anchor,
+            "gates_open": None,
+            "cue_from": None,
+        }
+    opened = float(t[open_idx])
+    cue_from = max(anchor, opened - GATE_LOOKAHEAD)
+
+    def passes(event):
+        a, b = event
+        return bool(gate[_i(t, a) : _i(t, b + GATE_LOOKAHEAD) + 1].any())
+
+    windows = [None] * len(graphs)
+    for k, g in enumerate(graphs):
+        if g["mode"] == "check":
+            continue
+        e, frm = g["find"](cue_from, cycle), cue_from
+        for _ in range(30):  # skip events that fail the gates
+            if e is None or passes(e["event"]):
+                break
+            frm = e["event"][1] + 1e-3
+            e = g["find"](frm, cycle)
+        windows[k] = None if e is None else widen(t, g, e, cue_from)
     if phase == "dumping":
-        window, n = validated(windows)
-    elif phase == "hauling":
-        window, n = required(t, windows, anchor)
+        k0 = [g["role"] for g in graphs].index("primary")
+        pg = graphs[k0]
+        cands = [e for e in pg["candidates"](cue_from, cycle) if passes(e["event"])]
+        tried = []
+        for e in cands:  # each candidate tip, with the checks read inside ITS window
+            trial = list(windows)
+            trial[k0] = widen(t, pg, e, cue_from)
+            fill_checks(t, graphs, trial, trial[k0])
+            got = combine(t, phase, graphs, trial, cue_from)
+            tried.append((got[1], -e["centre"], trial, got, e["centre"]))
+        candidates = [{"centre": c, "support": n} for n, _, _, _, c in tried]
+        if tried:  # the most support wins; ties go to the earlier candidate
+            best = max(tried, key=lambda x: (x[0], x[1]))
+            windows = best[2]
+            window, n, need, core = best[3]
+        else:
+            window, n, need, core = None, 0, 0, None
     else:
-        window, n = vote(t, windows, anchor)
+        candidates = None
+        window, n, need, core = combine(t, phase, graphs, windows, cue_from)
     agreed = window is not None
-    start = window[0] if agreed else min(w["window"][0] for w in windows if w is not None)
+    weak = agreed and not (2 * n > 2 * need if need else True)
     return {
-        "phase": phase,
-        "search_from": anchor,
+        **base,
+        "candidates": candidates,
+        "weak": bool(weak),
         "graphs": windows,
         "window": window,
+        "core": core,
         "votes": n,
+        "need": need,
         "agreed": agreed,
-        "start": start,
+        "start": window[0] if agreed else cue_from,
+        "gates_open": opened,
+        "cue_from": cue_from,
     }
 
 
 def from_marks(t, F, side, marks):
-    """Each marked onset, searched for from the previous MARKED onset."""
+    """Each marked onset, searched for after the previous MARKED onset."""
     found, out, cycle = finders(t, F, side), [], {}
     for k, (phase, _) in enumerate(marks):
         if phase == "digging":
@@ -704,28 +1180,11 @@ def from_marks(t, F, side, marks):
         s = step(t, F, side, found, phase, marks[k - 1][1] if k else float(t[0]), cycle)
         if s is not None:
             if phase == "digging":
-                cycle["dig_window"] = s["window"]
+                # later rules read "the dig window" -- the haul height line, the dig
+                # height gates -- from the CORE where the dig cues agree, not the
+                # widened output, which reaches back into the swing's descent
+                cycle["dig_window"] = s.get("core") or s["window"]
             out.append(s)
-    return found, out
-
-
-def walk(t, F, side):
-    """Every phase, in order, each searched for after the previous one started."""
-    found, out, cycle = finders(t, F, side), [], {}
-    anchor, k = float(t[0]), 0
-    while True:
-        phase = ORDER[k % 4]
-        if phase == "digging":
-            cycle = {}
-        s = step(t, F, side, found, phase, anchor, cycle)
-        if s is None:
-            break
-        if phase == "digging":
-            cycle["dig_window"] = s["window"]
-        out.append(s)
-        if s["start"] <= anchor + 1e-9 and k > 0 and not s["agreed"]:
-            break  # no progress possible
-        anchor, k = s["start"] + 1e-6, k + 1
     return found, out
 
 
@@ -737,21 +1196,17 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--clip", choices=sorted(cc.CLIPS), default="long")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--anchor", choices=("chain", "marks"), default="chain")
     args = ap.parse_args(argv)
     feat_path, label_path = cc.CLIPS[args.clip]
     t, F = cc.load_features(feat_path)
     side = cc.truck_side(F)
     marks = cc.load_onsets(label_path)
-    if args.anchor == "marks":
-        found, steps = from_marks(t, F, side, marks)
-    else:
-        found, steps = walk(t, F, side)
+    found, steps = from_marks(t, F, side, marks)
 
     data = {
         "clip": args.clip,
         "side": side,
-        "anchor": args.anchor,
+        "anchor": "marks",
         "limits": {
             "min_half": MIN_HALF,
             "rate_min_half": RATE_MIN_HALF,
@@ -760,7 +1215,14 @@ def main(argv=None) -> int:
         },
         "times": [round(float(v), 3) for v in t],
         "signals": {
-            g["key"]: [_clean(v) for v in g["values"]] for ph in found.values() for g in ph
+            **{
+                g["key"]: [_clean(v) for v in g["values"]] for ph in found.values() for g in ph
+            },
+            # the gates' signals, signed like the cues' (horizontal: + toward the truck)
+            "rel_truck_x": [_clean(v) for v in F["rel_truck_x"] * side],
+            "rel_cabin_x": [_clean(v) for v in F["rel_cabin_x"] * side],
+            "rel_cabin_y": [_clean(v) for v in F["rel_cabin_y"]],
+            "truck_overlap": [_clean(v) for v in F["truck_overlap"]],
         },
         "finders": {
             ph: [
@@ -770,6 +1232,8 @@ def main(argv=None) -> int:
                     "label": g["label"],
                     "mode": g["mode"],
                     "spans": g["background"],
+                    "role": g["role"],
+                    "weight": WEIGHTS.get((ph, g["id"]), 1),
                     "contexts": [],
                 }
                 for g in lst
