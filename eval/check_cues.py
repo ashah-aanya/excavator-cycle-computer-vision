@@ -432,7 +432,7 @@ def _runs(mask: np.ndarray, times: np.ndarray) -> list[tuple[float, float]]:
     ]
 
 
-def knee_windows(
+def knee_mask(
     values: np.ndarray,
     times: np.ndarray,
     direction: str = "rising",
@@ -440,7 +440,7 @@ def knee_windows(
     side: float = SIDE,
     flat_max: float = FLAT,
     steep_min: float = 0.25,
-) -> list[tuple[float, float]]:
+) -> np.ndarray:
     """Spans where the slope turns sharply, found from a line fitted to the ``side``
     seconds before each sample and another to the ``side`` seconds after.
 
@@ -452,8 +452,28 @@ def knee_windows(
     sign = 1.0 if direction == "rising" else -1.0
     flat_side, steep_side = (before, after) if turn == "flat_to_steep" else (after, before)
     with np.errstate(invalid="ignore"):
-        mask = (np.abs(flat_side) < flat_max) & (steep_side * sign >= steep_min)
-    return _runs(mask, times)
+        return (np.abs(flat_side) < flat_max) & (steep_side * sign >= steep_min)
+
+
+def knee_windows(values, times, direction="rising", turn="flat_to_steep", **kw):
+    """`knee_mask` as spans."""
+    return _runs(knee_mask(values, times, direction, turn, **kw), times)
+
+
+def dip_then_rise_mask(
+    values: np.ndarray,
+    times: np.ndarray,
+    side: float = SIDE,
+    flat_max: float = FLAT,
+    rise_min: float = 0.25,
+) -> np.ndarray:
+    """ "The bottom of a dip with a spike after": the line over the ``side`` s before
+    is NOT rising (falling, or flat within ``flat_max`` of the spread) and the line
+    over the ``side`` s after rises steeply (by at least ``rise_min`` of it). Unlike a
+    take-off knee, a fall before is allowed -- the dip may be shallow or deep."""
+    before, after = side_changes(values, times, side)
+    with np.errstate(invalid="ignore"):
+        return (before < flat_max) & (after >= rise_min)
 
 
 def excursion_windows(
@@ -481,6 +501,46 @@ def excursion_windows(
         while b + 1 < len(x) and x[b + 1] < x[b]:
             b += 1  # walk down the trailing flank to where it settled
         out.append({"start": float(times[a]), "apex": float(times[p]), "end": float(times[b])})
+    return out
+
+
+def settle_windows(
+    values: np.ndarray,
+    times: np.ndarray,
+    direction: str = "dip",
+    min_size: float = 0.5,
+    recovered: float = 0.8,
+    side: float = SIDE,
+    flat: float = FLAT,
+) -> list[dict]:
+    """After each big dip (or peak): the stretch where the signal comes back and settles.
+
+    The dip itself is CONTEXT -- it has to be seen -- but the output is to its right:
+    from where the signal is ``recovered`` of the way back from the dip's bottom to
+    the level it returns to, to where it has settled (the line over the next ``side``
+    s is flat). Both ends are read from the signal, so no fixed shift is added.
+
+    "The level it returns to", not the level it left: before the return swing dx/dt
+    is positive (the bucket is pushed toward the truck first), so measuring against
+    the level before the dip demanded a recovery that never comes.
+    """
+    v = np.asarray(values, dtype=float)
+    x = -v if direction == "dip" else v
+    _, after = side_changes(v, times, side)
+    out = []
+    for d in excursion_windows(values, times, direction, min_size):
+        p = int(np.searchsorted(times, d["apex"]))
+        z = int(np.searchsorted(times, d["end"]))
+        back = x[z] + (1 - recovered) * (x[p] - x[z])
+        r = p
+        while r + 1 < len(x) and x[r] > back:
+            r += 1
+        e = r
+        while e + 1 < len(x) and not (np.isfinite(after[e]) and abs(after[e]) < flat):
+            e += 1
+        out.append(
+            {"context": (d["start"], d["end"]), "window": (float(times[r]), float(times[e]))}
+        )
     return out
 
 
