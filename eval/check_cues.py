@@ -186,6 +186,11 @@ def load_features(path: Path) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     feats["box_w"] = box[:, 2] - box[:, 0]
     feats["box_h"] = box[:, 3] - box[:, 1]
     feats["box_area"] = feats["box_w"] * feats["box_h"]
+    # Straight-line distance from the bucket to the truck box's centre, in arm
+    # reaches L (both gaps are already divided by L), and how fast it changes.
+    if "rel_truck_x" in feats and "rel_truck_y" in feats:
+        feats["truck_distance"] = np.hypot(feats["rel_truck_x"], feats["rel_truck_y"])
+        feats["truck_distance_dt"] = derivative(feats["truck_distance"], t)
     return t, feats
 
 

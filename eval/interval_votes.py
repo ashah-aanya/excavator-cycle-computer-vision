@@ -150,6 +150,21 @@ def finders(t, F, side):
     x = F["bucket_x"] * side
     rel_cabin_x = F["rel_cabin_x"] * side
     rel_truck_x = F["rel_truck_x"] * side
+    if HORIZONTAL["mode"] == "distance":
+        # "let's try with making it distance to truck": the bucket's straight-line
+        # image distance from the truck's centre (in the arm lengths L the features use),
+        # negated so + is still "toward the truck". It shrinks on approach whichever
+        # image direction the approach runs in, where x assumes a side-on camera.
+        # ASSUMPTION (Aanya): the dump target is a truck -- a dump onto a pile or into
+        # a hopper would break this, and most of the rules with it.
+        x = -F["truck_distance"]
+        dx = -F["truck_distance_dt"]
+        rel_truck_x = x
+    elif HORIZONTAL["mode"] == "truck_x":
+        # "can you do like x distance to truck?": the signed LEFT-RIGHT gap to the
+        # truck's centre. It keeps the direction (past the truck vs back toward the
+        # pile) that plain distance loses.
+        x = rel_truck_x
     overlap = F["truck_overlap"]
 
     humps = cc.excursion_windows(speed, t, "peak", min_size=0.5)
@@ -173,7 +188,7 @@ def finders(t, F, side):
         ]
 
     spread = np.nanpercentile(h, 95) - np.nanpercentile(h, 5)
-    from scipy.signal import find_peaks
+    from scipy.signal import find_peaks, peak_widths
 
     h_peaks = find_peaks(h, prominence=0.03 * spread)[0]
     dx_noise = noise_scale(dx)
@@ -555,7 +570,48 @@ def finders(t, F, side):
     # ---- swing
     x_takeoff = cc.knee_windows(x, t, "rising", "flat_to_steep")
     overlap_end = shape_runs(overlap, t, "drop ends -> flat")
-    h_peak_runs = shape_runs(h, t, "peak")
+    # height's high points. Aanya: "shouldn't more heights be identified, and then
+    # from that, we choose what the ideal height is? ... make this more durable for
+    # understanding variations and not just looking for the most specific patterns".
+    # The old cue asked for the exact shape "peak" (rising 2 s, then falling 2 s),
+    # which missed rounded and plateau tops and caught a one-frame glitch. Now EVERY
+    # top standing at least 15% of the spread above its surroundings is a candidate,
+    # if it is at least 2 s wide at half its height (the real tops are 13-15 s wide;
+    # the glitch at 65 s is 1.2 s) -- sharp, rounded and plateau tops all count.
+    fps = 1.0 / float(np.median(np.diff(t)))
+    h_tops, h_top_info = find_peaks(h, prominence=0.15 * spread, width=2.0 * fps)
+    # each candidate's high region: the part within 20% of its top
+    _, _, h_top_l, h_top_r = peak_widths(h, h_tops, rel_height=0.2)
+    h_high_regions = [
+        (float(np.interp(a, np.arange(len(t)), t)), float(np.interp(b, np.arange(len(t)), t)))
+        for a, b in zip(h_top_l, h_top_r, strict=True)
+    ]
+
+    def swing_height(anchor, _cycle):
+        """height: choose, among all the candidate tops, the LAST one before this
+        cycle's big height drop (the bucket going back down to the pile). Place the
+        swing where the climb into it gets within 20% of the top -- measured from
+        the lowest point since the search start -- the same rule for sharp, rounded
+        and plateau tops. (Within 10% of the top landed 0.6-1.3 s after her marks on
+        the rounded and plateau tops; 20% landed within 0.2 s. Tuned on these two
+        clips, so optimistic.)"""
+        drop = next((d for d in h_drops if d["onset"] >= anchor), None)
+        if drop is None:
+            return None
+        before = [k for k, p in enumerate(h_tops) if anchor <= t[p] <= drop["onset"] + 1e-9]
+        if not before:
+            return None
+        k = before[-1]
+        top = int(h_tops[k])
+        lo = max(int(h_top_info["left_bases"][k]), _i(t, anchor))
+        base = float(np.nanmin(h[lo : top + 1]))
+        level = base + 0.8 * (h[top] - base)
+        j = next((j for j in range(lo, top + 1) if h[j] >= level), top)
+        return {
+            "event": (float(t[j]), float(t[top])),
+            "centre": float(t[j]),
+            "context": (float(t[j]), drop["onset"]),
+        }
 
     def from_spans(spans):
         def find(anchor, _cycle):
@@ -769,9 +825,9 @@ def finders(t, F, side):
                 "height_peak",
                 "height",
                 h,
-                "height: peak",
-                from_spans(h_peak_runs),
-                background=h_peak_runs,
+                "height: last top before the big drop, where the climb gets within 20% of it",
+                swing_height,
+                background=h_high_regions,
             ),
             g(
                 "dh_positive_falling",
@@ -983,6 +1039,21 @@ def coverage(t, windows):
 # ("some of these are a lot more valuable cues than others"). Set by judgment about
 # which motions really mark a phase, informed by (not fitted to) how often each cue
 # contained the marks: fitting them to these marks would only learn these clips.
+# Cues that only showed up on THESE clips' graphs, with no physical reason they must
+# happen on another video (the universality audit). Aanya: "let's get rid of the only
+# seen on graphs (radius) cues". Their finders stay, so a new clip can confirm one and
+# bring it back; they don't vote.
+HORIZONTAL = {"mode": "x"}  # "x" (bucket x) or "distance" (to the truck); set by main
+
+SEEN_ONLY = {
+    "radius_turn",
+    "radius_dip_start",
+    "radius_bump_start",
+    "dx_min",
+    "dx_bump",
+    "cabin_x_going_up",
+}
+
 WEIGHTS = {
     ("digging", "speed_min"): 3,
     ("digging", "height_drop_end"): 3,
@@ -1173,7 +1244,11 @@ def step(t, F, side, found, phase, anchor, cycle):
 
 def from_marks(t, F, side, marks):
     """Each marked onset, searched for after the previous MARKED onset."""
-    found, out, cycle = finders(t, F, side), [], {}
+    found = {
+        ph: [g for g in lst if g["id"] not in SEEN_ONLY]
+        for ph, lst in finders(t, F, side).items()
+    }
+    out, cycle = [], {}
     for k, (phase, _) in enumerate(marks):
         if phase == "digging":
             cycle = {}
@@ -1196,7 +1271,14 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--clip", choices=sorted(cc.CLIPS), default="long")
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument(
+        "--horizontal",
+        choices=("x", "distance", "truck_x"),
+        default="x",
+        help="horizontal cues from bucket x, the distance to the truck, or the x gap to it",
+    )
     args = ap.parse_args(argv)
+    HORIZONTAL["mode"] = args.horizontal
     feat_path, label_path = cc.CLIPS[args.clip]
     t, F = cc.load_features(feat_path)
     side = cc.truck_side(F)
@@ -1223,6 +1305,21 @@ def main(argv=None) -> int:
             "rel_cabin_x": [_clean(v) for v in F["rel_cabin_x"] * side],
             "rel_cabin_y": [_clean(v) for v in F["rel_cabin_y"]],
             "truck_overlap": [_clean(v) for v in F["truck_overlap"]],
+            # x vs straight-line distance to the truck, drawn side by side
+            "truck_distance": [_clean(v) for v in F["truck_distance"]],
+            "toward_dist_dt": [_clean(v) for v in -F["truck_distance_dt"]],
+            "toward_dx_dt": [_clean(v) for v in F["dx_dt"] * side],
+        },
+        # the big dips the dig "dx crosses back to 0" cue picks from, per signal
+        "horizontal_dips": {
+            "toward_dx_dt": [
+                d["apex"]
+                for d in cc.excursion_windows(F["dx_dt"] * side, t, "dip", min_size=0.5)
+            ],
+            "toward_dist_dt": [
+                d["apex"]
+                for d in cc.excursion_windows(-F["truck_distance_dt"], t, "dip", min_size=0.5)
+            ],
         },
         "finders": {
             ph: [
