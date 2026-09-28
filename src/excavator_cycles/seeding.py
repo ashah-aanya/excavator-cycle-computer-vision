@@ -278,17 +278,29 @@ def choose_seed(
     bucket_from: float = 0.82,
     stick_from: float = 0.50,
     stick_to: float = 0.75,
+    positions: range | None = None,
+    clear_of_truck: bool = False,
 ) -> BucketSeed | None:
     """Score every frame and return the best place to point SAM 2 at the bucket.
 
     Returns ``None`` when no frame yields a usable band -- the caller decides
     whether that is fatal. Candidates are ranked rather than thresholded, so
     there is always a best frame if there is any frame at all.
+
+    ``positions`` limits the search to one stretch of the clip, and "mid-clip"
+    then means the middle of that stretch: a reseed propagates both ways inside
+    the stretch, exactly as the first seed does inside the clip. ``clear_of_truck``
+    turns the truck clearance from a penalty into a requirement. A reseed is
+    needed because the bucket vanished, and over the bed is where it vanishes --
+    lowered in, buried by what it is tipping -- so a band there is the arm
+    reaching into the bed, not the bucket.
     """
     best: BucketSeed | None = None
     usable = 0
+    span = positions if positions is not None else range(len(masks))
 
-    for position, mask in enumerate(masks):
+    for position in span:
+        mask = masks[position]
         if mask is None or not mask.any():
             continue
         bucket, stick, reach = geodesic_bands(
@@ -297,9 +309,18 @@ def choose_seed(
         points = interior_points(bucket, point_count)
         if not len(points):
             continue
+        if clear_of_truck and truck_box is not None:
+            # Every pixel, not the centre: a band split between the bucket and
+            # something over the truck has its centre between the two, clear of
+            # the truck, and would be handed to SAM 2 whole.
+            x0, y0, x1, y1 = (round(v) for v in truck_box)
+            if bucket[max(y0, 0) : max(y1 + 1, 0), max(x0, 0) : max(x1 + 1, 0)].any():
+                continue
         usable += 1
 
-        score = score_frame(bucket, reach, scale, truck_box, position, len(masks), mask)
+        score = score_frame(
+            bucket, reach, scale, truck_box, position - span.start, len(span), mask
+        )
         if best is not None and score <= best.score:
             continue
 
@@ -315,7 +336,11 @@ def choose_seed(
         )
 
     if best is None:
-        log.warning("no frame produced a usable bucket band from %d masks", len(masks))
+        log.warning(
+            "no frame produced a usable bucket band from %d candidate frames%s",
+            len(span),
+            " clear of the truck" if clear_of_truck and truck_box is not None else "",
+        )
         return None
 
     log.info(
