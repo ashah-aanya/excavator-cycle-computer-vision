@@ -214,51 +214,109 @@ def test_a_missing_presence_logit_reads_as_unknown_not_as_zero():
     assert np.isnan(found[EXCAVATOR_OBJECT_ID][1])
 
 
-# --- one object per session --------------------------------------------------
+# --- one object per session, streamed ------------------------------------------
 
 
-def stub_processor():
+class StubProcessor:
     """A processor that records registrations and assigns, as the real one does.
 
     ``add_inputs_to_inference_session`` ends with
     ``inference_session.obj_with_new_inputs = obj_ids`` -- not an append. That
     single line is why two objects in one session needed the pending list
     restoring afterwards, and why one object per session needs nothing.
+
+    Calling it prepares ONE frame, as streaming does: the fake passes the frame
+    through untouched so the model can report which sample it was given.
     """
 
-    def add_inputs_to_inference_session(inference_session, frame_idx, obj_ids, **prompt):
+    def add_inputs_to_inference_session(self, inference_session, frame_idx, obj_ids, **prompt):
         ids = [obj_ids] if isinstance(obj_ids, int) else list(obj_ids)
         inference_session.calls.append((frame_idx, ids, prompt))
         inference_session.obj_with_new_inputs = ids
 
-    return SimpleNamespace(add_inputs_to_inference_session=add_inputs_to_inference_session)
+    def __call__(self, images, device, return_tensors):
+        return SimpleNamespace(pixel_values=[images], original_sizes=[images.shape[:2]])
 
 
-def stub_session():
-    return SimpleNamespace(obj_with_new_inputs=[], calls=[])
+def stub_processor():
+    return StubProcessor()
 
 
-def stub_model(sample_count: int):
-    """A model that walks the clip and reports which sample it is on.
+class FakeFrame:
+    """Stands in for one RGB frame, and remembers which sample it is."""
 
-    It reproduces the only two calls ``track_object`` makes -- a single forward
-    on the conditioning frame, then an iterator in either direction -- so the
-    propagation logic can be checked without weights.
+    def __init__(self, sample: int):
+        self.sample = sample
+        self.shape = (*SHAPE, 3)
+
+
+def fake_frames(count: int) -> list[FakeFrame]:
+    return [FakeFrame(i) for i in range(count)]
+
+
+def stub_session(index: int = 0):
+    """The parts of a SAM 2 session the tracker reads and prunes, plus a record of
+    what it was fed, the most it ever held at once, and any history SAM 2 would
+    have looked for and not found."""
+    return SimpleNamespace(
+        index=index,
+        missing_history=[],
+        obj_with_new_inputs=[],
+        calls=[],
+        inference_device="cpu",
+        processed_frames={},
+        output_dict_per_obj={0: {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}},
+        fed=[],
+        peak_frames=0,
+        peak_outputs=0,
+    )
+
+
+def session_factory():
+    """A ``new_session`` that keeps every session it made, in order."""
+    made: list = []
+
+    def new_session():
+        made.append(stub_session(index=len(made)))
+        return made[-1]
+
+    new_session.made = made
+    return new_session
+
+
+def stub_model():
+    """A model that stores what the real one stores, so a test can see what a
+    session holds.
+
+    Real SAM 2 keeps every frame it is given in ``processed_frames`` and every
+    frame's output in ``output_dict_per_obj`` -- the prompted frame under
+    ``cond_frame_outputs``, the rest under ``non_cond_frame_outputs``. Both would
+    grow with the clip's length if nothing removed them, which is exactly what
+    the bound test watches. ``frame`` is a required argument, as it must be: a
+    call without it would take SAM 2 out of streaming mode.
+
+    It also checks the opposite failure. At step ``s`` real SAM 2 reads the
+    outputs of steps ``s-1 .. s-15`` (object pointers) and ``s-1 .. s-6`` (mask
+    memory); pruning any of those does not crash -- it silently tracks from a
+    thinner memory. So every call records which of them are absent.
     """
+    reach = 16  # max_object_pointers_in_encoder: look back reach - 1 steps
 
-    def model(inference_session, frame_idx):
-        return SimpleNamespace(frame_idx=frame_idx)
+    def model(inference_session, frame_idx, frame):
+        session = inference_session
+        held = session.output_dict_per_obj[0]["non_cond_frame_outputs"]
+        wanted = range(max(1, frame_idx - (reach - 1)), frame_idx)
+        session.missing_history += [(frame_idx, k) for k in wanted if k not in held]
+        session.processed_frames[frame_idx] = frame
+        key = "cond_frame_outputs" if frame_idx == 0 else "non_cond_frame_outputs"
+        session.output_dict_per_obj[0][key][frame_idx] = frame.sample
+        session.fed.append(frame.sample)
+        session.peak_frames = max(session.peak_frames, len(session.processed_frames))
+        held = len(session.output_dict_per_obj[0]["non_cond_frame_outputs"])
+        session.peak_outputs = max(session.peak_outputs, held)
+        return SimpleNamespace(frame_idx=frame_idx, sample=frame.sample, session=session.index)
 
-    def propagate_in_video_iterator(inference_session, start_frame_idx, reverse=False):
-        order = (
-            range(start_frame_idx - 1, -1, -1)
-            if reverse
-            else range(start_frame_idx + 1, sample_count)
-        )
-        for frame_idx in order:
-            yield SimpleNamespace(frame_idx=frame_idx)
-
-    model.propagate_in_video_iterator = propagate_in_video_iterator
+    model.config = SimpleNamespace(num_maskmem=7, max_object_pointers_in_encoder=reach)
     return model
 
 
@@ -267,10 +325,13 @@ def one_object(obj_id: int, mask=None, empty_at=()):
     band = machine() if mask is None else mask
 
     def unpack(output):
-        found = np.zeros(SHAPE, bool) if output.frame_idx in empty_at else band
+        found = np.zeros(SHAPE, bool) if output.sample in empty_at else band
         return {obj_id: (found, 0.9)}
 
     return unpack
+
+
+BOX = {"input_boxes": [[[1.0, 2.0, 3.0, 4.0]]]}
 
 
 def test_a_session_is_prompted_for_exactly_one_object_on_one_frame():
@@ -294,37 +355,157 @@ def test_a_session_is_prompted_for_exactly_one_object_on_one_frame():
     assert session.obj_with_new_inputs == [BUCKET_OBJECT_ID]
 
 
-def test_tracking_an_object_registers_it_alone_and_propagates_both_ways():
-    """One seed, both directions -- which is what lets the seed be the best frame."""
-    session = stub_session()
+def test_tracking_streams_forward_then_backward_in_two_sessions():
+    """One seed, both directions -- which is what lets the seed be the best frame.
+
+    Each direction is a stream of its own, fed seed-first: forward runs to the
+    end, backward runs to the start, and each session is prompted exactly once,
+    on the first frame it sees.
+    """
+    new_session = session_factory()
     masks, confidences = track_object(
-        stub_model(8),
+        stub_model(),
         stub_processor(),
-        session,
+        new_session,
+        fake_frames(8),
         EXCAVATOR_OBJECT_ID,
         3,
-        {"input_boxes": [[[1.0, 2.0, 3.0, 4.0]]]},
+        BOX,
         one_object(EXCAVATOR_OBJECT_ID),
     )
 
-    assert [ids for _, ids, _ in session.calls] == [[EXCAVATOR_OBJECT_ID]]
+    forward, backward = new_session.made
+    assert forward.fed == [3, 4, 5, 6, 7]
+    assert backward.fed == [3, 2, 1, 0]
+    for session in (forward, backward):
+        assert [(f, ids) for f, ids, _ in session.calls] == [(0, [EXCAVATOR_OBJECT_ID])]
     assert sorted(masks) == list(range(8)), "forward and backward must both run"
     assert sorted(confidences) == list(range(8))
 
 
+def test_a_box_prompt_is_sent_with_the_frame_size():
+    """A streaming session holds no video, so SAM 2 cannot read the frame size
+    from it -- and it refuses a box or point prompt without one."""
+    new_session = session_factory()
+    track_object(
+        stub_model(),
+        stub_processor(),
+        new_session,
+        fake_frames(4),
+        EXCAVATOR_OBJECT_ID,
+        0,
+        BOX,
+        one_object(EXCAVATOR_OBJECT_ID),
+    )
+    ((_, _, prompt),) = new_session.made[0].calls
+    assert prompt["original_size"] == SHAPE
+
+
+def test_a_seed_on_the_first_frame_needs_no_backward_stream():
+    new_session = session_factory()
+    track_object(
+        stub_model(),
+        stub_processor(),
+        new_session,
+        fake_frames(5),
+        EXCAVATOR_OBJECT_ID,
+        0,
+        BOX,
+        one_object(EXCAVATOR_OBJECT_ID),
+    )
+    assert len(new_session.made) == 1
+    assert new_session.made[0].fed == [0, 1, 2, 3, 4]
+
+
 def test_the_bucket_session_is_conditioned_on_the_bucket_seeds_own_frame():
     """The point of the second session: a frame the bucket ranking chose."""
-    session = stub_session()
+    new_session = session_factory()
     track_object(
-        stub_model(12),
+        stub_model(),
         stub_processor(),
-        session,
+        new_session,
+        fake_frames(12),
         BUCKET_OBJECT_ID,
         5,
         {"input_masks": [machine()]},
         one_object(BUCKET_OBJECT_ID),
     )
-    assert [frame_idx for frame_idx, _, _ in session.calls] == [5]
+    for session in new_session.made:
+        assert session.fed[0] == 5, "every stream starts on the seed"
+        assert [f for f, _, _ in session.calls] == [0], "prompted on its first frame"
+
+
+def test_a_long_clip_holds_one_frame_and_a_fixed_window_of_outputs():
+    """The reason for streaming, pinned: memory must not grow with the clip.
+
+    Preparing every frame up front asked for 9.75 GiB in one allocation on an
+    83 s clip at 10 Hz, and even with frames streamed SAM 2 keeps each frame's
+    output (about 5.6 MiB) unless something removes it. So across a long clip a
+    session may hold ONE prepared frame and at most ``output_window`` outputs --
+    and the prompted frame's output, which every later frame attends to, must
+    still be there at the end.
+    """
+    model = stub_model()
+    new_session = session_factory()
+    track_object(
+        model,
+        stub_processor(),
+        new_session,
+        fake_frames(500),
+        EXCAVATOR_OBJECT_ID,
+        250,
+        BOX,
+        one_object(EXCAVATOR_OBJECT_ID),
+    )
+
+    window = track_stage.output_window(model)
+    assert len(new_session.made) == 2
+    for session in new_session.made:
+        assert len(session.fed) > window, "the stream must outlast the window to test it"
+        assert session.peak_frames == 1, f"held {session.peak_frames} frames at once"
+        assert session.peak_outputs <= window, f"held {session.peak_outputs} outputs"
+        assert session.output_dict_per_obj[0]["cond_frame_outputs"] == {0: 250}
+        assert session.missing_history == [], (
+            f"pruned outputs SAM 2 still reads: {session.missing_history[:5]}"
+        )
+
+
+def test_the_seed_mask_comes_from_the_forward_stream():
+    """Both streams predict the prompted seed frame, from identical inputs. One
+    must win, and it is the forward one -- stated, and pinned, so the choice
+    cannot flip unnoticed. Confidence here carries which session answered."""
+
+    def by_session(output):
+        return {EXCAVATOR_OBJECT_ID: (machine(), float(output.session))}
+
+    _, confidences = track_object(
+        stub_model(),
+        stub_processor(),
+        session_factory(),
+        fake_frames(8),
+        EXCAVATOR_OBJECT_ID,
+        3,
+        BOX,
+        by_session,
+    )
+    assert confidences[3] == 0.0, "the seed must be taken from the forward stream"
+    assert confidences[2] == 1.0 and confidences[4] == 0.0
+
+
+def test_the_output_window_is_twice_sam2s_longest_look_back():
+    """SAM 2 reads back 6 frames of mask memory and 15 of object pointers (sam2.1:
+    num_maskmem 7, max_object_pointers_in_encoder 16). The window keeps twice the
+    longer, read from the model's own config so a longer-memory checkpoint is
+    handled rather than silently truncated."""
+    sam21 = SimpleNamespace(
+        config=SimpleNamespace(num_maskmem=7, max_object_pointers_in_encoder=16)
+    )
+    longer = SimpleNamespace(
+        config=SimpleNamespace(num_maskmem=40, max_object_pointers_in_encoder=16)
+    )
+    assert track_stage.output_window(sam21) == 32
+    assert track_stage.output_window(longer) == 80
+    assert track_stage.output_window(SimpleNamespace()) == 32, "sam2.1's values when unknown"
 
 
 def test_a_session_that_reports_a_second_object_is_refused():
@@ -337,12 +518,13 @@ def test_a_session_that_reports_a_second_object_is_refused():
 
     with pytest.raises(RuntimeError, match="exactly one object"):
         track_object(
-            stub_model(4),
+            stub_model(),
             stub_processor(),
-            stub_session(),
+            session_factory(),
+            fake_frames(4),
             EXCAVATOR_OBJECT_ID,
             0,
-            {"input_boxes": [[[1.0, 2.0, 3.0, 4.0]]]},
+            BOX,
             two_objects,
         )
 
@@ -353,9 +535,10 @@ def test_an_empty_bucket_prediction_is_not_stored_but_is_still_scored():
     construction. The excavator keeps its empty frames: the QA gate has to see
     them."""
     bucket, _ = track_object(
-        stub_model(6),
+        stub_model(),
         stub_processor(),
-        stub_session(),
+        session_factory(),
+        fake_frames(6),
         BUCKET_OBJECT_ID,
         0,
         {"input_masks": [machine()]},
@@ -365,12 +548,13 @@ def test_an_empty_bucket_prediction_is_not_stored_but_is_still_scored():
     assert sorted(bucket) == [0, 1, 3, 5]
 
     excavator, confidences = track_object(
-        stub_model(6),
+        stub_model(),
         stub_processor(),
-        stub_session(),
+        session_factory(),
+        fake_frames(6),
         EXCAVATOR_OBJECT_ID,
         0,
-        {"input_boxes": [[[1.0, 2.0, 3.0, 4.0]]]},
+        BOX,
         one_object(EXCAVATOR_OBJECT_ID, empty_at=(2, 4)),
         keep_empty=True,
     )

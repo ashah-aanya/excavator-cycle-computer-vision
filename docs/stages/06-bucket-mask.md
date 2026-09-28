@@ -108,8 +108,10 @@ to be re-derived every frame and did flip.
 
 That choice carries a cost. Because the bucket seed is derived from the excavator
 *mask*, it cannot be known before SAM has run. The stage is therefore two passes:
-the excavator first, over the whole clip, and then the bucket — each in its own
-session, carrying one object. Why one object each and not two in one is below.
+the excavator first, over the whole clip, and then the bucket — each in sessions
+of its own (one per direction, since tracking streams forward from the seed and
+then backward), carrying one object. Why one object each and not two in one is
+below.
 
 ## The geometric seed, drawn and checked
 
@@ -214,12 +216,12 @@ recovered by resetting one session instead of building a second.
 whole-video encoding sitting in the session to preserve. Raising that limit is
 not a way out either: at 1024×1024 the cached FPN features and position
 embeddings run to roughly a hundred megabytes per frame, which is tens of
-gigabytes over a 296-sample clip. What both resets *do* keep is
-`processed_frames`, the decoded and normalised video, so reusing a session would
-save the CPU-side preprocessing and nothing of the GPU work. The stage builds a
-fresh session per object because that is the arrangement whose independence is
-obvious, and deletes each one before the next so only one copy of the frames is
-resident at a time.
+gigabytes over a 296-sample clip. Since PR #6 tracking streams, so a session
+never holds the video at all: `processed_frames` carries one frame at a time and
+old per-frame outputs are evicted as they leave the model's memory window (see
+`track.forget`). Reusing a session would therefore save nothing. The stage builds
+a fresh session per object and per direction because that is the arrangement
+whose independence is obvious.
 
 ## Still open
 
