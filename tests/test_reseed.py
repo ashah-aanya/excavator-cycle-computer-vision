@@ -16,8 +16,6 @@ must touch that span and nothing else:
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import numpy as np
 
 from excavator_cycles import seeding
@@ -29,6 +27,7 @@ from excavator_cycles.reseed import (
 )
 from excavator_cycles.seeding import BucketSeed, choose_seed
 from excavator_cycles.track import BUCKET_OBJECT_ID, track_object
+from test_bucket_track import fake_frames, session_factory, stub_model, stub_processor
 
 RATE = 10.0
 FLOOR = 0.35
@@ -308,41 +307,13 @@ def test_without_a_span_the_first_seed_is_ranked_exactly_as_before():
 # --- a limited SAM run -----------------------------------------------------------
 
 
-def limited_model(sample_count: int, asked: list):
-    """Walks the clip the way SAM 2 does, honouring ``max_frame_num_to_track``."""
-
-    def model(inference_session, frame_idx):
-        return SimpleNamespace(frame_idx=frame_idx)
-
-    def propagate_in_video_iterator(
-        inference_session, start_frame_idx, reverse=False, max_frame_num_to_track=None
-    ):
-        asked.append((reverse, max_frame_num_to_track))
-        limit = sample_count if max_frame_num_to_track is None else max_frame_num_to_track
-        if reverse:
-            order = range(start_frame_idx, max(start_frame_idx - limit, 0) - 1, -1)
-        else:
-            order = range(start_frame_idx, min(start_frame_idx + limit, sample_count - 1) + 1)
-        for frame_idx in order:
-            yield SimpleNamespace(frame_idx=frame_idx)
-
-    model.propagate_in_video_iterator = propagate_in_video_iterator
-    return model
-
-
-def recording_processor():
-    def add_inputs_to_inference_session(inference_session, frame_idx, obj_ids, **prompt):
-        inference_session.obj_with_new_inputs = [obj_ids]
-
-    return SimpleNamespace(add_inputs_to_inference_session=add_inputs_to_inference_session)
-
-
 def test_a_limited_run_tracks_the_span_and_nothing_outside_it():
-    asked: list = []
+    new_session = session_factory()
     masks, confidences = track_object(
-        limited_model(100, asked),
-        recording_processor(),
-        SimpleNamespace(obj_with_new_inputs=[]),
+        stub_model(),
+        stub_processor(),
+        new_session,
+        fake_frames(100),
         BUCKET_OBJECT_ID,
         60,
         {"input_masks": [blob()]},
@@ -350,21 +321,25 @@ def test_a_limited_run_tracks_the_span_and_nothing_outside_it():
         keep_empty=False,
         limit=(50, 72),
     )
-    assert asked == [(False, 12), (True, 10)], "both legs, each to its own end"
+    forward, backward = new_session.made
+    assert forward.fed == list(range(60, 73)), "forward to the span's last sample"
+    assert backward.fed == list(range(60, 49, -1)), "backward to the span's first"
     assert sorted(masks) == list(range(50, 73))
     assert sorted(confidences) == list(range(50, 73))
 
 
 def test_a_reseed_on_the_spans_first_sample_does_not_run_backward():
-    asked: list = []
+    new_session = session_factory()
     track_object(
-        limited_model(100, asked),
-        recording_processor(),
-        SimpleNamespace(obj_with_new_inputs=[]),
+        stub_model(),
+        stub_processor(),
+        new_session,
+        fake_frames(100),
         BUCKET_OBJECT_ID,
         50,
         {"input_masks": [blob()]},
         lambda output: {BUCKET_OBJECT_ID: (blob(), 0.9)},
         limit=(50, 72),
     )
-    assert asked == [(False, 22)]
+    assert len(new_session.made) == 1
+    assert new_session.made[0].fed == list(range(50, 73))
