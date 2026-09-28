@@ -44,6 +44,8 @@ track:
   bucket_min_component_fraction: 0.01  # the bucket mask is ~8x smaller, so 0.05 would cut real fragments
   bucket_point_count: 5            # positives, when bucket_prompt is "points"
   bucket_negative_count: 3         # negatives on the stick, so SAM does not claim the arm
+  bucket_lost_seconds: 1.0         # bucket missing this long (features.min_sample_confidence) = reseed
+  bucket_max_reseeds: 5            # each lost span once; a safety bound, not a knob
 
 geometry:
   occupancy_quantile: 0.90   # what counts as the machine's persistent core
