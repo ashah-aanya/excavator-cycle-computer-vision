@@ -133,6 +133,8 @@ def trace(key, H, TOP, BOT):
     lo, hi = vs[int(0.01 * len(vs))], vs[int(0.99 * len(vs)) - 1]
     pad = (hi - lo) * 0.1
     lo, hi = lo - pad, hi + pad
+    if hi <= lo:  # a flat signal (e.g. overlap 0 throughout): centre it, don't divide by 0
+        lo, hi = lo - 1, hi + 1
     Y = lambda y: TOP + (1 - (min(max(y, lo), hi) - lo) / (hi - lo)) * (H - TOP - BOT)  # noqa: E731
     pts = " ".join(
         f"{X(a):.1f},{Y(b):.1f}"
