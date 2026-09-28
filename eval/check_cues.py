@@ -175,6 +175,12 @@ def load_features(path: Path) -> tuple[np.ndarray, dict[str, np.ndarray]]:
         feats["truck_overlap"] = np.nan_to_num(
             feats["truck_overlap"]
         )  # unmeasured = no overlap
+    truck = _truck_box(path)
+    if truck is not None and "bucket_box" in z.files:
+        # Every rule that says "overlap" means "over the truck". The box overlap in
+        # the picture is kept as `truck_box_overlap` for reference only.
+        feats["truck_box_overlap"] = feats["truck_overlap"]
+        feats["truck_overlap"] = over_truck(np.asarray(z["bucket_box"], dtype=float), truck)
     dy = derivative(z["bucket_y"], t)
     feats["dy_dt"] = dy
     feats["speed_2d"] = np.hypot(z["dx_dt"], dy)
@@ -188,6 +194,11 @@ def load_features(path: Path) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     feats["box_area"] = feats["box_w"] * feats["box_h"]
     # Straight-line distance from the bucket to the truck box's centre, in arm
     # reaches L (both gaps are already divided by L), and how fast it changes.
+    if "rel_truck_x" in feats and not np.isfinite(feats["rel_truck_x"]).any():
+        raise CheckError(
+            f"no truck was detected in {path.parent.name}: every rule measures the "
+            "bucket against the dump truck, so no phase windows can be found"
+        )
     if "rel_truck_x" in feats and "rel_truck_y" in feats:
         feats["truck_distance"] = np.hypot(feats["rel_truck_x"], feats["rel_truck_y"])
         feats["truck_distance_dt"] = derivative(feats["truck_distance"], t)
@@ -196,6 +207,36 @@ def load_features(path: Path) -> tuple[np.ndarray, dict[str, np.ndarray]]:
 
 
 PILE_QUANTILE = 0.10  # the lowest tenth of bucket heights: where it digs
+
+
+def _truck_box(path: Path):
+    """The truck box from the scene.json saved next to the features, if any."""
+    scene = Path(path).parent / "scene.json"
+    if not scene.exists():
+        return None
+    import json
+
+    box = json.loads(scene.read_text()).get("truck_box")
+    return None if box is None else np.asarray(box, dtype=float)
+
+
+def over_truck(bucket_box: np.ndarray, truck_box: np.ndarray) -> np.ndarray:
+    """How much of the bucket is OVER the truck, in [0, 1].
+
+    Two boxes touching in the picture is not the bucket being over the truck: seen
+    from in front, a bucket digging in the ground in front of the truck overlaps
+    the truck's box. A truck's bed sits on its wheels, which fill the lower half of
+    its box, so a bucket over the bed has its centre ABOVE the box's middle (image
+    y down). Over = the share of the bucket's width inside the truck's left-right
+    span, when the bucket's centre is above the truck box's middle; else 0. The
+    bucket may be above the box's top edge and still be over the truck."""
+    x1, y1, x2, y2 = (bucket_box[:, i] for i in range(4))
+    tx1, ty1, tx2, ty2 = truck_box
+    width = x2 - x1
+    with np.errstate(invalid="ignore", divide="ignore"):
+        inside = np.clip(np.minimum(x2, tx2) - np.maximum(x1, tx1), 0, None) / width
+        above_middle = (y1 + y2) / 2 < (ty1 + ty2) / 2
+    return np.nan_to_num(np.where(above_middle, inside, 0.0))
 
 
 def pile_truck_axis(feats: dict[str, np.ndarray], t: np.ndarray) -> dict[str, np.ndarray]:
@@ -211,6 +252,10 @@ def pile_truck_axis(feats: dict[str, np.ndarray], t: np.ndarray) -> dict[str, np
     bucket = np.stack([feats["rel_truck_x"], -feats["rel_truck_y"]], axis=1)  # - truck
     low = feats["height"] <= np.nanquantile(feats["height"], PILE_QUANTILE)
     low &= ~(feats.get("truck_overlap", np.zeros(len(t))) > 0)
+    if not (low & np.isfinite(bucket).all(axis=1)).any():
+        raise CheckError(
+            "no pile position was found: the bucket is never low while off the truck"
+        )
     pile = np.nanmedian(bucket[low], axis=0)  # the pile, relative to the truck
     norm2 = float(pile @ pile)
     pos = -(bucket @ pile) / norm2
