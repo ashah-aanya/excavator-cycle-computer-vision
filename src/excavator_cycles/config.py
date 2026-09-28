@@ -163,6 +163,18 @@ class TrackConfig:
     bucket_point_count: int = 5
     bucket_negative_count: int = 3
 
+    # Reseeding a lost bucket (reseed.py). "Lost" reuses the features stage's own
+    # presence floor, `features.min_sample_confidence`, so there is no second
+    # threshold here -- only how long the loss must last before a SAM pass is
+    # worth spending on it. A second: long enough that one blurred or dusty frame
+    # does not trigger it, short against a phase. Measured on every run so far,
+    # it fires on the three clips that lost the bucket and on none of the five
+    # that tracked it throughout (docs/stages/10-bucket-reseed.md).
+    bucket_lost_seconds: float = 1.0
+    # Each lost span is attempted once; this bounds the total, as a safety net
+    # rather than a tuning knob.
+    bucket_max_reseeds: int = 5
+
 
 @dataclass(frozen=True)
 class GeometryConfig:

@@ -75,6 +75,7 @@ from .geometry import arm_reach, farthest_point, rotation_centre
 from .kinematics import body_core, boom_base
 from .logging_setup import get_logger
 from .provenance import config_digest, file_digest, run_record, set_seeds
+from .reseed import LostSpan, reseed_lost_spans
 from .seeding import BucketSeed
 from .video import Sample, iter_samples, probe
 
@@ -134,6 +135,11 @@ class TrackResult:
     # yielded a usable band, which is a legitimate outcome: the run then carries
     # excavator masks only, exactly as it did before there was a second object.
     bucket_seed: dict[str, Any] | None = None
+    # One entry per lost span the reseed step attempted (reseed.py): where the
+    # bucket was lost, where it was reseeded (None if no frame qualified), and
+    # how many samples were missing before and after. Empty on a clean run and
+    # on runs written before reseeding existed.
+    bucket_reseeds: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -297,8 +303,15 @@ def derive_bucket_seed(
     sample_count: int,
     truck_box: np.ndarray | None,
     config: Config,
+    positions: range | None = None,
+    clear_of_truck: bool = False,
 ) -> BucketSeed | None:
     """Turn the excavator's *whole* mask set into a prompt for the bucket.
+
+    ``positions`` and ``clear_of_truck`` are for a reseed (``reseed.py``): the
+    core, pivot and scale still come from every mask in the run -- they describe
+    the machine, not the moment -- but only frames inside the lost span compete,
+    and only where the bucket is clear of the truck.
 
     The geodesic rule in ``seeding.py`` needs three things the masks themselves
     supply, and nothing else:
@@ -363,6 +376,8 @@ def derive_bucket_seed(
         truck_box=None if truck_box is None else tuple(float(v) for v in truck_box),
         point_count=config.track.bucket_point_count,
         negative_count=config.track.bucket_negative_count,
+        positions=positions,
+        clear_of_truck=clear_of_truck,
     )
 
 
@@ -422,8 +437,12 @@ def track_object(
     unpack,
     keep_empty: bool = True,
     label: str = "object",
+    limit: tuple[int, int] | None = None,
 ) -> tuple[dict[int, np.ndarray], dict[int, float]]:
-    """Prompt a session with a single object and propagate it over the whole clip.
+    """Prompt a session with a single object and propagate it over the whole clip,
+    or, given ``limit`` (first, last sample, inclusive), over that stretch alone --
+    which is how a reseed re-tracks the span where the bucket was lost without
+    touching the samples on either side of it.
 
     One seed, both directions. SAM 2 propagates in reverse as well as forward, so
     the conditioning frame does not have to be the first one -- it can be the
@@ -461,16 +480,27 @@ def track_object(
         if keep_empty or mask.any():
             masks[output.frame_idx] = mask
 
+    # SAM 2 counts `max_frame_num_to_track` away from the start frame in the
+    # direction of travel, so the two legs of a limited run are the distances to
+    # either end. Passed only when limited, so an unlimited run calls the model
+    # exactly as it always has.
+    forward: dict[str, int] = {}
+    backward: dict[str, int] = {}
+    if limit is not None:
+        forward["max_frame_num_to_track"] = limit[1] - frame_idx
+        backward["max_frame_num_to_track"] = frame_idx - limit[0]
+    lower = 0 if limit is None else limit[0]
+
     store(model(inference_session=session, frame_idx=frame_idx))
     log.info("%s: propagating forward from sample %d", label, frame_idx)
     for output in model.propagate_in_video_iterator(
-        inference_session=session, start_frame_idx=frame_idx
+        inference_session=session, start_frame_idx=frame_idx, **forward
     ):
         store(output)
-    if frame_idx > 0:
+    if frame_idx > lower:
         log.info("%s: propagating backward from sample %d", label, frame_idx)
         for output in model.propagate_in_video_iterator(
-            inference_session=session, start_frame_idx=frame_idx, reverse=True
+            inference_session=session, start_frame_idx=frame_idx, reverse=True, **backward
         ):
             store(output)
 
@@ -688,6 +718,46 @@ def track(
                 )
             del bucket_session
 
+        # --- reseed wherever the bucket was lost ------------------------------
+        # One seed cannot survive the bucket going into the bed or the pile: once
+        # SAM 2 loses it, it does not claim it again (reseed.py). Each lost span
+        # gets a new seed from inside it and a session that tracks that span only.
+        bucket_reseeds: list[dict[str, Any]] = []
+        if bucket_seed is not None:
+
+            def find_seed(positions: range) -> BucketSeed | None:
+                return derive_bucket_seed(
+                    masks, len(samples), truck_box, config, positions, clear_of_truck=True
+                )
+
+            def track_span(seed: BucketSeed, span: LostSpan):
+                session = new_session()
+                with torch.inference_mode():
+                    return track_object(
+                        model,
+                        processor,
+                        session,
+                        BUCKET_OBJECT_ID,
+                        seed.sample,
+                        bucket_prompt_payload(seed, config.track.bucket_prompt),
+                        unpack,
+                        keep_empty=False,
+                        label="bucket reseed",
+                        limit=(span.start, span.end),
+                    )
+
+            bucket_reseeds = reseed_lost_spans(
+                len(samples),
+                np.array([s.time_seconds for s in samples], dtype=float),
+                bucket_masks,
+                bucket_confidences,
+                floor=config.features.min_sample_confidence,
+                min_seconds=config.track.bucket_lost_seconds,
+                max_reseeds=config.track.bucket_max_reseeds,
+                find_seed=find_seed,
+                track_span=track_span,
+            )
+
         records = _build_records(
             samples,
             masks,
@@ -724,6 +794,7 @@ def track(
             bucket_seed=(
                 None if bucket_seed is None else _seed_record(bucket_seed, samples, config)
             ),
+            bucket_reseeds=bucket_reseeds,
         )
 
         mask_io.save_objects(
