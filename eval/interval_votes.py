@@ -1145,7 +1145,9 @@ def combine(t, phase, graphs, windows, cue_from):
             return None, 0, 0, None
         a, b = primary["window"]
         support = [(w, wt[k]) for k, w in enumerate(windows) if k != k0 and w is not None]
-        total = sum(x for _, x in support)
+        # EXPERIMENT: the majority is out of ALL the supporting cues' weight, not
+        # only the cues that found something -- one cue alone is not a majority
+        total = sum(x for k, x in enumerate(wt) if k != k0)
         agree = sum(x for w, x in support if w["window"][0] <= b and w["window"][1] >= a)
         return (a, b), agree, total / 2, (a, b)
     if phase == "hauling":  # height must be one of them
@@ -1162,7 +1164,9 @@ def combine(t, phase, graphs, windows, cue_from):
             for w in windows
         ]
     present = [(w, wt[k]) for k, w in enumerate(windows) if w is not None]
-    total = sum(x for _, x in present)
+    # EXPERIMENT: out of ALL the stage's cue weight, not only the cues that found
+    # something (a lone weak cue used to count as a unanimous vote)
+    total = sum(wt)
     count = np.zeros(len(t))
     for w, x in present:
         count += x * ((t >= w["window"][0] - 1e-9) & (t <= w["window"][1] + 1e-9))
