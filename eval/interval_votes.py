@@ -1178,7 +1178,9 @@ def combine(t, phase, graphs, windows, cue_from):
     present = [(w, wt[k]) for k, w in enumerate(windows) if w is not None]
     # EXPERIMENT: out of ALL the stage's cue weight, not only the cues that found
     # something (a lone weak cue used to count as a unanimous vote)
-    total = sum(wt)
+    # Haul keeps the count of the cues that found something: it has only two cues
+    # and already REQUIRES its height climb, so one silent cue must not halve it.
+    total = sum(x for _, x in present) if phase == "hauling" else sum(wt)
     count = np.zeros(len(t))
     for w, x in present:
         count += x * ((t >= w["window"][0] - 1e-9) & (t <= w["window"][1] + 1e-9))
@@ -1533,6 +1535,19 @@ def from_found(t, F, side):
                 and strong is not None
                 and strong["window"][1] <= s["window"][0] + 1e-9
             )
+            if not missed and not late and s.get("weak") and strong is None:
+                # A low-agreement window is only accepted when a later dig shows the
+                # cycle went on (Aanya: "if there was a weak signal it shouldn't have
+                # been accepted unless we knew that there was a swing in that area
+                # which would only happen if we knew there was a dig"). With no dig
+                # after it, the clip may end before this stage happens.
+                stop = {
+                    "phase": phase,
+                    "search_from": anchor,
+                    "why": f"only a low-agreement window ({s['window'][0]:.1f} s) and no "
+                    "dig after it: the clip may end before this stage",
+                }
+                break
             if missed or late:
                 if strong is None:
                     stop = {"phase": phase, "search_from": anchor, "why": "no window found"}
