@@ -9,8 +9,8 @@ this ORDER (Aanya, 2026-09-27):
 1. GATES -- the necessary thresholds. None of the phase's cues are considered until
    all of its gates hold; cues may begin ``GATE_LOOKAHEAD`` s before that, and an
    event only counts if the gates hold somewhere in it or the second after it.
-   Dig: no truck overlap, on the pile side of the truck. Haul: height above this
-   cycle's dig height, no truck overlap. Dump: on the truck side of the cabin,
+   Dig: not over the truck, on the pile side of it. Haul: height above this
+   cycle's dig height, not over the truck. Dump: on the truck side of the cabin,
    height above the dig height. Return swing: none.
 2. REQUIRED CUE -- haul: height must be part of the window. Dump: the aspect
    ratio's steepest drop IS the window.
@@ -575,7 +575,12 @@ def finders(t, F, side):
         return find
 
     # ---- swing
-    x_takeoff = cc.knee_windows(x, t, "rising", "flat_to_steep")
+    # either way: on the long clip the bucket first moves past the truck, on Untitled4
+    # it heads straight back toward the pile (the "swing overshoot" question)
+    x_takeoff = sorted(
+        cc.knee_windows(x, t, "rising", "flat_to_steep")
+        + cc.knee_windows(x, t, "falling", "flat_to_steep")
+    )
     overlap_end = shape_runs(overlap, t, "drop ends -> flat")
     # height's high points. Aanya: "shouldn't more heights be identified, and then
     # from that, we choose what the ideal height is? ... make this more durable for
@@ -820,7 +825,7 @@ def finders(t, F, side):
                 "x_takeoff",
                 "bucket_x",
                 x,
-                "bucket x (toward truck +): knee, flat -> steep rise",
+                "bucket x (toward truck +): knee, flat -> steep, either way",
                 from_spans(x_takeoff),
                 background=x_takeoff,
             ),
@@ -996,7 +1001,12 @@ def gates(t, F, side, phase, anchor, cycle):
     with np.errstate(invalid="ignore"):
         if phase == "digging":
             return [
-                ("D1", "no overlap with the truck box", "truck_overlap", overlap <= 0),
+                (
+                    "D1",
+                    "not over the truck (within its left-right span, above its middle)",
+                    "truck_overlap",
+                    overlap <= 0,
+                ),
                 (
                     "D2",
                     f"on the pile side of the truck ({tlabel})",
@@ -1012,7 +1022,12 @@ def gates(t, F, side, phase, anchor, cycle):
                     "height",
                     h > dig_reference(t, F, anchor, cycle),
                 ),
-                ("H0", "no overlap with the truck box", "truck_overlap", overlap <= 0),
+                (
+                    "H0",
+                    "not over the truck (within its left-right span, above its middle)",
+                    "truck_overlap",
+                    overlap <= 0,
+                ),
             ]
         if phase == "dumping":
             return [
@@ -1394,7 +1409,7 @@ def settled_in_pile(t, F, side, a, b, levels):
             ),
             (
                 "off the truck",
-                "no overlap with the truck box",
+                "not over the truck (within its left-right span, above its middle)",
                 "truck_overlap",
                 F["truck_overlap"] <= 0,
             ),
@@ -1411,7 +1426,7 @@ def settled_in_pile(t, F, side, a, b, levels):
     return (None if idx.size == 0 else float(t[idx[0]])), drawn
 
 
-def find_dig(t, F, side, found, anchor, cycle):
+def find_dig(t, F, side, found, anchor, cycle, reach=2, weak=True):
     """A dig, in the open stretch the search is in -- or, if nothing there, the next
     one (Aanya: "if you can't find a cue for digging in that then look at the next one
     and it has to be within one of those two"). In each stretch: the dig cues first,
@@ -1419,7 +1434,7 @@ def find_dig(t, F, side, found, anchor, cycle):
     opens mid-dig, with no return swing before it for the cues to read, keeps its
     first dig. Every dig ends before the stretch's climb to the truck."""
     stretches = open_stretches(t, F)
-    near = [k for k, (a, b) in enumerate(stretches) if b > anchor + 1e-6][:2]
+    near = [k for k, (a, b) in enumerate(stretches) if b > anchor + 1e-6][:reach]
     for k in near:
         a, b = stretches[k]
         lo = max(a, anchor)
@@ -1432,6 +1447,8 @@ def find_dig(t, F, side, found, anchor, cycle):
             if lo - 1e-9 <= (ca + cb) / 2 <= hi:
                 w = (s["window"][0], min(s["window"][1], hi))
                 return {**s, "window": w, "how": "dig cues", "region": (lo, hi)}
+        if not weak:
+            continue
         levels = pile_and_arrival(t, F["height"], a, b, last=k == len(stretches) - 1)
         c, conditions = settled_in_pile(t, F, side, lo, hi, levels)
         if c is not None:
@@ -1454,21 +1471,66 @@ def from_found(t, F, side):
     """NO LABELS: each stage is searched for after the END of the window this code
     found for the stage before it -- dig, haul, dump, swing, round again -- from the
     clip's first frame (Aanya: "we need to make sure the condition of the end of the
-    prev interval holds before looking for the next stage"). A stage is never
-    skipped: if one gets no window, the search stops there and says so. Digs are
-    found by find_dig (inside an open stretch, before its climb to the truck)."""
+    prev interval holds before looking for the next stage"). Digs are found by
+    find_dig (inside an open stretch, before its climb to the truck).
+
+    Recovery (the old state machine's guard: "a strong dig abandons the cycle and
+    restarts"): a STRONG dig is one the dig cues find, never the weak "settled in
+    the pile" signal. If a stage finds nothing, or finds its window only after a
+    strong dig, the cycle is abandoned, the search restarts at that dig, and the gap
+    is recorded -- a skipped stage is reported, never guessed. It stops only when no
+    strong dig is left."""
     found = {
         ph: [g for g in lst if g["id"] not in SEEN_ONLY]
         for ph, lst in finders(t, F, side).items()
     }
-    out, cycle, anchor, k, stop = [], {}, float(t[0]), 0, None
+    out, cycle, anchor, k, stop, gaps = [], {}, float(t[0]), 0, None, []
+    dig_k = PHASE_ORDER.index("digging")
     while anchor < t[-1]:
         phase = PHASE_ORDER[k % len(PHASE_ORDER)]
         if phase == "digging":
             cycle = {}
             s = find_dig(t, F, side, found, anchor, cycle)
+            if s is None:
+                s = find_dig(t, F, side, found, anchor, cycle, reach=None, weak=False)
+                if s is not None:
+                    gaps.append(
+                        {
+                            "phase": phase,
+                            "from": anchor,
+                            "to": s["window"][0],
+                            "why": "no dig in the next two open stretches; restarted at "
+                            "the next strong dig",
+                        }
+                    )
         else:
             s = step(t, F, side, found, phase, anchor, cycle)
+            strong = find_dig(t, F, side, found, anchor, {}, reach=None, weak=False)
+            missed = s is None or s["window"] is None
+            late = (
+                not missed
+                and strong is not None
+                and strong["window"][1] <= s["window"][0] + 1e-9
+            )
+            if missed or late:
+                if strong is None:
+                    stop = {"phase": phase, "search_from": anchor, "why": "no window found"}
+                    break
+                why = (
+                    "no window found"
+                    if missed
+                    else f"its window ({s['window'][0]:.1f} s) came after a strong dig"
+                )
+                gaps.append(
+                    {
+                        "phase": phase,
+                        "from": anchor,
+                        "to": strong["window"][0],
+                        "why": f"{why}; cycle abandoned, restarted at the dig",
+                    }
+                )
+                cycle = {}
+                s, phase, k = {**strong, "how": "dig cues (restart)"}, "digging", dig_k
         if s is None or s["window"] is None:
             stop = {"phase": phase, "search_from": anchor, "why": "no window found"}
             break
@@ -1480,7 +1542,7 @@ def from_found(t, F, side):
             stop = {"phase": phase, "search_from": anchor, "why": "did not move forward"}
             break
         anchor, k = nxt, k + 1
-    return found, out, stop
+    return found, out, stop, gaps
 
 
 def score(steps, marks):
@@ -1542,22 +1604,27 @@ def main(argv=None) -> int:
         feat_path, label_path = args.features, args.labels
     else:
         feat_path, label_path = cc.CLIPS[args.clip]
-    t, F = cc.load_features(feat_path)
+    try:
+        t, F = cc.load_features(feat_path)
+    except cc.CheckError as exc:
+        print(f"cannot find phases: {exc}")
+        return 2
     side = cc.truck_side(F)
     marks = cc.load_onsets(label_path) if label_path is not None else []
-    stop = None
+    stop, gaps = None, []
     if args.anchor == "marks":
         if not marks:
             raise SystemExit("--anchor marks needs labels")
         found, steps = from_marks(t, F, side, marks)
     else:
-        found, steps, stop = from_found(t, F, side)
+        found, steps, stop, gaps = from_found(t, F, side)
 
     data = {
         "clip": args.features.parent.name if args.features is not None else args.clip,
         "side": side,
         "anchor": args.anchor,
         "stop": stop,
+        "gaps": gaps,
         "score": score(steps, marks) if marks else None,
         "limits": {
             "min_half": MIN_HALF,
@@ -1625,6 +1692,8 @@ def main(argv=None) -> int:
         "marks": [{"phase": p, "t": s} for p, s in marks],
     }
     args.out.write_text(json.dumps(data))
+    for gp in gaps:
+        print(f"  GAP: {gp['phase']} from {gp['from']:.2f}s to {gp['to']:.2f}s: {gp['why']}")
     for s in steps:
         if s["window"] is None:
             w = "no 2 agree"

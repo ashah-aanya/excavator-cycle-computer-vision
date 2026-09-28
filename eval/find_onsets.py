@@ -147,7 +147,11 @@ def main(argv=None) -> int:
     else:
         raise SystemExit("give --clip or --features")
 
-    t, F = cc.load_features(feat_path)
+    try:
+        t, F = cc.load_features(feat_path)
+    except cc.CheckError as exc:
+        print(f"cannot find phases: {exc}")
+        return 2
     F["aspect_ratio_dt"] = cc.derivative(F["aspect_ratio"], t)
     data = json.loads(args.result.read_text())
     marks = cc.load_onsets(label_path) if label_path else []
