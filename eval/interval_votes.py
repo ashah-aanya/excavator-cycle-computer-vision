@@ -11,7 +11,7 @@ this ORDER (Aanya, 2026-09-27):
    event only counts if the gates hold somewhere in it or the second after it.
    Dig: no truck overlap, on the pile side of the truck. Haul: height above this
    cycle's dig height, no truck overlap. Dump: on the truck side of the cabin,
-   height above the dig height, above the cabin. Return swing: none.
+   height above the dig height. Return swing: none.
 2. REQUIRED CUE -- haul: height must be part of the window. Dump: the aspect
    ratio's steepest drop IS the window.
 3. SUPPORTING CUES -- a majority of the cues that found something must agree
@@ -1028,12 +1028,9 @@ def gates(t, F, side, phase, anchor, cycle):
                     "height",
                     h > dig_reference(t, F, anchor, cycle),
                 ),
-                (
-                    "P3",
-                    "above the cabin (bucket - cabin y > 0)",
-                    "rel_cabin_y",
-                    F["rel_cabin_y"] > 0,
-                ),
+                # EXPERIMENT: no "above the cabin (bucket - cabin y > 0)" gate. On
+                # Untitled (low, far camera) the bucket is level with the cab while
+                # it dumps, so that gate held for one frame in 54 s.
             ]
     return []
 

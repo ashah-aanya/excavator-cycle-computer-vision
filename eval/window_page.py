@@ -107,7 +107,7 @@ ORDER_TEXT = {
         "more than half of the total weight of the cues within 5 s of height's window",
     ),
     "dumping": (
-        "on the truck side of the cabin · height above the dig height · above the cabin",
+        "on the truck side of the cabin · height above the dig height",
         "every aspect-ratio drop of ≥ 30% is a candidate; its steepest point ± uncertainty is the window",
         "the candidate with the most supporting weight is kept (flagged low agreement if that is not more than half of the others' weight)",
     ),
