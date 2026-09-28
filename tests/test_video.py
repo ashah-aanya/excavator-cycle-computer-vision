@@ -110,86 +110,87 @@ def test_probe_verify_matches_what_iteration_yields(clip_30fps: Path):
     )
 
 
-# --- which clock do we trust? ---------------------------------------------
+# --- every time comes from the file ------------------------------------------
 
 
-def test_a_constant_rate_file_is_classified_constant(tmp_path):
-    """And therefore timed by index/fps, not by the decoder.
+def _write_uneven_video(path: Path, times: list[float], size=(64, 48)) -> Path:
+    """A clip whose frames are stored at exactly ``times`` (seconds), like a screen
+    recording that captures faster in some stretches than others."""
+    from fractions import Fraction
 
-    CAP_PROP_POS_MSEC is often computed from a ROUNDED rate rather than read
-    from the container: on the task video it returns exactly n/30 while the true
-    rate is 29.97396912, so every timestamp is 0.1% short. That is 0.022 s over
-    one work cycle -- small against a 0.6 s tolerance, but systematic, and it
-    offsets every prediction against ground truth converted at the true rate.
-    """
-    from excavator_cycles.video import classify_timeline
+    import av
+
+    base = Fraction(1, 1000)
+    with av.open(str(path), mode="w") as out:
+        stream = out.add_stream("mpeg4", rate=30)
+        stream.width, stream.height = size
+        stream.pix_fmt = "yuv420p"
+        stream.codec_context.time_base = base
+        for i, t in enumerate(times):
+            image = np.full((size[1], size[0], 3), (i * 20) % 256, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(image, format="bgr24")
+            frame.pts = round(t * 1000)
+            frame.time_base = base
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    return path
+
+
+# 20 frames: 10 at 0.02 s spacing (fast), then 10 at 0.1 s spacing (slow).
+UNEVEN = [round(0.02 * i, 3) for i in range(10)] + [
+    round(0.18 + 0.1 * i, 3) for i in range(1, 11)
+]
+
+
+def test_uneven_frames_get_their_stored_times(tmp_path):
+    """The bug this fixes. Frame 10 is stored at 0.28 s; `index / average fps`
+    (20 frames over 1.28 s) puts it at 0.64 s, 0.36 s late on a 1.3 s clip. The
+    stored timestamp is exact."""
+    from excavator_cycles.video import frame_times
+
+    path = _write_uneven_video(tmp_path / "uneven.mp4", UNEVEN)
+    got = frame_times(path)
+    assert got == pytest.approx(UNEVEN, abs=1e-3)
+    samples = list(iter_samples(path, rate_hz=1000.0))  # every frame
+    assert [s.time_seconds for s in samples] == pytest.approx(UNEVEN, abs=1e-3)
+    average = len(UNEVEN) / (UNEVEN[-1] + 0.1)
+    assert 10 / average - UNEVEN[10] == pytest.approx(0.36, abs=0.01), "index / fps is off"
+
+
+def test_an_uneven_file_is_reported_variable(tmp_path):
+    info = probe(_write_uneven_video(tmp_path / "uneven.mp4", UNEVEN), verify=True)
+    assert info.timeline == "variable"
+    assert "stored in the file" in info.summary()
+
+
+def test_an_even_file_is_reported_constant_and_timed_by_its_timestamps(tmp_path):
+    from excavator_cycles.video import frame_times
 
     path = _write_video(tmp_path / "cfr.mp4", fps=25.0, n_frames=40)
-    assert classify_timeline(path) == "constant"
-
-
-def test_constant_rate_timestamps_come_from_the_frame_rate(tmp_path):
-    from excavator_cycles.video import probe
-
-    info = probe(_write_video(tmp_path / "cfr.mp4", fps=25.0, n_frames=40))
+    info = probe(path, verify=True)
     assert info.timeline == "constant"
-    assert "index / fps" in info.summary()
+    assert frame_times(path) == pytest.approx(np.arange(40) / 25.0, abs=1e-6)
 
 
-def test_constant_rate_timing_is_exact_arithmetic_not_the_decoder(tmp_path):
-    """On "constant" the helper must compute index/fps and never consult the
-    decoder -- that is the whole point, since the decoder may be quantised."""
-    import cv2
+def test_the_task_videos_stored_timestamps_are_thirtieths():
+    """Pinned against the real file when it is present.
 
-    from excavator_cycles.video import _timestamp_seconds
-
-    path = _write_video(tmp_path / "cfr.mp4", fps=30.0, n_frames=10)
-    capture = cv2.VideoCapture(str(path))
-    try:
-        for index in (0, 3, 7):
-            got = _timestamp_seconds(capture, index, 29.97396912419384, "constant")
-            assert got == pytest.approx(index / 29.97396912419384), (
-                "constant-rate timing must be exact index/fps"
-            )
-    finally:
-        capture.release()
-
-
-def test_the_two_clocks_disagree_on_the_task_video():
-    """The bug this fixes, pinned against the real file when it is present.
-
-    The container reports 29.97396912 fps; OpenCV's POS_MSEC returns exactly
-    n/30. Over one 755-frame work cycle that is 0.022 s -- 3.6% of the budget,
-    in the same direction every time.
-    """
-    import cv2
+    The header's rate is 29.97396912 (from the same header that claims 1102
+    frames when 886 exist), but every stored timestamp is exactly n/30. An earlier
+    fix (PR #2) trusted the header and computed index / 29.974; the file itself
+    says 30, and the file is what we read now. The two differ by at most 0.026 s
+    over the clip."""
+    from excavator_cycles.video import frame_times
 
     video = (
         Path(__file__).resolve().parent.parent / "construction_excavator_cycle_duration_1.mp4"
     )
     if not video.exists():
-        # SKIPS IN CI, and that is acceptable rather than a gap. `*.mp4` is
-        # gitignored, and this test pins the specific magnitude of the discrepancy on
-        # the real file, which cannot be synthesised faithfully -- it is a property of
-        # that container's metadata against OpenCV's timeline.
-        #
-        # The BEHAVIOUR is covered by tests that do run in CI:
-        # `test_constant_rate_timestamps_come_from_the_frame_rate` and
-        # `test_constant_rate_timing_is_exact_arithmetic_not_the_decoder`. Those assert
-        # that the pipeline reads time from the frame rate rather than the decoder,
-        # which is the thing that would break. This one records why it matters.
-        pytest.skip("task video not present; the behaviour is covered synthetically")
-    capture = cv2.VideoCapture(str(video))
-    try:
-        fps = capture.get(cv2.CAP_PROP_FPS)
-        stamps = []
-        for _ in range(60):
-            if not capture.grab():
-                break
-            stamps.append(capture.get(cv2.CAP_PROP_POS_MSEC))
-    finally:
-        capture.release()
-    implied = 1000 * (len(stamps) - 1) / (stamps[-1] - stamps[0])
-    assert implied == pytest.approx(30.0, abs=0.01), "POS_MSEC is on a round 30 fps timeline"
-    assert fps == pytest.approx(29.97396912, abs=1e-6), "the container knows better"
-    assert abs(755 / 30 - 755 / fps) == pytest.approx(0.022, abs=0.002)
+        # SKIPS IN CI: `*.mp4` is gitignored. The behaviour (times come from the
+        # file) is covered by the synthetic tests above.
+        pytest.skip("task video not present")
+    times = frame_times(video)
+    assert len(times) == 886
+    assert times == pytest.approx(np.arange(886) / 30.0, abs=1e-9)
