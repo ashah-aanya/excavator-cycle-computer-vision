@@ -50,6 +50,11 @@ ORDER = ("digging", "hauling", "dumping", "swinging")
 # Broadened again (Aanya: wider is safer once several cues validate a window --
 # missing the transition cannot be undone). The maximum stays under the shortest
 # phase (a dump, about 2.5 s), so no window can hold two phase starts.
+# EXPERIMENT, off unless --dump-reweight: over the truck votes 3 for a dump, read
+# at the tip and only in the first DUMP_VISIT_EARLY of the visit; dh/dt near 0
+# votes 0.5 (Aanya: "vote the overlap higher and the dh/dt a lot weaker").
+DUMP_REWEIGHT = {"on": False}
+DUMP_VISIT_EARLY = 0.7  # chosen from the data: real tips at <= 65% of a visit
 MIN_HALF = 0.75
 RATE_MIN_HALF = 0.75
 MAX_HALF = 1.2
@@ -518,6 +523,9 @@ def finders(t, F, side):
         dump_dx_mask = dx > 0  # key: "positive"
         dump_overlap_mask = overlap > 0  # key (bucket - truck x): "overlap"
         swing_dh_mask = (dh > dh_noise) & (np.gradient(dh, t) < 0)  # "positive decreasing"
+    if DUMP_REWEIGHT["on"]:
+        for va, vb in cc._runs(overlap > 0, t):
+            dump_overlap_mask &= ~((t > va + DUMP_VISIT_EARLY * (vb - va)) & (t <= vb))
     radius_peaks = cc.excursion_windows(radius, t, "peak", min_size=0.5)
     radius_slope = np.gradient(radius, t)
 
@@ -1054,6 +1062,14 @@ def fill_checks(t, graphs, windows, primary):
         if primary is None:
             continue
         a, b = primary["window"]
+        if (
+            DUMP_REWEIGHT["on"]
+            and g["id"] == "overlapping"
+            and primary.get("centre") is not None
+        ):
+            at = int(np.argmin(np.abs(np.asarray(t) - primary["centre"])))
+            if not g["mask"][at]:  # read at the tip itself
+                continue
         inside = [(max(x, a), min(y, b)) for x, y in _runs_in(t, g["mask"], a, b)]
         if inside:
             windows[k] = {
@@ -1266,6 +1282,13 @@ def step(t, F, side, found, phase, anchor, cycle, clip_start=True):
         k0 = [g["role"] for g in graphs].index("primary")
         pg = graphs[k0]
         cands = [e for e in pg["candidates"](cue_from, cycle) if passes(e["event"])]
+        # The truck visit brackets the dump: a bucket can only dump while over the
+        # truck, and tips from a LATER visit belong to a later cycle -- without
+        # this, a clean dump one cycle on outscored this cycle's real tip. Only
+        # tips inside the first visit that ends after the search start compete.
+        visit = next((v for v in cc._runs(F["truck_overlap"] > 0, t) if v[1] > cue_from), None)
+        if visit is not None:
+            cands = [e for e in cands if visit[0] - 1e-9 <= e["centre"] <= visit[1] + 1e-9]
         tried = []
         for e in cands:  # each candidate tip, with the checks read inside ITS window
             trial = list(windows)
@@ -1592,8 +1615,18 @@ def main(argv=None) -> int:
         help="horizontal cues from the position along the pile-to-truck line (default), "
         "bucket x, the distance to the truck, or the x gap to it",
     )
+    ap.add_argument(
+        "--dump-reweight",
+        action="store_true",
+        help="EXPERIMENT: over the truck votes 3 for a dump (at the tip, first 70%% of "
+        "the visit), dh/dt near 0 votes 0.5",
+    )
     args = ap.parse_args(argv)
     HORIZONTAL["mode"] = args.horizontal
+    if args.dump_reweight:
+        DUMP_REWEIGHT["on"] = True
+        WEIGHTS[("dumping", "overlapping")] = 3
+        WEIGHTS[("dumping", "dh_near_0")] = 0.5
     if args.features is not None:
         feat_path, label_path = args.features, args.labels
     else:
