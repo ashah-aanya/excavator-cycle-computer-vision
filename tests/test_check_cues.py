@@ -160,7 +160,10 @@ def test_no_match_is_a_miss_not_a_crash(cc):
     [
         ("digging", "speed_2d", "drop ends -> flat", [-0.3, -0.6, 0.0]),
         ("swinging", "d2x_dt2", "peak", [-0.2, -0.2, -0.3]),
-        ("swinging", "truck_overlap", "drop ends -> flat", [-0.8, -0.4, -0.7]),
+        # ("swinging", "truck_overlap", "drop ends -> flat") is gone: the swing no
+        # longer uses an overlap cue (Aanya, 2026-09-28: "this isn't a requirement
+        # for swinging"), and truck_overlap now means "over the truck", not box
+        # overlap in the picture.
     ],
 )
 def test_long_clip_cues_found_so_far(cc, phase, feature, shape, start_errors):

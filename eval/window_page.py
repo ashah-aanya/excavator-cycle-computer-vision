@@ -80,7 +80,6 @@ QUOTES = {
     ("dumping", "dx_positive"): "Your key, dx/dt at dump: “positive”.",
     ("dumping", "overlapping"): "Your key, bucket − truck x at dump: “overlap”.",
     ("swinging", "x_takeoff"): "Your key, bucket x: “start right before peak”.",
-    ("swinging", "overlap_end"): "Your key: “end of overlap”.",
     (
         "swinging",
         "height_peak",

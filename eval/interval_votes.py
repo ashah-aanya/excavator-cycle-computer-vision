@@ -581,7 +581,10 @@ def finders(t, F, side):
         cc.knee_windows(x, t, "rising", "flat_to_steep")
         + cc.knee_windows(x, t, "falling", "flat_to_steep")
     )
-    overlap_end = shape_runs(overlap, t, "drop ends -> flat")
+    # No truck-overlap cue for the swing. Aanya, 2026-09-28: "this isn't a
+    # requirement for swinging. i never said it can't overlap" -- the bucket can
+    # start back while still over the truck box, so "overlap ends" came mid-swing
+    # and pulled the window late.
     # height's high points. Aanya: "shouldn't more heights be identified, and then
     # from that, we choose what the ideal height is? ... make this more durable for
     # understanding variations and not just looking for the most specific patterns".
@@ -828,14 +831,6 @@ def finders(t, F, side):
                 "bucket x (toward truck +): knee, flat -> steep, either way",
                 from_spans(x_takeoff),
                 background=x_takeoff,
-            ),
-            g(
-                "overlap_end",
-                "truck_overlap",
-                overlap,
-                "bucket ^ truck box: drop ends -> flat (overlap over)",
-                from_spans(overlap_end),
-                background=overlap_end,
             ),
             g(
                 "height_peak",
@@ -1126,7 +1121,6 @@ WEIGHTS = {
     ("dumping", "dx_positive"): 1,
     ("dumping", "overlapping"): 1,
     ("swinging", "x_takeoff"): 3,
-    ("swinging", "overlap_end"): 2,
     ("swinging", "radius_bump_start"): 2,
     ("swinging", "dh_positive_falling"): 1,
     ("swinging", "height_peak"): 1,
