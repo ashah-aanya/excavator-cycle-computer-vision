@@ -25,7 +25,7 @@ import numpy as np
 
 from .logging_setup import get_logger
 from .track import TrackResult, load_result
-from .video import probe
+from .video import decode, frame_times, probe
 
 log = get_logger(__name__)
 
@@ -143,22 +143,32 @@ def render(
     if not writer.isOpened():
         raise RuntimeError(f"could not open video writer for {out_path}")
 
-    capture = cv2.VideoCapture(str(result.video))
-    if not capture.isOpened():
-        raise RuntimeError(f"could not open source video {result.video}")
+    # The output plays at one fixed rate, the source may not: each source frame is
+    # written once per output slot that falls in the time it is on screen (0, 1 or
+    # 2 slots on an uneven file, exactly 1 on an even one), so the overlay plays in
+    # step with the real video. Every time is the frame's stored timestamp.
+    times = frame_times(result.video)
+    slots = max(1, round(info.duration_seconds * info.fps))
+    shown = np.searchsorted(times, np.arange(slots) / info.fps + 1e-6, side="right") - 1
+    repeats = np.bincount(np.clip(shown, 0, len(times) - 1), minlength=len(times))
 
     written = with_mask = 0
     current = -1  # index into `ordered`
     try:
-        frame_index = 0
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-
+        for frame_index, seconds, source in decode(result.video):
             while current + 1 < len(ordered) and ordered[current + 1] <= frame_index:
                 current += 1
 
+            copies = int(repeats[frame_index]) if frame_index < len(repeats) else 0
+            if copies == 0:
+                continue
+            frame = source.to_ndarray(format="bgr24")
+            # Tracking shrinks frames to `inference_max_edge` and stores every mask,
+            # box and point at that size; draw on the same size.
+            if frame.shape[:2] != (result.height, result.width):
+                frame = cv2.resize(
+                    frame, (result.width, result.height), interpolation=cv2.INTER_AREA
+                )
             record = result.frames[by_frame[ordered[current]]] if current >= 0 else None
             sample_position = by_frame[ordered[current]] if current >= 0 else None
             mask = masks.get(sample_position) if sample_position is not None else None
@@ -167,7 +177,7 @@ def render(
             if table is not None and sample_position is not None:
                 canvas = _draw_physics(canvas, table, scene, sample_position, scale)
             if onsets:
-                _draw_phase_banner(canvas, onsets, frame_index / info.fps)
+                _draw_phase_banner(canvas, onsets, seconds)
             left = np.vstack(
                 [
                     canvas,
@@ -177,7 +187,7 @@ def render(
                         width,
                         panel_height,
                         frame_index,
-                        info.fps,
+                        seconds,
                         table,
                         sample_position,
                     ),
@@ -208,12 +218,11 @@ def render(
                     f"frame is {canvas.shape[1]}x{canvas.shape[0]}, "
                     f"writer expects {canvas_width}x{canvas_height}"
                 )
-            writer.write(canvas)
-            written += 1
-            with_mask += mask is not None
-            frame_index += 1
+            for _ in range(copies):
+                writer.write(canvas)
+            written += copies
+            with_mask += copies * (mask is not None)
     finally:
-        capture.release()
         writer.release()
 
     size = out_path.stat().st_size if out_path.exists() else 0
@@ -573,7 +582,7 @@ def _draw_panel(
     width: int,
     height: int,
     frame_index: int,
-    fps: float,
+    seconds: float,
     table=None,
     position: int | None = None,
 ):
@@ -584,7 +593,6 @@ def _draw_panel(
     scale = max(0.42, width / 1500)
     line = int(height * 0.42)
 
-    seconds = frame_index / fps if fps else 0.0
     left = [
         f"t {seconds:6.2f}s   frame {frame_index}",
         f"mask {record.mask_area_fraction * 100:5.2f}%   conf {record.sam_confidence:.2f}"
@@ -649,17 +657,17 @@ def _draw_panel(
         cv2.LINE_AA,
     )
 
-    _progress_bar(panel, frame_index, result, width, height, fps)
+    _progress_bar(panel, seconds, result, width, height)
     return panel
 
 
-def _progress_bar(panel, frame_index, result: TrackResult, width, height, fps):
+def _progress_bar(panel, seconds, result: TrackResult, width, height):
     """A thin ribbon: the whole video's timeline with a playhead."""
     y = height - 6
     cv2.line(panel, (8, y), (width - 8, y), (70, 70, 70), 2)
     if result.duration_seconds <= 0:
         return
-    position = (frame_index / fps) / result.duration_seconds if fps else 0.0
+    position = seconds / result.duration_seconds
     x = int(8 + position * (width - 16))
     cv2.line(panel, (x, y - 4), (x, y + 4), _TEXT, 1)
 
