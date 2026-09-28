@@ -127,7 +127,8 @@ def ticks(y0, y1, H):
     )
 
 
-def trace(key, H, TOP, BOT):
+def yscale(key, H, TOP, BOT):
+    """Value -> y pixel for one signal, and its (lo, hi) range."""
     v = [x for x in D["signals"][key] if x is not None]
     vs = sorted(v)
     lo, hi = vs[int(0.01 * len(vs))], vs[int(0.99 * len(vs)) - 1]
@@ -135,7 +136,15 @@ def trace(key, H, TOP, BOT):
     lo, hi = lo - pad, hi + pad
     if hi <= lo:  # a flat signal (e.g. overlap 0 throughout): centre it, don't divide by 0
         lo, hi = lo - 1, hi + 1
-    Y = lambda y: TOP + (1 - (min(max(y, lo), hi) - lo) / (hi - lo)) * (H - TOP - BOT)  # noqa: E731
+    return (
+        (lambda y: TOP + (1 - (min(max(y, lo), hi) - lo) / (hi - lo)) * (H - TOP - BOT)),
+        lo,
+        hi,
+    )
+
+
+def trace(key, H, TOP, BOT):
+    Y, lo, hi = yscale(key, H, TOP, BOT)
     pts = " ".join(
         f"{X(a):.1f},{Y(b):.1f}"
         for a, b in zip(t, D["signals"][key], strict=True)
@@ -288,9 +297,14 @@ def window_strip(phase, steps, marks):
             o.append(
                 f'<text x="{X(st["search_from"]) + 8:.1f}" y="20" class="tk none">no window</text>'
             )
+    for on in D.get("onsets", []):
+        if on["phase"] == phase and on["t"] is not None:
+            o.append(
+                f'<line x1="{X(on["t"]):.1f}" x2="{X(on["t"]):.1f}" y1="2" y2="{H - 18}" stroke="var(--ink)" stroke-width="2.4"/>'
+            )
     o.append(marks_svg(marks, 2, H, 18))
     o.append("</svg>")
-    return f'<figure><figcaption><b>Phase window</b> · the result (dashed = low agreement: no location had more than half the weight, so the window is where the most weight agrees — “there has to be something for that given stage transition”)</figcaption><div class="plot">{"".join(o)}</div></figure>'
+    return f'<figure><figcaption><b>Phase window</b>{" · solid line = the exact start found inside it" if D.get("onsets") else ""} · the result (dashed = low agreement: no location had more than half the weight, so the window is where the most weight agrees — “there has to be something for that given stage transition”)</figcaption><div class="plot">{"".join(o)}</div></figure>'
 
 
 def table(_phase, steps, marks, finders):
@@ -374,6 +388,119 @@ def horizontal_graph(key, title, note, dips=None, extra=None):
     )
 
 
+ONSET_TEXT = {
+    "digging": (
+        "2D speed",
+        "the lowest 2D speed inside the window. “for now for dig just find the local min of speed in that interval”",
+    ),
+    "hauling": (
+        "height rate (dh/dt, + = rising)",
+        "start at the fastest rise inside the window, walk back while the height is still rising faster than its noise band",
+    ),
+    "dumping": (
+        "aspect-ratio rate, flipped (+ = falling = tipping)",
+        "start at the fastest tip inside the window, walk back while it is still tipping faster than its noise band",
+    ),
+    "swinging": (
+        "pile-to-truck rate, either direction (|rate|)",
+        "start at the fastest movement along the pile–truck line inside the window, walk back while it is still moving faster than its noise band. Either direction, because on this clip the bucket first moves PAST the truck (the open overshoot question)",
+    ),
+}
+
+
+def onset_graph(phase):
+    """The curve a phase's start is read from: windows, search stretch, noise band,
+    where the walk began (▴), the start (solid line) and the marks (dashed)."""
+    key = f"onset_{phase}"
+    H, TOP, BOT = 150, 12, 22
+    c = COL[phase]
+    Y, lo, hi = yscale(key, H, TOP, BOT)
+    o = [
+        f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="{NAME[phase]} start">',
+        ticks(TOP, H - BOT, H),
+    ]
+    ons = [on for on in D["onsets"] if on["phase"] == phase]
+    for st in (s for s in D["steps"] if s["phase"] == phase and s["window"]):
+        a, b = st["window"]
+        o.append(
+            f'<rect x="{X(a):.1f}" y="{TOP}" width="{max(X(b) - X(a), 2):.1f}" height="{H - TOP - BOT}" fill="{c}" fill-opacity=".35"/>'
+        )
+    for on in ons:
+        if on.get("bracket"):
+            a, b = on["bracket"]
+            o.append(
+                f'<rect x="{X(a):.1f}" y="{TOP + 1}" width="{max(X(b) - X(a), 2):.1f}" height="{H - TOP - BOT - 2}" fill="none" stroke="var(--muted)" stroke-dasharray="3 3"/>'
+            )
+        if on.get("band") is not None:
+            a, b = on["bracket"]
+            y = Y(on["band"])
+            o.append(
+                f'<line x1="{X(a):.1f}" x2="{X(b):.1f}" y1="{y:.1f}" y2="{y:.1f}" stroke="var(--gate)" stroke-width="1.6"/>'
+            )
+    if lo < 0 < hi:
+        o.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(0):.1f}" y2="{Y(0):.1f}" stroke="var(--rule)"/>'
+        )
+    o.append(trace(key, H, TOP, BOT))
+    for on in ons:
+        if on.get("peak") is not None:
+            o.append(
+                f'<path d="M{X(on["peak"]):.1f},{H - BOT - 1} l-5,8 h10 z" fill="var(--ink)"/>'
+            )
+        if on["t"] is not None:
+            o.append(
+                f'<line x1="{X(on["t"]):.1f}" x2="{X(on["t"]):.1f}" y1="{TOP}" y2="{H - BOT}" stroke="var(--ink)" stroke-width="2.4"/>'
+            )
+    o.append(marks_svg([m["t"] for m in D["marks"] if m["phase"] == phase], TOP, H, BOT))
+    o.append("</svg>")
+    name, rule = ONSET_TEXT[phase]
+    return f'<figure><figcaption><b>{NAME[phase]}</b> · {html.escape(name)} — {html.escape(rule)}</figcaption><div class="plot">{"".join(o)}</div></figure>'
+
+
+def onset_table():
+    rows, per = [], {}
+    for on in D["onsets"]:
+        at = "—" if on["t"] is None else f"{on['t']:.2f} s"
+        if on.get("mark") is None:
+            mk = err = base = '<span class="dim">—</span>'
+        else:
+            e, b = on["error"], on["window_start_error"]
+            per.setdefault(on["phase"], []).append((abs(e), abs(b)))
+            cls = "good" if abs(e) <= abs(b) else "bad"
+            mk, err, base = (
+                f"{on['mark']:.2f} s",
+                f'<span class="res {cls}">{e:+.2f} s</span>',
+                f"{b:+.2f} s",
+            )
+        rows.append(
+            f"<tr><td><span class='dot' style='display:inline-block;background:{COL[on['phase']]}'></span> {NAME[on['phase']]}</td><td>{at}</td><td>{mk}</td><td>{err}</td><td>{base}</td><td class='dim'>{html.escape(on['how'])}</td></tr>"
+        )
+    means = " · ".join(
+        f"{NAME[p]} <b>{sum(a for a, _ in v) / len(v):.2f} s</b> (window start {sum(b for _, b in v) / len(v):.2f} s)"
+        for p, v in per.items()
+    )
+    return (
+        (f"<p class='note'>Mean distance from your marks: {means}</p>" if means else "")
+        + "<div class='tbl'><table><thead><tr><th>phase</th><th>start found</th><th>your mark</th><th>error</th><th>if we used the window's start</th><th>how</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )
+
+
+def onset_section():
+    if not D.get("onsets"):
+        return ""
+    figs = "".join(
+        onset_graph(p)
+        for p in ("digging", "hauling", "dumping", "swinging")
+        if f"onset_{p}" in D["signals"]
+    )
+    return f"""<section class="phase" style="--c:var(--ink)"><h2>Exact start inside each window</h2>
+    <p class="note">From <code>eval/find_onsets.py</code>, reading only the windows and the signals — no labels. “the specific frame has to be within the interval”: every start is inside its window. Shaded = the phase window · purple line = the noise band (3× the curve's own jitter, measured inside the window) · ▴ = the fastest movement inside the window, where the walk back begins · <b>solid line = the start</b>: the walk back stops when the movement drops inside the noise band, or at the window's start · dashed = your mark. When nothing in the window moves faster than its noise band, the start is the window's centre, drawn dotted: “it needs to report a frame in the window so either it finds one or just the center of the window”.</p>
+    <div class="key"><span><i style="background:var(--muted);opacity:.35"></i>phase window</span><span><i style="height:0;border-top:2px solid var(--gate)"></i>noise band</span><span>▴ walk starts</span><span><i style="height:0;border-top:2.4px solid var(--ink)"></i>start found</span><span><i class="k3"></i>your mark</span></div>
+    {figs}{onset_table()}</section>"""
+
+
 def render():
     """The whole page for the loaded result file D."""
     hd = D["horizontal_dips"]
@@ -402,7 +529,7 @@ def render():
         if stop
         else ""
     )
-    sections = [horizontal]
+    sections = [onset_section(), horizontal]
     for phase in ("digging", "hauling", "dumping", "swinging"):
         steps = [s for s in D["steps"] if s["phase"] == phase]
         marks = [m["t"] for m in D["marks"] if m["phase"] == phase]
