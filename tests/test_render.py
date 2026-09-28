@@ -145,6 +145,25 @@ def test_render_scale_changes_output_size(fake_cache: Path):
     assert width == 320
 
 
+def test_render_a_video_larger_than_the_tracked_frames(fake_cache: Path):
+    """Tracking downscales to `inference_max_edge`, so the stored masks can be
+    smaller than the source video. The render must draw at the tracked size."""
+    record = json.loads((fake_cache / "track.json").read_text())
+    record["width"], record["height"] = 80, 60
+    (fake_cache / "track.json").write_text(json.dumps(record))
+    _, masks = load_result(fake_cache)
+    half = {i: m[::2, ::2] for i, m in masks.items()}
+    mask_io.save(fake_cache / "masks.npz", half, (60, 80))
+
+    stats = render(fake_cache, out_path=fake_cache / "small.mp4", scale=2.0)
+    assert stats.frames_written == 60
+    assert stats.frames_with_mask == 60, "the masks line up with the frame"
+    cap = cv2.VideoCapture(str(stats.output_path))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    cap.release()
+    assert width == 160
+
+
 def test_render_without_boxes(fake_cache: Path):
     stats = render(fake_cache, out_path=fake_cache / "mask_only.mp4", draw_boxes=False)
     assert stats.frames_written == 60
