@@ -163,6 +163,15 @@ def test_pipeline_never_references_the_labels():
     offenders = []
     for path in (REPO / "src" / "excavator_cycles").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        if "eval/labels" in text or "labels.json" in text or "eval.score" in text:
+        if any(
+            name in text
+            for name in (
+                "eval/labels",
+                "labels.json",
+                "labels_long_clip",
+                "eval.score",
+                "check_cues",
+            )
+        ):
             offenders.append(str(path.relative_to(REPO)))
     assert not offenders, f"pipeline modules reference the eval labels: {offenders}"

@@ -1,0 +1,52 @@
+{
+  "_README": "Hand-made phase onsets for the 83 s clip. EVALUATION ONLY. Nothing under src/excavator_cycles/ may import or read this file. See eval/README.md.",
+  "schema_version": 2,
+
+  "video": {
+    "filename": "construction_excavator_cycle_duration_1.mp4",
+    "_filename_note": "SAME FILENAME as the 29.6 s dev clip that eval/labels.json describes, but a DIFFERENT video. Tell them apart by sha256 or length, never by name.",
+    "sha256": "e80d63cda8a01776a5e0a1f9ff43e29f5df1267bb34815654ed54885a582b077",
+    "duration_seconds": 83.2,
+    "decoded_frames": 2496,
+    "_frame_note": "The container header claims 2602 frames at 29.989 fps; only 2496 decode.",
+    "fps": 30.0,
+    "_fps_note": "Not the header's 29.989. The decoder places every frame at exactly frame / 30 (checked frame by frame with cv2 CAP_PROP_POS_MSEC), so seconds = frame / 30."
+  },
+
+  "provenance": {
+    "source": "hand-decided by Aanya from the video, pasted as a frame list on 2026-09-26",
+    "method": "manual review; NOT model output and NOT produced by the pipeline",
+    "purpose": "checking candidate cues and pipeline output only"
+  },
+
+  "onsets": {
+    "_units": "Same convention as eval/labels.json: frame f means the instant immediately before frame f, so its time is the timestamp of frame f.",
+    "_order": "The cycle repeats digging -> hauling -> dumping -> swinging. The first digging onset opens the first cycle; the last closes the third.",
+    "list": [
+      {"phase": "digging",  "frame": 16},
+      {"phase": "hauling",  "frame": 230},
+      {"phase": "dumping",  "frame": 450},
+      {"phase": "swinging", "frame": 570},
+      {"phase": "digging",  "frame": 740},
+      {"phase": "hauling",  "frame": 932},
+      {"phase": "dumping",  "frame": 1220},
+      {"phase": "swinging", "frame": 1297},
+      {"phase": "digging",  "frame": 1507},
+      {"phase": "hauling",  "frame": 1835},
+      {"phase": "dumping",  "frame": 2063},
+      {"phase": "swinging", "frame": 2145},
+      {"phase": "digging",  "frame": 2360}
+    ]
+  },
+
+  "cycle_count": 3,
+
+  "scoring": {
+    "tolerance_seconds": 0.6
+  },
+
+  "known_caveats": [
+    "The digging-onset convention (how many frames after first contact) was not recorded for these labels, unlike eval/labels.json's +9 frames. Compare conventions before reading a small digging error as a pipeline defect.",
+    "Three cycles from one video. Any cue tuned while looking at these labels will score better here than on a video it has not seen; check it on eval/labels.json (the dev clip) too."
+  ]
+}

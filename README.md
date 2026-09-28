@@ -8,13 +8,15 @@ complete work cycle — digging, hauling, dumping, swinging — and reports the
 average duration of each phase and of a full cycle, along with an annotated
 video showing how it reached that answer.
 
-**Status: end to end, with the cues known wrong.** Every stage is built and the
-pipeline writes `answer.json` from a video in one command. `cycle_count` is correct
-on the development clip; the four phase averages are **not**, because all four
-coarse triggers fire outside the window that contains the transition they are
-looking for. That gap is measured by a test rather than estimated -- see
-`tests/test_onset_accuracy.py`, which carries the five onset errors and one strict
-`xfail` that turns green when the cues are fixed.
+**Status: end to end; two of four cues solid.** Every stage is built and the
+pipeline writes `answer.json` from a video in one command. The onset cues read the
+*shape* of a signal rather than its level (`docs/stages/08-shape-cues.md`). Against
+hand labels, **10 of 13** onsets land within 0.6 s on the 83 s clip and **4 of 5** on
+the dev clip, whose `answer.json` passes 4 of 6 graded fields. Dig and return swing
+are solid; dump is 1.8 s late on the dev clip and haul fires early in two of three
+cycles. The errors are ratcheted by `tests/test_onset_accuracy.py` and
+`tests/test_long_clip_accuracy.py`, and one strict `xfail` turns green when the
+dump cue is fixed.
 
 See [`docs/where-things-live.md`](docs/where-things-live.md) for what is where and
 why.

@@ -1,15 +1,18 @@
 # Status — what works, measured
 
-**Date:** 2026-09-26 · 385 tests, 1 strict xfail · video: 480×272, 29.6 s, 1 complete cycle
+**Date:** 2026-09-26 · 458 tests, 1 strict xfail · videos: the 29.6 s dev clip (1 cycle) and an 83 s clip (3 cycles)
+
+> **Updated for the shape cues** (`docs/stages/08-shape-cues.md`). The summary, the
+> Cues and Answer rows, and the section after the table are current; the rest of
+> this file predates the state machine and is partly stale.
 
 ## Honest summary
 
 The pipeline runs end to end: `run.py run <video>` writes `answer.json`, and a fresh
-run from the raw video reproduces the cached one's features **byte for byte**.
-`cycle_count` is correct. **The four phase averages are 0.000, and that is the honest
-output rather than a bug** — all four coarse cues fire outside the window containing
-the transition they look for, so pass 2 has nothing to refine and refuses to invent a
-number.
+run from the raw video reproduces the cached one's features **byte for byte**. On the
+dev clip the answer passes **4 of 6** graded fields: `cycle_count`, the cycle average,
+digging and swinging. Hauling and dumping each miss by 1.5 s, both because the dump
+onset is found 1.8 s late.
 
 | Stage | Status | Measured |
 |---|---|---|
@@ -17,20 +20,17 @@ number.
 | Tracking | works | 296/296 masks; area steady at 7.2% of frame (4.2–7.8%); 0.91 IoU against independent detections |
 | Arm pose | mostly works | tip on the bucket in every pose inspected; 10% of frames rejected as physically implausible |
 | Calibration | works | all three levels separable at 0.81–0.87; robust to a single glitched frame |
-| **Cues** | **wrong** | every window misses its onset: −0.77 / +1.97 / −5.14 / +2.67 / −1.23 s against ±0.6 s |
+| **Cues** | **2 of 4 solid** | dev clip −0.17 / −0.23 / +1.77 / −0.23 / −0.13 s against ±0.6 s (was −0.77 / +1.97 / −5.14 / +2.67 / −1.23); 83 s clip 10/13 within ±0.6 s (was 0/13) |
 | State machine | works | sequencing, non-overlap and `fired_at`-in-window hold over 6000 fuzzed runs |
-| Answer | **1 of 6 fields** | `cycle_count` 1 = 1 PASS; the five duration fields are 0.000 |
+| Answer | **4 of 6 fields** | dev clip: `cycle_count`, cycle, digging, swinging PASS; hauling +1.50 s, dumping −1.50 s FAIL |
 
 ## Where the cue error comes from
 
-Not four independent problems. `low_height.threshold` is the Otsu valley between the
-dig mode (−0.11 `L`) and the carry mode (+0.23 `L`), landing at 0.0942 `L` — about 1.3
-bucket-heights above where the bucket sits while digging. That one misplacement makes
-digging run long and hauling fire late. Dumping is separate and worse: it tests
-POSITION where the spec requires TIPPING, so it fires 5.14 s early on the bucket
-passing over the bed while still hauling — the exact case the spec's anti-spillage
-clause legislates against. `aspect_ratio` is computed, labelled "Carries T3", and read
-by no trigger.
+The old cues were levels ("the bucket is down and still"), true for a whole phase,
+so poor at marking when one starts. They are replaced by shape cues -- a trend that
+changes at the onset -- documented with every decision and measurement in
+`docs/stages/08-shape-cues.md`. What remains: the dump cue fires 1.8 s late on the dev
+clip, and the haul cue fires ~1.5 s early in two of the 83 s clip's three cycles.
 
 ## The number that matters
 

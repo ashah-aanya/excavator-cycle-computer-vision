@@ -49,9 +49,12 @@ from typing import Literal
 
 import numpy as np
 
-from .config import FSMConfig
+from .config import FeatureConfig, FSMConfig
 from .geometry import otsu_threshold
 from .logging_setup import get_logger
+from .onsets import derivative
+from .shapes import Reading
+from .shapes import read as read_shape
 
 log = get_logger(__name__)
 
@@ -201,6 +204,14 @@ class Levels:
     # The truck level AS MEASURED, retained even when it is too weak to use for an
     # onset. See `for_evidence` below for why both are kept.
     over_truck_observed: Split | None = None
+    # NOT a level: the local shape of each signal the onset cues read, at every
+    # sample (`shapes.py`). Carried here because every onset cue needs it and it is
+    # computed once, in `calibrate`. The only whole-video statistic inside it is
+    # the signal's spread, which says what "flat" MEANS -- a level, as this class
+    # requires. Where each shape occurs is read from a few seconds around each
+    # sample, never from the whole clip. None for a table that lacks the columns,
+    # such as the scripted tables the sequencing tests build.
+    readings: dict[str, Reading] | None = None
 
     @property
     def for_evidence(self) -> Levels:
@@ -251,8 +262,10 @@ def calibrate(table, config=None) -> Levels:
     confident. Now it depends on whether the design can do without the gate:
 
     * ``over_truck`` is OPTIONAL. A video with no truck already sets it to None and
-      `trigger_dumping` already handles that, so an untrustworthy truck level takes
-      the same route. Dumping is then undetectable, which is honest.
+      `in_dumping` already handles that, so an untrustworthy truck level takes the
+      same route. That affects only the dumping STATE; the dumping ONSET cue
+      (`trigger_dumping`) reads the height's shape and `dump_side`, not this level,
+      so dumping is still detected.
     * ``low_height`` and ``moving`` are REQUIRED -- without them nothing can fire at
       all. Disabling them would turn a degraded answer into no answer, and the task
       asks for an answer, so these are kept and the warning says plainly that the
@@ -279,8 +292,9 @@ def calibrate(table, config=None) -> Levels:
         over_truck_observed = over_truck
         if not over_truck.trustworthy:
             log.warning(
-                "the over-truck level is meaningless (%s); the dumping location gate "
-                "is DISABLED for this video, so dumping cannot be detected.",
+                "the over-truck level is meaningless (%s); the dumping STATE check is "
+                "disabled for this video. The dumping onset cue does not use this level, "
+                "so dumping is still detected.",
                 over_truck.describe(),
             )
             over_truck = None
@@ -338,7 +352,46 @@ def calibrate(table, config=None) -> Levels:
         moving=moving,
         dump_side=dump_side,
         over_truck_observed=over_truck_observed,
+        readings=read_signals(table, config, dump_side),
     )
+
+
+# The signals the onset cues read shapes from. None is stored in `features.npz`
+# as such; they are derived here from `dx_dt`, `bucket_y` and `height`, with the
+# same Savitzky-Golay derivative and window that built the stored rates.
+#
+# `d2x_toward_truck` is the horizontal acceleration signed so that + is TOWARD the
+# truck. Raw d2x/dt2 is not orientation independent: mirror the footage and every
+# horizontal sign flips, turning the return swing's peak into a dip. Multiplying by
+# `dump_side` -- which side the truck is on, read from this video -- makes the cue
+# the same event whichever way the camera faces.
+
+
+def read_signals(table, config=None, dump_side: float = 1.0) -> dict[str, Reading] | None:
+    """The shape of every cue signal at every sample, or None if the table cannot say."""
+    if not all(hasattr(table, c) for c in ("time_seconds", "dx_dt", "bucket_y", "height")):
+        return None
+    fsm = FSMConfig() if config is None else config.fsm
+    window = (FeatureConfig() if config is None else config.features).derivative_window_seconds
+    times = np.asarray(table.time_seconds, dtype=float)
+    dx = np.asarray(table.dx_dt, dtype=float)
+    dy = derivative(np.asarray(table.bucket_y, dtype=float), times, window_seconds=window)
+    signals = {
+        "speed_2d": np.hypot(dx, dy),
+        "height": np.asarray(table.height, dtype=float),
+        "d2x_toward_truck": derivative(dx, times, window_seconds=window) * dump_side,
+    }
+    return {
+        name: read_shape(
+            values,
+            times,
+            side=fsm.shape_side_seconds,
+            flat=fsm.shape_flat_fraction,
+            steeper=fsm.shape_steeper,
+            min_side=fsm.shape_min_side_seconds,
+        )
+        for name, values in signals.items()
+    }
 
 
 # The cycle, in order. Fixed by the task definition, not by this video: digging,
@@ -442,6 +495,7 @@ def walk(
     levels: Levels,
     fires=None,
     config=None,
+    interrupts=None,
     hold_samples: int | None = None,
     strict_hold_samples: int | None = None,
     lookback_samples: int | None = None,
@@ -463,6 +517,10 @@ def walk(
             trigger. An onset is where a signal LEFT rest, and that is found by
             walking backward from the excursion, so a window starting at the
             trigger would exclude the thing it is looking for.
+        interrupts: the same protocol as ``fires``, used only for the
+            out-of-sequence digging alarm. Defaults to the digging STATE (see
+            `default_interrupts`) -- or, when ``fires`` is injected, to ``fires``
+            itself, so a scripted test drives both with one schedule.
         config: supplies all three as DURATIONS, which is how callers should
             pass them -- the sample counts above exist for tests that want to
             pin an exact number of samples, and override the config when given.
@@ -470,6 +528,8 @@ def walk(
     Returns the detections in the order they were found. Multi-cycle is not
     special-cased: the loop simply keeps going.
     """
+    if interrupts is None:
+        interrupts = default_interrupts if fires is None else fires
     if fires is None:
         fires = default_fires
 
@@ -526,6 +586,7 @@ def walk(
         *,
         require_edge: bool = True,
         allow_truncation: bool = True,
+        check=None,
     ) -> int:
         """How many samples the trigger held for here, or 0 if this is no transition.
 
@@ -579,7 +640,11 @@ def walk(
         boundary: it was accepting a dig on 1 of 6 strict samples, which is the
         opposite of the "unexpected evidence should be expensive" rule it exists to
         enforce.
+
+        ``check`` replaces ``fires`` for this call; the out-of-sequence alarm passes
+        ``interrupts``.
         """
+        test = fires if check is None else check
         available = count - start
         if available <= 0:
             return 0
@@ -597,13 +662,13 @@ def walk(
         # unknown, not negative -- `_usable` says so -- and that has to hold for
         # the edge as well as for the trigger.
         before = last_measured_before(start)
-        if require_edge and before >= 0 and fires(phase, table, before, levels, config):
+        if require_edge and before >= 0 and test(phase, table, before, levels, config):
             return 0  # already true before this sample: not an edge
         if not require_edge and before >= 0 and not ever_false_before(phase, start):
             # The exemption is only for a condition that ROSE. One true from the
             # first frame is not evidence of a transition into anything.
             return 0
-        if not all(fires(phase, table, i, levels, config) for i in range(start, start + held)):
+        if not all(test(phase, table, i, levels, config) for i in range(start, start + held)):
             return 0
         if held < needed:
             log.warning(
@@ -662,7 +727,9 @@ def walk(
         # for as long as that dig lasts, so it cannot rise again until the bucket
         # has actually come back up. A `curr_stage != "digging"` guard here would
         # be redundant AND wrong -- it would also block a genuine second dig.
-        strict_held = sustained("digging", index, strict, allow_truncation=False)
+        strict_held = sustained(
+            "digging", index, strict, allow_truncation=False, check=interrupts
+        )
         if target != "digging" and strict_held:
             log.info(
                 "digging at sample %d interrupted %s; the cycle being built is abandoned",
@@ -720,14 +787,22 @@ def _detect(state, phase, index, held, lookback, times, previous=None) -> Detect
 
 
 # ---------------------------------------------------------------------------
-# The coarse triggers -- pass 1
+# Two kinds of question, kept apart
 #
-# Each one answers "does this sample look like the next phase is starting?" and
-# nothing more. They pick the WINDOW; pass 2 picks the instant. That division is
-# why they are allowed to be blunt: a trigger that fires a little early or a
-# little wide costs pass 2 a slightly longer search, while a trigger that never
-# fires loses the transition entirely. So when in doubt, these err towards
-# firing.
+# STATE conditions (`in_digging` ...) answer "does this sample look like phase X
+# is going on?" They are levels -- "the bucket is down and still" -- so they are
+# true for the whole of a phase. That makes them right for the two jobs that ask
+# WHETHER a phase happened: the out-of-sequence dig alarm in `walk`, and the
+# evidence `cycles.py` counts cycles on (`evidence_within`).
+#
+# ONSET cues (`trigger_digging` ...) answer "did phase X just start here?" A level
+# is poor at that: it was these same conditions, used as onset cues, that missed
+# all 13 labelled onsets on the 83 s clip and all 5 on the dev clip. The onset cues
+# read a SHAPE instead -- a trend that changes at the moment the phase starts
+# (`shapes.py`). The walk only asks for a phase once the previous one has
+# started, so a shape that also occurs earlier in the cycle does no harm; what
+# matters is that it is the FIRST such shape after the previous onset.
+# The evaluation tooling measures exactly that, per cue.
 #
 # Every threshold below is a level from `calibrate()` -- derived from this
 # video's own distribution. There is no absolute number anywhere in this section,
@@ -747,8 +822,8 @@ def _usable(table, index: int, *columns: str) -> bool:
     return all(np.isfinite(getattr(table, name)[index]) for name in columns)
 
 
-def trigger_digging(table, index: int, levels: Levels) -> bool:
-    """CUE 1  swinging -> digging.
+def in_digging(table, index: int, levels: Levels) -> bool:
+    """STATE: is the bucket digging?  (Formerly the swinging -> digging onset cue.)
 
     The spec: *digging begins when the bucket first contacts the material and
     starts scooping.*
@@ -778,8 +853,8 @@ def trigger_digging(table, index: int, levels: Levels) -> bool:
     )
 
 
-def trigger_hauling(table, index: int, levels: Levels) -> bool:
-    """CUE 2  digging -> hauling.
+def in_hauling(table, index: int, levels: Levels) -> bool:
+    """STATE: is the bucket hauling?  (Formerly the digging -> hauling onset cue.)
 
     The spec: *hauling begins when the entire loaded bucket clears the material
     surface and continues as it moves toward the dumping location.*
@@ -800,8 +875,8 @@ def trigger_hauling(table, index: int, levels: Levels) -> bool:
     return table.height[index] > levels.low_height.threshold and table.dh_dt[index] > 0
 
 
-def trigger_dumping(table, index: int, levels: Levels) -> bool:
-    """CUE 3  hauling -> dumping.
+def in_dumping(table, index: int, levels: Levels) -> bool:
+    """STATE: is the bucket dumping?  (Formerly the hauling -> dumping onset cue.)
 
     The spec: *dumping begins when the bucket reaches the dumping location and
     starts tipping or uncurling to release its load.* And, crucially: *material
@@ -843,8 +918,8 @@ def trigger_dumping(table, index: int, levels: Levels) -> bool:
     )
 
 
-def trigger_swinging(table, index: int, levels: Levels) -> bool:
-    """CUE 4  dumping -> swinging.
+def in_swinging(table, index: int, levels: Levels) -> bool:
+    """STATE: is the machine swinging back?  (Formerly the dumping -> swinging onset cue.)
 
     The spec: *swinging begins when the excavator starts rotating back the
     emptied bucket toward the digging location.*
@@ -869,6 +944,100 @@ def trigger_swinging(table, index: int, levels: Levels) -> bool:
     return table.speed_x[index] > levels.moving.threshold and table.dh_dt[index] < 0
 
 
+STATES = {
+    "digging": in_digging,
+    "hauling": in_hauling,
+    "dumping": in_dumping,
+    "swinging": in_swinging,
+}
+
+
+def _shape(table, index: int, levels: Levels, signal: str, shape: str, *columns: str) -> bool:
+    """Does ``signal`` have ``shape`` at this sample? False when unmeasured or unread."""
+    if levels.readings is None or not _usable(table, index, *columns):
+        return False
+    return levels.readings[signal].is_(index, shape)
+
+
+# Each onset cue below was chosen by a search in the evaluation tooling: of every
+# feature and shape, the one whose FIRST occurrence after the previous phase's
+# labelled onset was the true onset in the most cycles. Scores are on the 83 s
+# clip (three cycles), then the 29 s dev clip (one), as "first match contains the
+# true onset within 0.6 s". They were chosen by looking at the 83 s clip, so they
+# will score worse on footage they have not seen.
+
+
+def trigger_digging(table, index: int, levels: Levels) -> bool:
+    """ONSET 1  swinging -> digging: the bucket's 2-D speed stops falling and goes flat.
+
+    The return swing decelerates onto the pile; the dig starts where that braking
+    ends. Scored 3/3 on the 83 s clip, onset errors -0.3 / -0.6 / -0.0 s.
+
+    WHERE THE SHAPE CANNOT BE READ -- the last seconds of a clip, where there is no
+    "after" to fit -- this falls back to the digging STATE (bucket down and still).
+    Digging is the cycle boundary, so a dig the cue cannot see deletes a whole cycle
+    from `cycle_count`, the one field graded exactly. The dev clip ends that way:
+    its bucket is still braking when the video stops, so "drop ends -> flat" never
+    happens on camera, and without the fallback its one complete cycle was lost.
+    The fallback's timing is the old cue's (-1.23 s there); the count is kept.
+    """
+    if levels.readings is not None and levels.readings["speed_2d"].shape[index] is None:
+        return in_digging(table, index, levels)
+    return _shape(table, index, levels, "speed_2d", "drop ends -> flat", "dx_dt", "bucket_y")
+
+
+def trigger_hauling(table, index: int, levels: Levels) -> bool:
+    """ONSET 2  digging -> hauling: height keeps rising.
+
+    The best single shape found, and not yet good enough: 2/3 on the 83 s clip and
+    1/1 on the dev clip. Where it misses it fires ~1.5 s EARLY, because the bucket
+    starts to climb while still scooping. Gating it on "above the dig level" made
+    it LATE in every cycle instead: at the labelled haul onset the bucket is still
+    below the level `calibrate` calls "in the material".
+    """
+    return _shape(table, index, levels, "height", "keeps rising", "height")
+
+
+def trigger_dumping(table, index: int, levels: Levels) -> bool:
+    """ONSET 3  hauling -> dumping: height has been flat and starts rising, on the
+    truck's side of the cabin.
+
+    The bucket holds over the bed, then lifts as it uncurls. The best single shape
+    found, and not yet good enough: 2/3 on the 83 s clip, and 1.8 s late on the dev
+    clip.
+
+    The side gate is what keeps an early haul from cascading. The haul's own lift
+    off the pile is ALSO "flat, then rising", so when the haul cue fired early --
+    mid-scoop -- the real lift that followed was taken for a dump, and every onset
+    after it in that cycle was wrong. A dump can only happen over the truck, and
+    `dump_side` says which side of the cabin that is, read from this video.
+
+    Unlike the old overlap gate, this does not need a trustworthy truck level:
+    `dump_side` is read from the level as measured. The overlap level was too weak
+    to use on the 83 s clip (separability 0.78) and had switched dumping detection
+    off there entirely.
+    """
+    if not _usable(table, index, "rel_cabin_x"):
+        return False
+    past_cabin = table.rel_cabin_x[index] * levels.dump_side > 0
+    return past_cabin and _shape(
+        table, index, levels, "height", "flat -> starts rising", "height"
+    )
+
+
+def trigger_swinging(table, index: int, levels: Levels) -> bool:
+    """ONSET 4  dumping -> swinging: a peak in horizontal acceleration toward the truck.
+
+    The emptied bucket is first pushed up and out, clear of the bed, before it
+    swings back -- that push is the peak. 3/3 on the 83 s clip (errors -0.2 / -0.2
+    / -0.3 s) and 1/1 on the dev clip (-0.2 s). It needs the dump onset: scanned
+    from the haul onset instead, it fires 10-12 s early, on the haul.
+
+    Signed toward the truck (see `read_signals`), so a mirrored clip reads the same.
+    """
+    return _shape(table, index, levels, "d2x_toward_truck", "peak", "dx_dt")
+
+
 TRIGGERS = {
     "digging": trigger_digging,
     "hauling": trigger_hauling,
@@ -878,12 +1047,22 @@ TRIGGERS = {
 
 
 def default_fires(phase: str, table, index: int, levels: Levels, _config=None) -> bool:
-    """The trigger the walk uses when none is injected.
+    """The onset cue the walk uses when none is injected.
 
     ``_config`` is part of the injection protocol -- a caller supplying its own
     trigger may want it -- and is unused here, hence the underscore.
     """
     return TRIGGERS[phase](table, index, levels)
+
+
+def default_interrupts(phase: str, table, index: int, levels: Levels, _config=None) -> bool:
+    """The out-of-sequence alarm: the digging STATE, not the digging onset cue.
+
+    The alarm asks "is the machine digging when it should be doing something else?"
+    -- a state question. The onset cue's shape (speed levelling off) happens several
+    times a cycle, and each one would abandon the cycle in progress.
+    """
+    return STATES[phase](table, index, levels)
 
 
 # ---------------------------------------------------------------------------
@@ -896,7 +1075,7 @@ def default_fires(phase: str, table, index: int, levels: Levels, _config=None) -
 # it looks precise.
 # ---------------------------------------------------------------------------
 
-Mode = Literal["departs", "arrives", "peak"]
+Mode = Literal["departs", "arrives", "peak", "trigger"]
 
 
 def refine(
@@ -1105,15 +1284,21 @@ def evidence_within(table, levels, start: float, end: float) -> set[str]:
     return {
         phase
         for phase in PHASES
-        if any(TRIGGERS[phase](table, int(i), permissive) for i in inside)
+        if any(STATES[phase](table, int(i), permissive) for i in inside)
     }
 
 
+# How pass 2 turns each detection into an instant. ``"trigger"`` means pass 1
+# already measured it: a shape cue fires where its shape STARTS, which is the onset
+# itself, so there is nothing left to refine. It is not the coarse guess the old
+# level cues produced -- the evaluation tooling scores these times directly.
+# Dumping keeps a real refinement: the bucket box at its most stretched, as it
+# tips, moved the first dump on the 83 s clip from +0.61 s to -0.19 s.
 REFINEMENTS: dict[str, tuple[str, Mode]] = {
-    "digging": ("dh_dt", "arrives"),
-    "hauling": ("d2h_dt2", "arrives"),
+    "digging": ("speed_x", "trigger"),
+    "hauling": ("height", "trigger"),
     "dumping": ("aspect_ratio", "peak"),
-    "swinging": ("speed_x", "departs"),
+    "swinging": ("dx_dt", "trigger"),
 }
 
 
@@ -1141,6 +1326,16 @@ def locate(detections: list[Detection], table, config) -> list[Onset]:
     out: list[Onset] = []
     for detection in detections:
         column, mode = REFINEMENTS[detection.phase]
+        if mode == "trigger":
+            out.append(
+                Onset(
+                    phase=detection.phase,
+                    refined=float(times[detection.fired_at]),
+                    coarse=float(times[detection.fired_at]),
+                    out_of_sequence=detection.out_of_sequence,
+                )
+            )
+            continue
         when = refine(
             getattr(table, column),
             times,

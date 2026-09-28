@@ -467,74 +467,74 @@ def _lv(low=0.1, truck=0.2, moving=0.3):
 
 
 def test_digging_fires_when_the_bucket_is_down_and_still():
-    from excavator_cycles.fsm import trigger_digging
+    from excavator_cycles.fsm import in_digging
 
-    assert trigger_digging(_CueTable(height=0.0, speed_x=0.05), 10, _lv())
+    assert in_digging(_CueTable(height=0.0, speed_x=0.05), 10, _lv())
 
 
 def test_digging_stays_quiet_while_the_bucket_is_up():
-    from excavator_cycles.fsm import trigger_digging
+    from excavator_cycles.fsm import in_digging
 
-    assert not trigger_digging(_CueTable(height=0.5, speed_x=0.05), 10, _lv())
+    assert not in_digging(_CueTable(height=0.5, speed_x=0.05), 10, _lv())
 
 
 def test_digging_stays_quiet_while_the_machine_is_traversing():
     """Low and moving is the bucket passing through on its way somewhere, not
     scooping. The spec puts that in swinging."""
-    from excavator_cycles.fsm import trigger_digging
+    from excavator_cycles.fsm import in_digging
 
-    assert not trigger_digging(_CueTable(height=0.0, speed_x=0.9), 10, _lv())
+    assert not in_digging(_CueTable(height=0.0, speed_x=0.9), 10, _lv())
 
 
 def test_hauling_fires_when_the_bucket_is_clear_of_the_material_and_rising():
-    from excavator_cycles.fsm import trigger_hauling
+    from excavator_cycles.fsm import in_hauling
 
-    assert trigger_hauling(_CueTable(height=0.5, dh_dt=0.2), 10, _lv())
+    assert in_hauling(_CueTable(height=0.5, dh_dt=0.2), 10, _lv())
 
 
 def test_hauling_stays_quiet_when_the_bucket_is_high_but_descending():
     """Height alone is not enough -- the bucket is high for most of the cycle.
     The spec's word is CLEARS, which is a direction, not a level."""
-    from excavator_cycles.fsm import trigger_hauling
+    from excavator_cycles.fsm import in_hauling
 
-    assert not trigger_hauling(_CueTable(height=0.5, dh_dt=-0.2), 10, _lv())
+    assert not in_hauling(_CueTable(height=0.5, dh_dt=-0.2), 10, _lv())
 
 
 def test_dumping_fires_when_the_bucket_is_over_the_bed():
-    from excavator_cycles.fsm import trigger_dumping
+    from excavator_cycles.fsm import in_dumping
 
-    assert trigger_dumping(_CueTable(truck_overlap=0.6, rel_cabin_x=0.5), 10, _lv())
+    assert in_dumping(_CueTable(truck_overlap=0.6, rel_cabin_x=0.5), 10, _lv())
 
 
 def test_dumping_stays_quiet_away_from_the_truck():
-    from excavator_cycles.fsm import trigger_dumping
+    from excavator_cycles.fsm import in_dumping
 
-    assert not trigger_dumping(_CueTable(truck_overlap=0.01, rel_cabin_x=0.5), 10, _lv())
+    assert not in_dumping(_CueTable(truck_overlap=0.01, rel_cabin_x=0.5), 10, _lv())
 
 
 def test_dumping_cannot_fire_on_a_video_with_no_truck():
     """No truck is a legitimate video. The gate is unavailable, not false."""
-    from excavator_cycles.fsm import trigger_dumping
+    from excavator_cycles.fsm import in_dumping
 
     levels = _lv()
     object.__setattr__(levels, "over_truck", None)
-    assert not trigger_dumping(_CueTable(truck_overlap=np.nan), 10, levels)
+    assert not in_dumping(_CueTable(truck_overlap=np.nan), 10, levels)
 
 
 def test_swinging_fires_when_traversing_and_descending():
-    from excavator_cycles.fsm import trigger_swinging
+    from excavator_cycles.fsm import in_swinging
 
-    assert trigger_swinging(_CueTable(speed_x=0.9, dh_dt=-0.2), 10, _lv())
+    assert in_swinging(_CueTable(speed_x=0.9, dh_dt=-0.2), 10, _lv())
 
 
 def test_swinging_is_the_opposite_of_hauling_on_the_vertical():
     """The diagram's words. Both are traverses; the sign of dh/dt separates
     carrying a load out from bringing an empty bucket back."""
-    from excavator_cycles.fsm import trigger_hauling, trigger_swinging
+    from excavator_cycles.fsm import in_hauling, in_swinging
 
     rising = _CueTable(speed_x=0.9, dh_dt=0.2, height=0.5)
-    assert trigger_hauling(rising, 10, _lv())
-    assert not trigger_swinging(rising, 10, _lv())
+    assert in_hauling(rising, 10, _lv())
+    assert not in_swinging(rising, 10, _lv())
 
 
 def test_a_sample_with_no_mask_never_fires_anything():
@@ -887,19 +887,33 @@ def test_the_rest_band_never_collapses_to_zero():
 
 def test_locate_refines_a_detection_into_a_time():
     """Hand it a window that definitely contains the event, and it returns the
-    instant rather than the trigger sample."""
+    instant rather than the trigger sample. Dumping is the phase that still
+    refines: the bucket box at its most stretched, as it tips."""
     from excavator_cycles.config import Config
     from excavator_cycles.fsm import Detection, Window, locate
 
     n = 80
-    table = _CueTable(n=n)
-    # dh/dt falls, then ARRIVES at rest at sample 40 -- which is contact
-    table.dh_dt = np.r_[np.full(40, -0.3), np.zeros(n - 40)]
-    found = locate([Detection("digging", Window(25, 60), 45)], table, Config.load())
+    table = _CueTable(n=n, aspect_ratio=1.0)
+    table.aspect_ratio[40] = 2.5  # the tip, at 4.0 s
+    found = locate([Detection("dumping", Window(25, 60), 45)], table, Config.load())
     assert len(found) == 1
-    assert found[0].phase == "digging"
-    assert found[0].refined == pytest.approx(4.0, abs=0.3), f"arrival at 4.0s, got {found[0]}"
-    assert found[0].coarse == pytest.approx(4.5, abs=0.2), "pass 1's trigger time, kept"
+    assert found[0].phase == "dumping"
+    assert found[0].refined == pytest.approx(4.0, abs=0.05), (
+        f"the peak at 4.0s, got {found[0]}"
+    )
+    assert found[0].coarse == pytest.approx(4.5, abs=0.05), "pass 1's trigger time, kept"
+
+
+@pytest.mark.parametrize("phase", ["digging", "hauling", "swinging"])
+def test_a_shape_cue_is_its_own_onset(phase):
+    """Digging, hauling and swinging fire where their SHAPE starts, and that is the
+    onset: pass 2 takes the trigger time rather than searching for another event."""
+    from excavator_cycles.config import Config
+    from excavator_cycles.fsm import Detection, Window, locate
+
+    table = _CueTable(n=80)
+    (onset,) = locate([Detection(phase, Window(25, 60), 45)], table, Config.load())
+    assert onset.refined == pytest.approx(4.5) and onset.coarse == pytest.approx(4.5)
 
 
 def test_locate_refuses_to_invent_an_onset_but_keeps_its_place():
@@ -908,7 +922,7 @@ def test_locate_refuses_to_invent_an_onset_but_keeps_its_place():
     Both halves matter and they pull in opposite directions. Giving the trigger
     time as the onset would put a made-up number into a duration, indistinguishable
     from a measured one. But dropping the detection removed a cycle BOUNDARY:
-    `assemble` splits on digging, so a failed digging refinement deleted the whole
+    `assemble` splits on digging, so a failed refinement deleted the whole
     cycle, and the dev clip reported `cycle_count: 0` for a video with one
     complete cycle in it. Keeping the place with no refined time does neither.
     """
@@ -916,8 +930,8 @@ def test_locate_refuses_to_invent_an_onset_but_keeps_its_place():
     from excavator_cycles.fsm import Detection, Window, locate
 
     table = _CueTable(n=80)
-    table.dh_dt = np.full(80, -0.3)  # never arrives at rest
-    found = locate([Detection("digging", Window(10, 40), 20)], table, Config.load())
+    table.aspect_ratio = np.full(80, np.nan)  # the box was never measured
+    found = locate([Detection("dumping", Window(10, 40), 20)], table, Config.load())
     assert len(found) == 1, "the detection must survive; only its refinement failed"
     assert found[0].refined is None, "no invented onset"
     assert found[0].coarse == pytest.approx(2.0, abs=0.2), "the coarse time is still there"
@@ -926,18 +940,19 @@ def test_locate_refuses_to_invent_an_onset_but_keeps_its_place():
 def test_locate_keeps_the_onsets_in_order():
     """Refinement must not be able to reorder what the walk ordered. The windows
     cannot overlap, so this is guaranteed by construction -- pinned because if
-    it ever breaks, the symptom is a negative phase duration."""
+    it ever breaks, the symptom is a negative phase duration.
+
+    Walked with the STATE conditions injected as the triggers: the synthetic cycle
+    below is built from levels, and what is under test is locate's ordering, not
+    which cue fires."""
     from excavator_cycles.config import Config
-    from excavator_cycles.fsm import locate, walk
+    from excavator_cycles.fsm import STATES, locate, walk
 
     n = 200
     table = _CueTable(n=n)
-    # A full synthetic cycle, shaped so that each cue has something real to find:
-    # the bucket descends, rests in the material, lifts, travels over the bed,
-    # tips, then swings back. Flat segments are what `arrives`/`departs` need.
     table.height = np.r_[
         np.linspace(0.5, 0.0, 30),  # descending
-        np.zeros(30),  # in the material -- dh_dt ARRIVES at rest
+        np.zeros(30),  # in the material
         np.linspace(0.0, 0.6, 40),  # lifting
         np.full(40, 0.6),  # carrying at height
         np.linspace(0.6, 0.5, 20),  # tipping
@@ -950,28 +965,30 @@ def test_locate_keeps_the_onsets_in_order():
     table.rel_cabin_x = np.full(n, 0.4)
     table.aspect_ratio = np.r_[np.full(140, 1.0), np.full(20, 2.5), np.full(40, 1.0)]
 
-    found = walk(table, _lv(low=0.1, moving=5.0), hold_samples=3, lookback_samples=8)
+    def states(phase, t, i, levels, _config=None):
+        return STATES[phase](t, i, levels)
+
+    found = walk(
+        table, _lv(low=0.1, moving=5.0), fires=states, hold_samples=3, lookback_samples=8
+    )
     onsets = locate(found, table, Config.load())
     times = [o.refined for o in onsets if o.refined is not None]
-    # Non-vacuity FIRST. Without it this test passed on an empty list for its
-    # entire life: the previous fixture refined nothing at all, so `[] == sorted([])`
-    # proved the ordering guarantee held over no onsets.
+    # Non-vacuity FIRST: an empty list is trivially sorted.
     assert len(times) >= 2, f"need at least two refined onsets to order; got {onsets}"
     assert times == sorted(times), times
 
 
 def test_locate_reports_a_cue_that_found_nothing_instead_of_hiding_it():
-    """A flat signal refines to nothing, and that fact must reach the caller.
-
-    `Cycle.reason` is what turns this into a sentence a reader can act on, and it
-    cannot do that for an onset that is simply absent from the list.
-    """
+    """A window with nothing to refine yields `refined=None`, and that fact must
+    reach the caller. `Cycle.reason` is what turns it into a sentence a reader can
+    act on, and it cannot do that for an onset that is simply absent."""
     from excavator_cycles.config import Config
     from excavator_cycles.fsm import Detection, Window, locate
 
-    table = _CueTable(n=60)  # every signal is flat: nothing to find
-    found = locate([Detection("digging", Window(10, 30), 20)], table, Config.load())
-    assert [(o.phase, o.refined) for o in found] == [("digging", None)]
+    table = _CueTable(n=60)
+    table.aspect_ratio = np.full(60, np.nan)
+    found = locate([Detection("dumping", Window(10, 30), 20)], table, Config.load())
+    assert [(o.phase, o.refined) for o in found] == [("dumping", None)]
 
 
 # --- the rest band ------------------------------------------------------------
@@ -1386,13 +1403,13 @@ def test_the_dump_side_is_read_from_the_video_not_assumed():
 
 def test_dumping_is_detected_on_mirrored_footage():
     """The behaviour the hardcoded sign made impossible."""
-    from excavator_cycles.fsm import calibrate, trigger_dumping
+    from excavator_cycles.fsm import calibrate, in_dumping
 
     for side in (+1.0, -1.0):
         table = _dumpable_table(side=side)
         levels = calibrate(table, None)
-        assert trigger_dumping(table, 130, levels), f"side={side:+.0f} must dump over the bed"
-        assert not trigger_dumping(table, 10, levels), f"side={side:+.0f} must not dump away"
+        assert in_dumping(table, 130, levels), f"side={side:+.0f} must dump over the bed"
+        assert not in_dumping(table, 10, levels), f"side={side:+.0f} must not dump away"
 
 
 def test_mirroring_the_dev_clip_changes_nothing_about_dumping():

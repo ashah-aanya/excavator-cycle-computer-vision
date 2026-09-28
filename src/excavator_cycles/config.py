@@ -285,6 +285,24 @@ class FSMConfig:
     # every sample an excursion.
     rest_floor_fraction: float = 0.02
 
+    # The onset cues read the SHAPE of a signal around each sample (`shapes.py`):
+    # a line fitted to this many seconds on each side...
+    shape_side_seconds: float = 2.0
+
+    # ...reads as flat when it moves less than this fraction of the signal's
+    # p95 - p5 spread over that time. A fraction of the video's own spread, so it
+    # carries no assumption about the machine's size or distance.
+    shape_flat_fraction: float = 0.08
+
+    # When both sides move the same way, a slope ratio above this reads as
+    # "speeds up" (below its inverse, "slows down").
+    shape_steeper: float = 1.5
+
+    # At the clip's edges a side is fitted on what exists, down to this long. Below
+    # it the shape is unknown, and the digging cue falls back to the digging state.
+    # A duration, so the unreadable edge is the same size at every frame rate.
+    shape_min_side_seconds: float = 0.4
+
 
 @dataclass(frozen=True)
 class QAConfig:
