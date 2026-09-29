@@ -1,0 +1,16 @@
+# What stays in the repository but is NOT part of the submission zip.
+# `git archive` (used by scripts/make_submission.py) leaves these out; everything else ships.
+
+/eval/                          export-ignore
+/scripts/                       export-ignore
+/docs/                          export-ignore
+/.github/                       export-ignore
+/.gitattributes                 export-ignore
+/.gitignore                     export-ignore
+
+# Tests that read the hand labels under eval/, which does not ship.
+/tests/test_check_cues.py       export-ignore
+/tests/test_check_rules.py      export-ignore
+/tests/test_eval_labels.py      export-ignore
+/tests/test_eval_score.py       export-ignore
+/tests/test_label_accuracy.py   export-ignore
