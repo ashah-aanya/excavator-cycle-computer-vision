@@ -92,16 +92,58 @@ def test_footage_before_the_first_dig_and_after_the_last_is_ignored():
     assert cycles[0].starts["digging"] == 2.0 and cycles[0].end == 17.0
 
 
-def test_a_span_missing_a_phase_is_dropped_and_the_next_cycle_still_counts():
+def test_a_span_with_only_a_dig_and_one_other_phase_is_dropped_and_the_next_cycle_counts():
     starts = [
         start("digging", 2.0),
-        start("hauling", 5.0),  # no dump, no swing: the search abandoned this cycle
+        start("hauling", 5.0),  # no dump, no swing: too little to call it a cycle
         *one_cycle(dig=17.0, haul=20.0, dump=24.0, swing=27.0),
         start("digging", 32.0),
     ]
     cycles = assemble(starts)
     assert len(cycles) == 1
     assert cycles[0].starts["digging"] == 17.0 and cycles[0].end == 32.0
+
+
+def test_a_dig_and_two_other_phases_before_the_next_dig_is_a_cycle():
+    starts = [
+        start("digging", 2.0),
+        start("hauling", 5.0),
+        start("swinging", 12.0),  # the dump was missed
+        start("digging", 17.0),
+    ]
+    cycles = assemble(starts)
+    assert len(cycles) == 1
+    assert set(cycles[0].starts) == {"digging", "hauling", "swinging"}
+    assert cycles[0].duration == 15.0
+
+
+def test_phases_out_of_cycle_order_are_not_a_cycle():
+    starts = [
+        start("digging", 2.0),
+        start("dumping", 5.0),
+        start("hauling", 9.0),
+        start("digging", 17.0),
+    ]
+    assert assemble(starts) == []
+
+
+def test_only_the_phases_with_both_ends_found_are_measured():
+    cycle = Cycle({"digging": 2.0, "hauling": 5.0, "swinging": 12.0}, end=17.0)
+    # Haul has no end (dump missing) and dump has no start; dig and swing are fine.
+    assert cycle.durations() == {"digging": 3.0, "swinging": 5.0}
+    assert cycle.duration == 15.0
+
+
+def test_a_missing_phase_does_not_drag_that_phases_average_down():
+    full = Cycle({"digging": 0.0, "hauling": 2.0, "dumping": 6.0, "swinging": 8.0}, end=12.0)
+    partial = Cycle({"digging": 12.0, "hauling": 16.0, "swinging": 22.0}, end=30.0)
+    answer = summarise([full, partial])
+    assert answer.cycle_count == 2
+    assert answer.average_cycle_duration_seconds == 15.0  # (12 + 18) / 2
+    assert answer.average_phase_duration_seconds["digging"] == 3.0  # (2 + 4) / 2
+    assert answer.average_phase_duration_seconds["hauling"] == 4.0  # the full cycle only
+    assert answer.average_phase_duration_seconds["dumping"] == 2.0  # the full cycle only
+    assert answer.average_phase_duration_seconds["swinging"] == 6.0  # (4 + 8) / 2
 
 
 def test_two_complete_cycles_in_a_row_share_the_middle_dig():
