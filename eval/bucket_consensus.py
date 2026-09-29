@@ -139,14 +139,8 @@ def estimate_thickness(mask, core, pivot):
     return region
 
 
-def estimate_appearance(image_bgr, mask, core, pivot):
-    """GrabCut around the arm's tip, seeded only by where the tip is.
-
-    Independent of the geodesic band: it uses the tip's position and the picture's own
-    colours. Foreground seed = a small disc at the tip; everything else in the window is
-    probable background, with a border strip as definite background. The result is the
-    connected blob containing the tip.
-    """
+def arm_tip(mask, core, pivot):
+    """(tip position, pivot-to-tip length) of the arm: the far end of the walk, or None."""
     dist, reach, live = arm_geometry(mask, core, pivot)
     if reach <= 0:
         return None
@@ -155,7 +149,21 @@ def estimate_appearance(image_bgr, mask, core, pivot):
         return None
     ys, xs = np.nonzero(end)
     tip = np.array([xs.mean(), ys.mean()])
-    length = float(np.hypot(*(tip - np.asarray(pivot))))
+    return tip, float(np.hypot(*(tip - np.asarray(pivot))))
+
+
+def estimate_appearance(image_bgr, mask, core, pivot):
+    """GrabCut around the arm's tip, seeded only by where the tip is.
+
+    Independent of the geodesic band: it uses the tip's position and the picture's own
+    colours. Foreground seed = a small disc at the tip; everything else in the window is
+    probable background, with a border strip as definite background. The result is the
+    connected blob containing the tip.
+    """
+    found = arm_tip(mask, core, pivot)
+    if found is None:
+        return None
+    tip, length = found
     half = int(max(20, WINDOW * length))
     height, width = mask.shape
     x0, x1 = max(int(tip[0]) - half, 0), min(int(tip[0]) + half, width)
