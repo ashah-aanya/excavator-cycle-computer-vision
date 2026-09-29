@@ -23,6 +23,16 @@ def commit_of(run_dir: Path) -> str:
     return git.get("revision", "?")[:7] + ("*" if git.get("dirty") else "")
 
 
+def answer_of(run_dir: Path) -> str:
+    """The pipeline's answer for this run ('-' if it did not get as far as writing one)."""
+    path = run_dir / "answer.json"
+    if not path.exists():
+        return "-"
+    answer = json.loads(path.read_text())
+    seconds = answer.get("average_cycle_duration_seconds")
+    return f"{answer.get('cycle_count')} cycles, {seconds} s"
+
+
 def main() -> None:
     out = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else Path.home() / "ab-results"
     versions = sorted(p.name for p in out.iterdir() if p.is_dir())
@@ -32,7 +42,7 @@ def main() -> None:
 
     print(
         f"{'video':26s}{'version':16s}{'commit':9s}{'bucket cov':>11s}"
-        f"{'area p90/p10':>13s}{'reseeds':>9s}  QA"
+        f"{'area p90/p10':>13s}{'reseeds':>9s}  {'QA':6s}{'answer'}"
     )
     for video in videos:
         for version in versions:
@@ -49,11 +59,12 @@ def main() -> None:
             bucket = data["qa"].get("bucket") or {}
             reseeds = data.get("bucket_reseeds", [])
             found = sum(1 for r in reseeds if r.get("seed_sample") is not None)
+            qa_status = data["qa"]["status"]
             print(
                 f"{video:26s}{version:16s}{commit_of(run_dir):9s}"
                 f"{bucket.get('coverage', NAN):11.2f}"
                 f"{bucket.get('area_p90_over_p10', NAN):13.1f}"
-                f"{f'{found}/{len(reseeds)}':>9s}  {data['qa']['status']}"
+                f"{f'{found}/{len(reseeds)}':>9s}  {qa_status:6s}{answer_of(run_dir)}"
             )
     print("\ncommit* = working tree had uncommitted edits.  reseeds = seed found / attempted.")
 
