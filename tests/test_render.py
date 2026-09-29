@@ -172,30 +172,77 @@ def test_render_without_boxes(fake_cache: Path):
 # --- phase banner ---------------------------------------------------------
 
 
-def test_phase_at_returns_the_latest_onset_that_has_passed():
+def _start(phase: str, time: float):
+    from excavator_cycles.starts import PhaseStart
+
+    return PhaseStart(phase, time, (time - 0.5, time + 0.5), False, False)
+
+
+CYCLE_STARTS = [
+    _start("digging", 4.0),
+    _start("hauling", 10.0),
+    _start("dumping", 18.0),
+    _start("swinging", 23.0),
+    _start("digging", 29.0),
+]
+
+
+def _one_cycle():
+    from excavator_cycles.cycles import Cycle
+
+    return Cycle({s.phase: s.time for s in CYCLE_STARTS[:4]}, end=29.0)
+
+
+def test_phase_at_returns_the_latest_start_that_has_passed():
     from excavator_cycles.render import phase_at
 
-    onsets = {"digging": 4.0, "hauling": 10.0, "dumping": 18.0, "swinging": 23.0}
-    assert phase_at(onsets, 0.0) is None, "before the first onset, no phase is running"
-    assert phase_at(onsets, 4.0) == "digging", "a phase starts AT its onset"
-    assert phase_at(onsets, 9.9) == "digging"
-    assert phase_at(onsets, 10.0) == "hauling"
-    assert phase_at(onsets, 99.0) == "swinging"
+    assert phase_at(CYCLE_STARTS, 0.0) is None, "before the first start, no phase is running"
+    assert phase_at(CYCLE_STARTS, 4.0).phase == "digging", "a phase starts AT its start"
+    assert phase_at(CYCLE_STARTS, 9.9).phase == "digging"
+    assert phase_at(CYCLE_STARTS, 10.0).phase == "hauling"
+    assert phase_at(CYCLE_STARTS, 99.0).time == 29.0, "the second dig, not the first"
 
 
-def test_phase_at_ignores_onsets_that_were_not_found():
-    from excavator_cycles.render import phase_at
+def test_the_banner_names_the_phase_its_timer_and_the_cycle_count():
+    from excavator_cycles.render import banner_text
 
-    assert phase_at({"digging": 4.0, "hauling": None}, 20.0) == "digging"
-    assert phase_at({"digging": None}, 20.0) is None
+    assert banner_text(CYCLE_STARTS, [_one_cycle()], 3.0) == [], "nothing before the first dig"
+    lines = banner_text(CYCLE_STARTS, [_one_cycle()], 12.0)
+    assert lines[0] == "HAULING   2.0s"
+    assert lines[1] == "complete cycles: 0"
+    assert lines[2] == "this cycle: dig 6.0s  haul 2.0s"
+
+
+def test_the_cycle_count_goes_up_when_a_cycle_ends():
+    """A cycle ends at the next digging start, and not before."""
+    from excavator_cycles.render import banner_text
+
+    cycles = [_one_cycle()]
+    assert banner_text(CYCLE_STARTS, cycles, 28.9)[1] == "complete cycles: 0"
+    assert banner_text(CYCLE_STARTS, cycles, 29.0)[1] == "complete cycles: 1"
+
+
+def test_the_banner_shows_only_the_current_cycles_phases_so_far():
+    from excavator_cycles.render import banner_text
+
+    lines = banner_text(CYCLE_STARTS, [_one_cycle()], 31.0)
+    assert lines[0] == "DIGGING   2.0s"
+    assert lines[2] == "this cycle: dig 2.0s", "the finished cycle's phases are not repeated"
+
+
+def test_a_video_that_opens_mid_cycle_shows_no_empty_cycle_line():
+    from excavator_cycles.render import banner_text
+
+    lines = banner_text([_start("hauling", 1.0)], [], 2.0)
+    assert lines == ["HAULING   1.0s", "complete cycles: 0"]
 
 
 # --- the physics overlay ------------------------------------------------------
 #
-# This whole branch was untested. It is the branch where `render(reference=...)`
-# was accepted, threaded down two levels and never drawn -- caught by measuring
-# pixels in the output video, not by the suite. A test that counts pixels is
-# therefore exactly the right shape for it.
+# This whole branch was once untested. It is the branch where an option was accepted,
+# threaded down two levels and never drawn -- caught by measuring pixels in the
+# output video, not by the suite. A test that counts pixels is therefore exactly the
+# right shape for it.
 
 
 @pytest.fixture
@@ -276,69 +323,81 @@ def test_the_physics_overlay_still_writes_every_frame(cache_with_features: Path)
     assert stats.frames_written == 60
 
 
-def test_the_reference_onsets_are_actually_drawn(cache_with_features: Path):
-    """The precedent defect, pinned by counting pixels.
-
-    `reference=` was accepted, threaded through two functions and never drawn. The
-    ground truth was simply absent from the video while the caller believed it was
-    there -- and the author described the prediction lines to the user as her own
-    labels. Nothing in a signature or a docstring can catch that; only the output
-    can.
-    """
-    without = cache_with_features / "no_ref.mp4"
-    with_ref = cache_with_features / "ref.mp4"
-    render(cache_with_features, out_path=without, scale=1.0)
-    render(
-        cache_with_features,
-        out_path=with_ref,
-        scale=1.0,
-        reference={"digging": 0.3, "hauling": 0.9, "dumping": 1.2, "swinging": 1.5},
-    )
-
-    plain, marked = _first_frame(without), _first_frame(with_ref)
-    assert plain.shape == marked.shape
-    changed = int((plain != marked).any(axis=2).sum())
-    assert changed > 0, "passing `reference=` changed nothing in the output at all"
+def _frame_at(path: Path, index: int) -> np.ndarray:
+    capture = cv2.VideoCapture(str(path))
+    try:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+        ok, frame = capture.read()
+        assert ok, f"could not read frame {index} of {path}"
+        return frame
+    finally:
+        capture.release()
 
 
-def test_the_predicted_onsets_are_drawn_too(cache_with_features: Path):
-    """Same check for `onsets=`, so the pair cannot silently diverge."""
-    bare = cache_with_features / "bare.mp4"
-    drawn = cache_with_features / "drawn.mp4"
-    render(cache_with_features, out_path=bare, scale=1.0)
-    render(
-        cache_with_features, out_path=drawn, scale=1.0, onsets={"digging": 0.3, "hauling": 1.0}
-    )
-
-    assert int((_first_frame(bare) != _first_frame(drawn)).any(axis=2).sum()) > 0
+def _changed(a: np.ndarray, b: np.ndarray) -> int:
+    assert a.shape == b.shape
+    return int((a != b).any(axis=2).sum())
 
 
-def test_the_windows_are_shaded(cache_with_features: Path):
-    """The shaded span is how a reader sees where pass 1 searched."""
-    bare = cache_with_features / "nw.mp4"
-    shaded = cache_with_features / "w.mp4"
-    render(cache_with_features, out_path=bare, scale=1.0)
-    render(
-        cache_with_features,
-        out_path=shaded,
-        scale=1.0,
-        windows=[("digging", 0.2, 0.5), ("hauling", 0.8, 1.1)],
-    )
-
-    assert int((_first_frame(bare) != _first_frame(shaded)).any(axis=2).sum()) > 0
-
-
-def test_the_calibrated_levels_are_drawn(cache_with_features: Path):
-    """`levels=` is the same shape of option as `reference=`, which was once
-    accepted, threaded and never drawn. So it gets the same pixel-count check."""
-    bare = cache_with_features / "nl.mp4"
-    drawn = cache_with_features / "l.mp4"
+def test_the_phase_starts_are_actually_drawn(cache_with_features: Path):
+    """The precedent defect, pinned by counting pixels: an option accepted, threaded
+    through two functions and never drawn. Nothing in a signature or a docstring can
+    catch that; only the output can."""
+    bare, drawn = cache_with_features / "bare.mp4", cache_with_features / "drawn.mp4"
     render(cache_with_features, out_path=bare, scale=1.0)
     render(
         cache_with_features,
         out_path=drawn,
         scale=1.0,
-        levels={"height": ("Otsu", 0.1), "truck_overlap": ("Otsu", 0.25)},
+        starts=[_start("digging", 0.3), _start("hauling", 1.0)],
+    )
+    assert _changed(_first_frame(bare), _first_frame(drawn)) > 0
+
+
+def test_the_search_interval_of_each_start_is_shaded(cache_with_features: Path):
+    """The shaded span is how a reader sees where the start was searched for. Moving the
+    interval must move the pixels, with the start itself in the same place."""
+    from excavator_cycles.starts import PhaseStart
+
+    narrow, wide = cache_with_features / "narrow.mp4", cache_with_features / "wide.mp4"
+    render(
+        cache_with_features,
+        out_path=narrow,
+        scale=1.0,
+        starts=[PhaseStart("digging", 0.5, (0.45, 0.55), False, False)],
+    )
+    render(
+        cache_with_features,
+        out_path=wide,
+        scale=1.0,
+        starts=[PhaseStart("digging", 0.5, (0.1, 0.9), False, False)],
+    )
+    assert _changed(_first_frame(narrow), _first_frame(wide)) > 0
+
+
+def test_the_banner_is_drawn_on_the_picture_once_a_phase_is_running(cache_with_features: Path):
+    """At 1 s the digging phase (started at 0.1 s) is running: its banner is drawn in the
+    video's top-left corner. The same frame without phases has none."""
+    bare, drawn = cache_with_features / "nb.mp4", cache_with_features / "b.mp4"
+    render(cache_with_features, out_path=bare, scale=1.0)
+    render(cache_with_features, out_path=drawn, scale=1.0, starts=[_start("digging", 0.1)])
+    corner = (slice(0, 40), slice(0, 70))
+    assert _changed(_frame_at(bare, 30)[corner], _frame_at(drawn, 30)[corner]) > 0
+    assert _changed(_frame_at(bare, 0)[corner], _frame_at(drawn, 0)[corner]) == 0, (
+        "no banner before the first phase starts"
     )
 
-    assert int((_first_frame(bare) != _first_frame(drawn)).any(axis=2).sum()) > 0
+
+def test_the_cycle_counter_is_drawn(cache_with_features: Path):
+    """A finished cycle changes the banner, so the count must reach the pixels."""
+    from excavator_cycles.cycles import Cycle
+
+    starts = [_start("digging", 0.1)]
+    none, one = cache_with_features / "c0.mp4", cache_with_features / "c1.mp4"
+    render(cache_with_features, out_path=none, scale=1.0, starts=starts, cycles=[])
+    finished = Cycle(
+        {"digging": 0.0, "hauling": 0.2, "dumping": 0.4, "swinging": 0.6}, end=0.8
+    )
+    render(cache_with_features, out_path=one, scale=1.0, starts=starts, cycles=[finished])
+    corner = (slice(0, 40), slice(0, 110))
+    assert _changed(_frame_at(none, 40)[corner], _frame_at(one, 40)[corner]) > 0

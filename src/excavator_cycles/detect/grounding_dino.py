@@ -57,8 +57,8 @@ class GroundingDinoDetector:
             from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
         except ImportError as exc:  # pragma: no cover - environment-dependent
             raise ImportError(
-                "The perception stage needs the model extras. Install with:\n"
-                "    uv sync --extra models"
+                "torch and transformers are missing from this environment. Reinstall with:\n"
+                "    uv sync"
             ) from exc
 
         self._torch = torch
@@ -139,8 +139,8 @@ class Owlv2Detector:
             from transformers import Owlv2ForObjectDetection, Owlv2Processor
         except ImportError as exc:  # pragma: no cover - environment-dependent
             raise ImportError(
-                "The perception stage needs the model extras. Install with:\n"
-                "    uv sync --extra models"
+                "torch and transformers are missing from this environment. Reinstall with:\n"
+                "    uv sync"
             ) from exc
 
         self._torch = torch

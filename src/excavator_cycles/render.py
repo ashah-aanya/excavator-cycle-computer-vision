@@ -23,7 +23,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .cycles import Cycle
 from .logging_setup import get_logger
+from .starts import PhaseStart
 from .track import TrackResult, load_result
 from .video import decode, frame_times, probe
 
@@ -51,7 +53,6 @@ _DUMP = (250, 180, 80)
 _TRACE = (220, 220, 220)
 _EDGE = (60, 60, 60)
 _PLAYHEAD = (110, 110, 110)
-_REFERENCE = (235, 235, 235)
 
 
 @dataclass
@@ -67,10 +68,8 @@ def render(
     scale: float = 1.0,
     draw_boxes: bool = True,
     physics: bool = True,
-    onsets: dict[str, float] | None = None,
-    windows: list[tuple[str, float, float]] | None = None,
-    reference: dict[str, float] | None = None,
-    levels: dict[str, tuple[str, float]] | None = None,
+    starts: list[PhaseStart] | None = None,
+    cycles: list[Cycle] | None = None,
 ) -> RenderStats:
     """Write an annotated copy of the source video.
 
@@ -80,23 +79,12 @@ def render(
         scale: resize factor. Small sources benefit from >1 so the overlays and
             text are legible; the underlying data is unchanged either way.
         draw_boxes: include the detector's boxes as well as the mask.
-        onsets: phase name -> onset time in seconds. Drawn as a marker on every
-            signal panel and as a phase banner on the frame. This function does
-            not know or care where they came from: the state machine will supply
-            predictions, and `eval/annotate_solution.py` supplies the hand labels
-            to make a reference video. Nothing under `src/` may read the labels
-            itself, so they arrive as an argument or not at all.
-        windows: (phase, start, end) spans in seconds, shaded on every signal
-            panel. Meant for the state machine's pass-1 output, where the
-            question being asked of a picture is "does this window even contain
-            the transition?" -- which a marker cannot answer and a span can.
-        reference: a SECOND set of onsets, drawn dashed and grey. Kept separate
-            from `onsets` so the two can be seen against each other: the
-            pipeline's answer solid, something to compare it to dashed. Only a
-            caller outside `src/` may supply hand labels here.
-        levels: feature column -> (label, value), drawn as a dashed gold line
-            across that column's panel. Meant for the calibrated levels, so the
-            line each trigger compares against is visible beside the signal.
+        starts: the phase starts, in the order the phase search found them. Each is
+            drawn as a marker on every signal panel, its search interval is shaded,
+            and the latest one that has passed names the running phase on the frame.
+            This function does not know or care where they came from, and nothing
+            under `src/` reads a label: the annotations are the pipeline's own output.
+        cycles: the complete cycles, for the running count on the frame.
     """
     output_dir = Path(output_dir)
     result, masks = load_result(output_dir)
@@ -176,8 +164,8 @@ def render(
             canvas = _draw_frame(frame, mask, record, result, scale, draw_boxes)
             if table is not None and sample_position is not None:
                 canvas = _draw_physics(canvas, table, scene, sample_position, scale)
-            if onsets:
-                _draw_phase_banner(canvas, onsets, seconds)
+            if starts:
+                _draw_phase_banner(canvas, starts, cycles or [], seconds)
             left = np.vstack(
                 [
                     canvas,
@@ -202,10 +190,7 @@ def render(
                             sample_position,
                             graph_width,
                             canvas_height,
-                            onsets,
-                            windows,
-                            reference,
-                            levels,
+                            starts,
                         ),
                     ]
                 )
@@ -347,8 +332,6 @@ _GRAPHS = (
     ("BUCKET SHAPE", "box width / height", "aspect_ratio", (230, 160, 240)),
 )
 
-# The calibrated levels -- Otsu's lines -- drawn across the panel they gate.
-_LEVEL = (0, 215, 255)
 _MUTED = (150, 150, 150)
 
 
@@ -360,29 +343,59 @@ _PHASE_COLOUR = {
 }
 
 
-def phase_at(onsets: dict[str, float], now: float) -> str | None:
-    """Which phase is running at ``now``: the latest onset that has passed."""
-    passed = [
-        (when, name) for name, when in onsets.items() if when is not None and now >= when
+_SHORT = {"digging": "dig", "hauling": "haul", "dumping": "dump", "swinging": "swing"}
+
+
+def phase_at(starts: list[PhaseStart], now: float) -> PhaseStart | None:
+    """Which phase is running at ``now``: the latest start that has passed."""
+    passed = [start for start in starts if now >= start.time]
+    return max(passed, key=lambda start: start.time) if passed else None
+
+
+def banner_text(starts: list[PhaseStart], cycles: list[Cycle], now: float) -> list[str]:
+    """What the frame says at ``now``: the running phase and how long it has run, the
+    count of complete cycles, and how long each phase of the current cycle has lasted so
+    far. Empty before the first phase starts."""
+    current = phase_at(starts, now)
+    if current is None:
+        return []
+    lines = [
+        f"{current.phase.upper()}   {now - current.time:.1f}s",
+        f"complete cycles: {sum(1 for c in cycles if c.end <= now)}",
     ]
-    return max(passed)[1] if passed else None
+    digs = [s.time for s in starts if s.phase == "digging" and s.time <= now]
+    so_far = [s for s in starts if digs and digs[-1] <= s.time <= now]
+    edges = [s.time for s in so_far] + [now]
+    parts = [f"{_SHORT[s.phase]} {edges[i + 1] - edges[i]:.1f}s" for i, s in enumerate(so_far)]
+    return lines + (["this cycle: " + "  ".join(parts)] if parts else [])
 
 
-def _draw_phase_banner(canvas, onsets: dict[str, float], now: float) -> None:
-    """The current phase, and how long it has been running."""
-    name = phase_at(onsets, now)
-    if name is None:
+def _draw_phase_banner(
+    canvas, starts: list[PhaseStart], cycles: list[Cycle], now: float
+) -> None:
+    """Draw :func:`banner_text` top-left, the phase line in that phase's colour."""
+    lines = banner_text(starts, cycles, now)
+    if not lines:
         return
-    started = onsets[name]
-    colour = _PHASE_COLOUR.get(name, _TEXT)
-    text = f"{name.upper()}   {now - started:.1f}s"
+    colour = _PHASE_COLOUR.get(phase_at(starts, now).phase, _TEXT)
     font = max(0.5, canvas.shape[1] / 1400)
-    (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, 2)
-    cv2.rectangle(canvas, (8, 8), (8 + tw + 16, 8 + th + base + 12), (18, 18, 18), cv2.FILLED)
-    cv2.rectangle(canvas, (8, 8), (8 + tw + 16, 8 + th + base + 12), colour, 2)
-    cv2.putText(
-        canvas, text, (16, 12 + th), cv2.FONT_HERSHEY_SIMPLEX, font, colour, 2, cv2.LINE_AA
-    )
+    scales = [font, font * 0.7, font * 0.55][: len(lines)]
+    colours = [colour, _TEXT, _TEXT][: len(lines)]
+    sizes = [
+        cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, f, 2)
+        for t, f in zip(lines, scales, strict=True)
+    ]
+    box_width = max(w for (w, _), _ in sizes) + 16
+    box_height = sum(h + b + 6 for (_, h), b in sizes) + 10
+    cv2.rectangle(canvas, (8, 8), (8 + box_width, 8 + box_height), (18, 18, 18), cv2.FILLED)
+    cv2.rectangle(canvas, (8, 8), (8 + box_width, 8 + box_height), colour, 2)
+    y = 8
+    for text, line_colour, f, ((_, h), b) in zip(lines, colours, scales, sizes, strict=True):
+        y += h + 6
+        cv2.putText(
+            canvas, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, f, line_colour, 2, cv2.LINE_AA
+        )
+        y += b
 
 
 def _graph_column(
@@ -390,10 +403,7 @@ def _graph_column(
     position: int | None,
     width: int,
     height: int,
-    onsets: dict[str, float] | None = None,
-    windows: list[tuple[str, float, float]] | None = None,
-    reference: dict[str, float] | None = None,
-    levels: dict[str, tuple[str, float]] | None = None,
+    starts: list[PhaseStart] | None = None,
 ):
     """The signals, stacked down the right-hand side, with a shared playhead.
 
@@ -423,26 +433,10 @@ def _graph_column(
             column, s, origin, cv2.FONT_HERSHEY_SIMPLEX, size, colour, thick, cv2.LINE_AA
         )
 
-    def dashed(p, q, colour, dash=6, gap=4):
-        (x0, y0), (x1, y1) = p, q
-        length = max(abs(x1 - x0), abs(y1 - y0), 1)
-        step = 0
-        while step < length:
-            a = step / length
-            b = min(step + dash, length) / length
-            cv2.line(
-                column,
-                (round(x0 + (x1 - x0) * a), round(y0 + (y1 - y0) * a)),
-                (round(x0 + (x1 - x0) * b), round(y0 + (y1 - y0) * b)),
-                colour,
-                1,
-            )
-            step += dash + gap
-
     # Windows first, so everything else draws on top of them.
-    for name, start, end in windows or ():
-        colour = _PHASE_COLOUR.get(name, _TEXT)
-        x0, x1 = x_at(start), x_at(end)
+    for start in starts or ():
+        colour = _PHASE_COLOUR.get(start.phase, _TEXT)
+        x0, x1 = x_at(start.window[0]), x_at(start.window[1])
         shade = np.full((plot_bottom - 4, max(1, x1 - x0), 3), colour, dtype=np.uint8)
         region = column[4:plot_bottom, x0 : x0 + shade.shape[1]]
         column[4:plot_bottom, x0 : x0 + shade.shape[1]] = cv2.addWeighted(
@@ -487,22 +481,13 @@ def _graph_column(
                 cv2.line(column, previous, point, colour, 1, cv2.LINE_AA)
             previous = point
 
-        level = (levels or {}).get(field)
-        if level is not None and np.isfinite(level[1]):
-            label, value = level
-            y = y_of(min(max(value, low), high))
-            dashed((left, y), (right, y), _LEVEL)
-            caption = f"{label} {value:+.3f}"
-            (caption_width, _), _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, 0.32, 1)
-            text(caption, (right - caption_width, y - 4), _LEVEL, 0.32)
-
         if position is not None and np.isfinite(values[position]):
             now = f"now {values[position]:+.3f}"
             (now_width, _), _ = cv2.getTextSize(now, cv2.FONT_HERSHEY_SIMPLEX, 0.36, 1)
             text(now, (right - now_width, top + 14), _TEXT, 0.36)
 
-    # Onset labels would sit on top of each other wherever two onsets are close
-    # (hauling and dumping fire 1 s apart on the dev clip). Each label takes the
+    # Phase-start labels would sit on top of each other wherever two starts are close
+    # (hauling and dumping start 1 s apart on the dev clip). Each label takes the
     # lowest row where it does not touch one already placed, and flips to the left
     # of its line near the right edge rather than running off the frame.
     placed: list[tuple[int, int, int]] = []  # (row, x0, x1)
@@ -516,26 +501,17 @@ def _graph_column(
         placed.append((row, x0, x0 + w))
         text(label, (x0, bottom - row * 11), colour, 0.3)
 
-    # Reference first, DASHED and white, so the pipeline's own answer draws over
-    # it rather than under. Both span every panel, so one boundary can be read
-    # against all six signals at once -- the point of stacking them.
+    # Each detected phase start is a SOLID, phase-coloured line with a dot on top. It
+    # spans every panel, so one boundary can be read against all six signals at once --
+    # the point of stacking them. A start marked * is its window's centre: nothing in
+    # the window moved faster than noise.
     marks = []
-    for name, when in (reference or {}).items():
-        if when is None:
-            continue
-        x = x_at(when)
-        dashed((x, 4), (x, plot_bottom), _REFERENCE, 4, 4)
-        marks.append((x, f"{name} (label)", _REFERENCE))
-
-    # The pipeline's own onsets: SOLID and phase-coloured, with a dot on top.
-    for name, when in (onsets or {}).items():
-        if when is None:
-            continue
-        x = x_at(when)
-        colour = _PHASE_COLOUR.get(name, _TEXT)
+    for start in starts or ():
+        x = x_at(start.time)
+        colour = _PHASE_COLOUR.get(start.phase, _TEXT)
         cv2.line(column, (x, 4), (x, plot_bottom), colour, 1, cv2.LINE_AA)
         cv2.circle(column, (x, 9), 3, colour, -1)
-        marks.append((x, name, colour))
+        marks.append((x, start.phase + ("*" if start.fallback else ""), colour))
 
     for x, label, colour in sorted(marks, key=lambda mark: mark[0]):
         mark_label(label, x, colour, plot_bottom - 4)
@@ -555,20 +531,14 @@ def _graph_column(
     # The legend: what each kind of mark means, in the colour it is drawn in.
     legend_y = plot_bottom + axis_height + 12
     pieces = [
-        ("shaded span = window pass 1 searched", _MUTED),
-        ("solid line = pipeline's onset", _TEXT),
-        ("dashed white = hand label", _REFERENCE),
+        ("shaded span = interval the phase start was searched in", _MUTED),
+        ("solid line = detected phase start (* = window centre)", _TEXT),
     ]
     x = 6
     for words, colour in pieces:
         text(words, (x, legend_y), colour, 0.3)
         x += cv2.getTextSize(words, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)[0][0] + 14
-    text(
-        "dashed gold = Otsu level from calibrate    grey line = now",
-        (6, legend_y + 14),
-        _LEVEL,
-        0.3,
-    )
+    text("grey line = now", (6, legend_y + 14), _MUTED, 0.3)
 
     if position is not None:
         x = left + round(span * position / total)

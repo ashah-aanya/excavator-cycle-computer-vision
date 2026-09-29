@@ -73,7 +73,7 @@ def test_dev_clip_labels_read_through_the_old_layout(cc):
 def test_derivative_matches_the_pipeline(cc):
     """The checker re-implements the pipeline's derivative so it need not import
     it. The test may import the pipeline; this is where the two are held equal."""
-    from excavator_cycles.onsets import derivative
+    from excavator_cycles.rates import derivative
 
     z = np.load(DEV_FEATURES)
     t = z["time_seconds"]
@@ -162,7 +162,7 @@ def test_no_match_is_a_miss_not_a_crash(cc):
         ("swinging", "d2x_dt2", "peak", [-0.2, -0.2, -0.3]),
         # truck_overlap "drop ends -> flat" is no longer a swing cue: the bucket can
         # start swinging back while still over the truck box, so "overlap ends" came
-        # mid-swing, not at its start (see interval_votes.py's swing x_takeoff).
+        # mid-swing, not at its start (see windows.py's swing x_takeoff).
     ],
 )
 def test_long_clip_cues_found_so_far(cc, phase, feature, shape, start_errors):
@@ -225,21 +225,3 @@ def test_cli_search_runs_on_the_dev_clip(cc, capsys):
     cc.main(["--clip", "dev", "--phase", "swinging", "--search", "--top", "3"])
     out = capsys.readouterr().out
     assert "swinging: every feature x shape" in out and "dev_clip" in out
-
-
-def test_the_checker_reads_shapes_as_the_pipeline_does(cc):
-    """Two implementations of one reading -- the pipeline may not import eval, and
-    the checker does not import the pipeline -- held equal wherever both read a
-    shape. They differ only at the clip edges, where the pipeline fits a shorter
-    side and the checker reports nothing."""
-    from excavator_cycles.shapes import read
-
-    t, feats = cc.load_features(cc.CLIPS["long"][0])
-    for name in ("height", "speed_2d", "d2x_dt2", "bucket_x"):
-        ours = cc.shapes(feats[name], t)
-        theirs = read(feats[name], t, side=2.0, flat=0.08, steeper=1.5, min_side=0.4)
-        both = [i for i, (s, _) in enumerate(ours) if s is not None]
-        assert len(both) > 0.9 * len(t)
-        assert [ours[i] for i in both] == [
-            (theirs.shape[i], theirs.detail[i]) for i in both
-        ], name

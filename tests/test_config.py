@@ -19,7 +19,7 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
 def test_defaults_load():
     config = Config.load()
     assert config.sampling.rate_hz == 10.0
-    assert config.fsm.hold_seconds == 0.30
+    assert config.features.derivative_window_seconds == 0.9
 
 
 def test_shipped_yaml_matches_code_defaults():
@@ -44,4 +44,4 @@ def test_unknown_key_raises():
 def test_config_is_serialisable():
     """Run metadata records the config, so every result is traceable."""
     data = Config.load().to_dict()
-    assert data["fsm"]["hold_seconds"] == 0.30
+    assert data["features"]["derivative_window_seconds"] == 0.9

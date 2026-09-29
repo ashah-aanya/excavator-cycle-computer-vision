@@ -1,4 +1,7 @@
-# Every tunable value in the pipeline.
+# The tunable settings for tracking, geometry and features.
+#
+# The phase search's constants (window widths, vote weights) are not here: they live
+# in src/excavator_cycles/windows.py, each with the reason beside it.
 #
 # This file mirrors src/excavator_cycles/config.py. Anything omitted here keeps
 # the default from that file; anything set here overrides it. Pass with
@@ -14,7 +17,7 @@
 # unfilled blank.
 
 sampling:
-  rate_hz: 10.0            # features + state machine
+  rate_hz: 10.0            # features + phase search
   anchor_rate_hz: 1.0      # detector re-anchoring
   inference_max_edge: 1024 # longest side fed to the models; null = native
 
@@ -62,17 +65,6 @@ features:
   box_window_seconds: 0.5        # 0.3 and 0.5 both give 4/4; 0.9 collapses to 1/4
   box_alignment: trailing        # trailing | centred | leading (the diagram draws leading)
   min_sample_confidence: 0.35    # below this, a sample is MISSING, not negative
-
-fsm:
-  hold_seconds: 0.30           # evidence must persist this long to be believed
-  strict_hold_seconds: 0.60    # the higher bar for an out-of-turn digging trigger
-  lookback_seconds: 0.80       # how far a coarse window reaches back before the trigger
-  rest_sigma: 3.0              # pass 2: multiples of a window's own noise that count as rest
-  rest_floor_fraction: 0.02    # ...floored at this fraction of the window's range
-  shape_side_seconds: 2.0      # onset cues: a line is fitted to this long on each side of a sample
-  shape_flat_fraction: 0.08    # ...and reads flat when it moves < this fraction of the signal's spread
-  shape_steeper: 1.5           # slope ratio for "speeds up" / "slows down"
-  shape_min_side_seconds: 0.4  # at the clip edges, a side needs at least this much data
 
 qa:
   min_excavator_coverage: 0.97

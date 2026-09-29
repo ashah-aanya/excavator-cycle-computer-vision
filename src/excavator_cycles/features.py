@@ -60,7 +60,7 @@ from .boxes import BoxTrack, raw_boxes, smooth_boxes
 from .config import Config
 from .geometry import arm_reach, farthest_point, rotation_centre, stable_core
 from .logging_setup import get_logger
-from .onsets import derivative
+from .rates import derivative
 from .track import TrackResult
 
 log = get_logger(__name__)

@@ -1,6 +1,6 @@
 """Stage 3: derive the machine's structure and the scene's landmarks from masks.
 
-Only one thing was ever detected -- the excavator. Everything the state machine
+Only one thing was ever detected -- the excavator. Everything the phase search
 needs is computed from the shape of that mask over time:
 
     rotation centre   the pixels that are machine in almost every frame
@@ -119,63 +119,3 @@ def arm_reach(
     if not distances:
         raise ValueError("no valid bucket positions; cannot establish a scale")
     return float(np.percentile(distances, percentile))
-
-
-def otsu_threshold(values: np.ndarray, bins: int = 64) -> float:
-    """The split that best separates a two-humped distribution.
-
-    Otsu's method: try every candidate split and keep the one maximising the
-    variance *between* the two groups. Parameter-free, which is the point -- a
-    hand-chosen surface height would be exactly the kind of video-specific
-    constant the task forbids.
-    """
-    counts, edges = np.histogram(values, bins=bins)
-    centres = (edges[:-1] + edges[1:]) / 2
-    total = counts.sum()
-    if total == 0:
-        return float(np.median(values))
-
-    weight_low = np.cumsum(counts)
-    weight_high = total - weight_low
-    valid = (weight_low > 0) & (weight_high > 0)
-    if not valid.any():
-        return float(np.median(values))
-
-    cumulative = np.cumsum(counts * centres)
-    mean_low = np.divide(
-        cumulative, weight_low, out=np.zeros_like(cumulative), where=weight_low > 0
-    )
-    mean_high = np.divide(
-        cumulative[-1] - cumulative,
-        weight_high,
-        out=np.zeros_like(cumulative),
-        where=weight_high > 0,
-    )
-    between = weight_low * weight_high * (mean_low - mean_high) ** 2
-    between[~valid] = -np.inf
-
-    # Every split inside an empty gap scores IDENTICALLY: `weight_low`,
-    # `weight_high` and both means stop changing the moment no mass lies between
-    # the candidate and the next one. So the objective does not have a single
-    # peak, it has a plateau spanning the gap -- and `argmax` resolves a tie at
-    # the lowest index, which pins the threshold to the BOTTOM of the gap,
-    # hugging the lower population. That error grows with the separation, so the
-    # method fails hardest on exactly the cleanly-bimodal data it is best suited
-    # to. The midpoint of the plateau is the conventional resolution and the only
-    # one that is symmetric in the two groups.
-    #
-    # Exact equality, and it really is exact. Inside an empty gap the bin counts are
-    # zero, so neither `weight_low` nor `cumulative` changes from one candidate to
-    # the next and the scores are BIT-identical -- there is no rounding to absorb.
-    #
-    # An earlier version carried a machine-epsilon tolerance here, justified as
-    # merging bins that "hold a few stray samples" and so differ only in the last
-    # bits. That justification was wrong twice over: a relative tolerance of ~1e-14
-    # cannot merge scores that differ because they contain different data, and
-    # merging them would be incorrect anyway, since the midpoint rule below is only
-    # valid across candidates that genuinely tie. Measured over 3000 random
-    # distributions (Gaussian, bimodal, exponential, zero-inflated, Pareto) the
-    # tolerance changed the answer in zero cases.
-    peak = between.max()
-    tied = np.flatnonzero(between == peak)
-    return float((centres[tied[0]] + centres[tied[-1]]) / 2.0)

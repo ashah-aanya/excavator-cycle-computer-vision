@@ -69,9 +69,9 @@ def plot_features(
     """Every feature against time, stacked on a shared axis.
 
     Args:
-        onsets: detected phase onsets in seconds, drawn as vertical lines. Absent
-            until the state machine exists, and the graphs are useful without it
-            -- that is the point of looking at them first.
+        onsets: detected phase starts in seconds, drawn as vertical lines. Optional:
+            the graphs are useful without them -- that is the point of looking at
+            them first.
     """
     path = Path(path)
     panels = _panels(table)

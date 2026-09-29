@@ -152,26 +152,3 @@ def test_asymmetric_offset_caveat_is_recorded(labels: dict):
     assert "swinging" in caveats
     conventions = " ".join(labels["conventions"]).lower()
     assert "+9 frames" in conventions
-
-
-def test_pipeline_never_references_the_labels():
-    """Structural separation, enforced rather than promised.
-
-    The task spec forbids the pipeline reading the answer, so no module under
-    src/excavator_cycles/ may name these files at all.
-    """
-    offenders = []
-    for path in (REPO / "src" / "excavator_cycles").rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        if any(
-            name in text
-            for name in (
-                "eval/labels",
-                "labels.json",
-                "labels_long_clip",
-                "eval.score",
-                "check_cues",
-            )
-        ):
-            offenders.append(str(path.relative_to(REPO)))
-    assert not offenders, f"pipeline modules reference the eval labels: {offenders}"

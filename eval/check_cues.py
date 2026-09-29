@@ -146,7 +146,7 @@ def derivative(
 ) -> np.ndarray:
     """Savitzky-Golay first derivative, sized exactly as the pipeline sizes it.
 
-    Mirrors ``excavator_cycles.onsets.derivative`` (quadratic fit, window in
+    Mirrors ``excavator_cycles.rates.derivative`` (quadratic fit, window in
     seconds rounded to an odd sample count, at least 3) without importing it.
     Interior gaps are interpolated; ``tests/test_check_cues.py`` checks the two agree.
     """
@@ -638,7 +638,7 @@ def settle_windows(
 def truck_side(feats: dict[str, np.ndarray]) -> float:
     """+1 if the truck is on the +x side of the cabin, -1 if not: the median sign of
     bucket - cabin x while the bucket overlaps the truck box. A simplification of the
-    pipeline's `calibrate`, which thresholds the overlap first."""
+    pipeline's own truck-side reading."""
     over = feats["truck_overlap"] > 0
     rel = feats["rel_cabin_x"][over & np.isfinite(feats["rel_cabin_x"])]
     return 1.0 if rel.size == 0 or np.median(rel) >= 0 else -1.0

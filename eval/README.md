@@ -153,20 +153,21 @@ Two limits to keep in mind:
 It uses `labels_long_clip.json` (the 83 s clip, which shares its filename with
 the dev clip but is a different video) and `tests/fixtures/long_clip/features.npz`.
 Like `score.py`, it imports nothing from `excavator_cycles`; its derivative
-re-implements the pipeline's, and `tests/test_check_cues.py` holds the two equal.
+re-implements the pipeline's (`rates.derivative`), and `tests/test_check_cues.py` holds the two equal.
 
-## Checking the whole pipeline: `check_onsets.py`
+## Checking the whole pipeline
 
-`check_cues.py` scores one cue on paper. `check_onsets.py` runs the pipeline's real
-state machine (`calibrate`, `walk`, `locate`) on a clip's `features.npz` and
-compares every onset it finds with the labels:
+`check_cues.py` scores one cue on paper. To check what the pipeline itself finds, run its
+phase search on a clip's `features.npz` and compare with the labels:
 
 ```bash
-uv run python eval/check_onsets.py              # the 83 s clip
-uv run python eval/check_onsets.py --clip dev   # the dev clip
+uv run pytest tests/test_label_accuracy.py -v
 ```
 
-It prints each labelled onset with the pipeline's nearest detection of that phase:
-pass 1's time, pass 2's refined time, and whether the refined time is within ±0.6 s.
-Exit code 0 only when every labelled onset is. It imports the pipeline, which is the
-allowed direction; the pipeline still may not name anything in `eval/`.
+That test finds the phase starts on both labelled clips through `excavator_cycles.starts`,
+exactly as `run.py` does, and holds each labelled start's error to its recorded value (plus
+0.05 s of slack) and its window to containing the label. It reads the labels; the pipeline
+still may not name anything in `eval/`.
+
+`tests/test_phase_starts.py` is the label-free companion: it holds the search to what the
+original scripts returned before the method moved into `src/`.
