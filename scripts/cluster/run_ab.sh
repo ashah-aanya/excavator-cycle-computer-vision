@@ -5,10 +5,16 @@
 #   ONLY='random|vid2' scripts/cluster/run_ab.sh A-pre-reseed F-main   only matching videos
 #
 # Each version is a git worktree (`git worktree add --detach ~/wt/<name> <commit>`), so a
-# version is just a commit hash. By default the WHOLE pipeline runs (`run.py run`):
-# track (the GPU stage) -> features -> cycles -> render, so each run leaves masks.npz,
-# track.json, features.npz, answer.json and annotated.mp4 in $OUT/<version>/<video>/.
-# TRACK_ONLY=1 stops after `track` (masks + track.json only), which is faster.
+# version is just a commit hash. By default the WHOLE pipeline runs: track (the GPU stage)
+# -> features -> cycles -> render, so each run leaves masks.npz, track.json, features.npz,
+# answer.json and annotated.mp4 in $OUT/<version>/<video>/. TRACK_ONLY=1 stops after
+# `track` (masks + track.json only), which is faster.
+#
+# The stages are called one by one, not through `run.py run`, because `run --out` means
+# different things in different versions (an answer FILE in the older ones, a results
+# folder in the newer). The four stage commands take the same arguments in every version.
+# The answer (answer.json) is the finish line; the video is best-effort, since the older
+# renderers can fail on some videos without invalidating the answer.
 #
 # What you see: a plan, then for every run a banner (progress, elapsed time, a rough ETA,
 # the version's commit, GPU memory), the run's own log streamed live, and a one-line result.
@@ -19,7 +25,7 @@
 # ONLY='Untitled4' works, ONLY='Untitled4.mov' matches nothing.
 #
 # Resumable: a finished run is skipped, and a run whose tracking finished but whose later
-# stages did not is continued from the saved masks (`--reuse`) instead of re-tracking.
+# stages did not is continued from the saved masks instead of re-tracking.
 # Never delete finished output.
 #
 # Do not use `uv run` or `uv sync` for this: they can rebuild the venv and change torch.
@@ -41,7 +47,7 @@ if [ "$TRACK_ONLY" = "1" ]; then
   MARKER="track.json"     # the file whose presence means "this run is finished"
   MODE="track only (masks + track.json)"
 else
-  MARKER="annotated.mp4"  # written last, by the render stage
+  MARKER="answer.json"    # written by the cycles stage; the video is best-effort after it
   MODE="full pipeline (track, features, cycles, render)"
 fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,7 +86,7 @@ echo "videos : ${#MATCHED[@]}   versions : ${#VERSIONS[@]}   runs : $TOTAL   out
 echo "mode   : $MODE"
 for video in "${MATCHED[@]}"; do echo "  video   $(basename "$video")"; done
 for label in "${VERSIONS[@]}"; do
-  echo "  version $label  $(git -C "$WT/$label" log -1 --format='%h %s' 2>/dev/null)"
+  echo "  version $label  $(git -c safe.directory='*' -C "$WT/$label" log -1 --format='%h %s' 2>/dev/null)"
 done
 echo
 
@@ -88,7 +94,33 @@ fmt() { printf '%dm%02ds' $(( $1 / 60 )) $(( $1 % 60 )); }
 
 gpu_memory() {
   command -v nvidia-smi >/dev/null 2>&1 || { echo "n/a"; return; }
-  nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader 2>/dev/null | head -1
+  nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader 2>/dev/null | head -1 \
+    | sed 's/ MiB, / of /'
+}
+
+# One run, stage by stage. Called inside the version's own folder, so `run.py` is that
+# version's. Returns non-zero only if the run did not get as far as its finish line.
+pipeline() {
+  local video="$1" dest="$2" log="$3" rc=0
+  if [ -f "$dest/track.json" ] && [ -f "$dest/masks.npz" ]; then
+    echo "track: reusing the saved masks in $dest (no GPU)"
+  else
+    python -u run.py --log-file "$log" track "$video" --out "$dest"
+    rc=$?   # non-zero can just mean QA flagged a concern; track.json says whether it finished
+    [ -f "$dest/track.json" ] || return "$rc"
+  fi
+  [ "$TRACK_ONLY" = "1" ] && return "$rc"
+  python -u run.py features "$dest" || return $?
+  python -u run.py cycles "$dest" --out "$dest/answer.json" || return $?
+  # Render to a temporary name and rename on success: a render that crashes part-way still
+  # leaves a tiny stub file behind, which must not pass for a video.
+  if python -u run.py render "$dest" --out "$dest/annotated.partial.mp4"; then
+    mv "$dest/annotated.partial.mp4" "$dest/annotated.mp4"
+  else
+    rm -f "$dest/annotated.partial.mp4"
+    echo "render failed -- the answer above is still complete"
+  fi
+  return 0
 }
 
 # One line about a finished run, read from its track.json.
@@ -154,20 +186,14 @@ for video in "${MATCHED[@]}"; do
     fi
     echo "------------------------------------------------------------------------"
     echo "[$done_runs/$TOTAL] $label  on  $stem   $(date +%H:%M:%S)"
-    echo "    commit  $(git -C "$WT/$label" log -1 --format='%h %s' 2>/dev/null)"
-    echo "    GPU mem $(gpu_memory) MiB used   elapsed $(fmt $(( SECONDS - START )))   ETA ~$eta"
+    echo "    commit  $(git -c safe.directory='*' -C "$WT/$label" log -1 --format='%h %s' 2>/dev/null)"
+    echo "    GPU mem $(gpu_memory) (used of total)   elapsed $(fmt $(( SECONDS - START )))   ETA ~$eta"
     echo "------------------------------------------------------------------------"
     mkdir -p "$dest"
     began=$SECONDS
     # `tee` shows the run live and keeps it; PIPESTATUS[0] is python's own exit code.
-    if [ "$TRACK_ONLY" = "1" ]; then
-      stage=(track "$video" --out "$dest")
-    else
-      # --reuse: if masks.npz is already there, skip the GPU stage and run the rest.
-      stage=(run "$video" --out "$dest" --reuse)
-    fi
-    ( cd "$WT/$label" && python -u run.py --log-file "$OUT/$label/$stem.debug.log" \
-        "${stage[@]}" ) 2>&1 | tee "$OUT/$label/$stem.log"
+    ( cd "$WT/$label" && pipeline "$video" "$dest" "$OUT/$label/$stem.debug.log" ) 2>&1 \
+      | tee "$OUT/$label/$stem.log"
     status=${PIPESTATUS[0]}
     took=$(( SECONDS - began ))
     ran_seconds=$(( ran_seconds + took ))
@@ -180,11 +206,15 @@ for video in "${MATCHED[@]}"; do
       echo ">>> $(result_line "$dest")"
       answer="$(answer_line "$dest")"
       [ -n "$answer" ] && echo ">>> $answer"
-      [ -f "$dest/annotated.mp4" ] && echo ">>> video: $dest/annotated.mp4 ($(du -h "$dest/annotated.mp4" | cut -f1))"
+      if [ -f "$dest/annotated.mp4" ]; then
+        echo ">>> video: $dest/annotated.mp4 ($(du -h "$dest/annotated.mp4" | cut -f1))"
+      elif [ "$TRACK_ONLY" != "1" ]; then
+        echo ">>> no video: the render stage failed (see the log). The answer is complete."
+      fi
       [ "$status" -ne 0 ] && echo ">>> (exit $status but the output is complete: tracking QA flagged a concern)"
     else
       if [ -f "$dest/track.json" ]; then
-        echo ">>> PARTIAL $label $stem  exit $status after $(fmt "$took") -- tracking finished, a later stage did not"
+        echo ">>> PARTIAL $label $stem  exit $status after $(fmt "$took") -- tracking finished, features or cycles did not"
         echo ">>> $(result_line "$dest")"
         echo ">>> Re-running the same command continues from the saved masks; it will not re-track."
       else
