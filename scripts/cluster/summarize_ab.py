@@ -19,8 +19,12 @@ def commit_of(run_dir: Path) -> str:
     record = run_dir / "run.json"
     if not record.exists():
         return "?"
-    git = json.loads(record.read_text()).get("git", {})
-    return git.get("revision", "?")[:7] + ("*" if git.get("dirty") else "")
+    # "git" is null when the run could not read its own repository (for example a worktree
+    # owned by another user), so a missing key and a null value both mean "unknown".
+    git = json.loads(record.read_text()).get("git") or {}
+    if not git.get("revision"):
+        return "?"
+    return git["revision"][:7] + ("*" if git.get("dirty") else "")
 
 
 def answer_of(run_dir: Path) -> str:
