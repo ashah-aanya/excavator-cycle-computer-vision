@@ -33,12 +33,10 @@ log = get_logger(__name__)
 
 # Purely cosmetic, and therefore not in config.py: nothing here can change a
 # reported number.
-_MASK_COLOR = (80, 230, 90)
 _TRUCK_COLOR = (150, 150, 150)
 _NEGATIVE_COLOR = (70, 70, 240)
 _TEXT = (255, 255, 255)
 _PANEL = (28, 28, 28)
-_MASK_ALPHA = 0.45
 # The physics overlay: what the geometry stage actually measures.
 _PIVOT = (80, 220, 250)
 _TIP = (60, 60, 250)
@@ -158,7 +156,7 @@ def render(
             sample_position = by_frame[ordered[current]] if current >= 0 else None
             mask = masks.get(sample_position) if sample_position is not None else None
 
-            canvas = _draw_frame(frame, mask, record, result, scale, draw_boxes)
+            canvas = _draw_frame(frame, record, result, scale, draw_boxes)
             if table is not None and sample_position is not None:
                 canvas = _draw_physics(canvas, table, scene, sample_position, scale)
             # Every phase start is on the pipeline's clock (sample time), so the frame's time
@@ -212,18 +210,13 @@ def render(
     )
 
 
-def _draw_frame(frame, mask, record, result: TrackResult, scale: float, draw_boxes: bool):
-    """The video frame with the mask, the truck's box and the prompt points drawn on it."""
-    canvas = frame.copy()
+def _draw_frame(frame, record, result: TrackResult, scale: float, draw_boxes: bool):
+    """The video frame with the truck's box and the prompt points drawn on it.
 
-    if mask is not None and mask.shape[:2] == canvas.shape[:2]:
-        tint = np.array(_MASK_COLOR, dtype=np.float32)
-        canvas[mask] = ((1 - _MASK_ALPHA) * canvas[mask] + _MASK_ALPHA * tint).astype(np.uint8)
-        # Outline makes the mask boundary legible where the tint alone is subtle.
-        contours, _ = cv2.findContours(
-            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        cv2.drawContours(canvas, contours, -1, _MASK_COLOR, 1)
+    The SAM mask is deliberately not painted: the tracked mask still feeds the features,
+    but the annotated video shows the frame itself.
+    """
+    canvas = frame.copy()
 
     if draw_boxes and record is not None and record.truck_box is not None:
         _dashed_box(canvas, record.truck_box, _TRUCK_COLOR)
