@@ -194,27 +194,6 @@ class GeometryConfig:
     # A percentile rather than the max, so one bad frame cannot set the scale.
     reach_percentile: float = 95.0
 
-    # The bucket region is the outermost part of the arm, as a fraction of the
-    # machine's CURRENT radial reach -- not a disk around the tip. A circular
-    # crop makes any region circular: measured that way the bucket's elongation
-    # is 1.25 (apparently shapeless), measured as a radial band it is 2.13.
-    bucket_band_low: float = 0.85
-
-    # Size of the optical-flow patch below the bucket, in units of L.
-    bucket_radius_frac: float = 0.22
-
-    # Temporal filter on the bucket's position (design doc section 4.3). All in
-    # units of the machine's reach L and in seconds, so one set of values serves
-    # any video at any scale or frame rate.
-    #
-    # process_noise is how much the bucket's velocity may change per second: it
-    # sets how much the filter trusts its own motion model against the next
-    # measurement. Too low and a real swing gets rejected; too high and the
-    # filter believes everything and does nothing.
-    tip_process_noise: float = 2.0  # L per second squared
-    tip_measurement_noise: float = 0.02  # L, expected error of one pose fit
-    tip_gate_sigma: float = 3.0  # reject beyond this many sigmas
-
 
 @dataclass(frozen=True)
 class FeatureConfig:

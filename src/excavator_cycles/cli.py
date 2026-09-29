@@ -159,6 +159,7 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     log.info("probed %s (%.2f s, %.3f fps)", info.path.name, info.duration_seconds, info.fps)
 
     stride = info.stride_for(config.sampling.rate_hz)
+    actual_rate = info.actual_rate(config.sampling.rate_hz)
     anchor_stride = info.stride_for(config.sampling.anchor_rate_hz)
     n_samples = info.frame_count // stride if stride else 0
     n_anchors = info.frame_count // anchor_stride if anchor_stride else 0
@@ -176,6 +177,7 @@ def _cmd_probe(args: argparse.Namespace) -> int:
                     "sampling": {
                         "rate_hz": config.sampling.rate_hz,
                         "stride_frames": stride,
+                        "actual_rate_hz": actual_rate,
                         "n_samples": n_samples,
                         "anchor_rate_hz": config.sampling.anchor_rate_hz,
                         "n_anchor_detections": n_anchors,
@@ -191,14 +193,14 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     print("  with the current config:")
     print(
         f"    features     : {config.sampling.rate_hz:g} Hz "
-        f"-> every {stride} frame(s), ~{n_samples} samples"
+        f"-> every {stride} frame(s) = {actual_rate:g} Hz, ~{n_samples} samples"
     )
     print(
         f"    detection    : {config.sampling.anchor_rate_hz:g} Hz "
         f"-> ~{n_anchors} detector calls"
     )
     print(
-        f"    sample gap   : {1 / config.sampling.rate_hz:.3f} s "
+        f"    sample gap   : {1 / actual_rate:.3f} s "
         f"(tolerance is 0.6 s, so quantisation is not the limit)"
     )
     return 0

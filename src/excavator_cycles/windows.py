@@ -46,7 +46,6 @@ GATE_LOOKAHEAD = 1.0  # s after a haul event in which its gates may be met
 HAUL_HEIGHT_SECONDS = 1.5  # "a second long or something", broadened from 1.0
 NEAR = 5.0  # s: a haul cue further than this from height's window is not counted
 STEEP = 0.25  # a 2 s line moving >= this fraction of the spread is a steep rise
-CLIP_START_SECONDS = 5.0  # how far into a clip the opening-dig rule may look
 
 
 # ------------------------------------------------------------------ uncertainty
@@ -561,25 +560,6 @@ def haul_gate(t, F, anchor, cycle):
         return (F["height"] > ref) & (F["truck_overlap"] <= 0)
 
 
-def clip_start_dig(t, F):
-    """The first dig when the clip opens mid-dig, from WEAK signals (there is no swing
-    before it to read): the first moment, in the first few seconds, when the bucket is
-    down (height < 0), on the pile side of the truck, not overlapping it, and at rest
-    (2D speed within its rest band: 3 x its noise, at least 2% of its range)."""
-    speed = F["speed_2d"]
-    rest = max(3 * noise_scale(speed), 0.02 * float(np.nanmax(speed) - np.nanmin(speed)))
-    with np.errstate(invalid="ignore"):
-        ok = (
-            (F["height"] < 0)
-            & (side_signals(F)[0] < 0)
-            & (F["truck_overlap"] <= 0)
-            & (speed <= rest)
-            & (t <= t[0] + CLIP_START_SECONDS)
-        )
-    idx = np.flatnonzero(ok)
-    return None if idx.size == 0 else float(t[idx[0]])
-
-
 # ----------------------------------------------------------------------- search
 
 
@@ -791,17 +771,13 @@ def combine(t, phase, graphs, windows, cue_from):
     return (max(lo, mid - MAX_HALF), min(hi, mid + MAX_HALF)), n, total / 2, (a, b)
 
 
-def step(t, F, found, phase, anchor, cycle, clip_start=True):
+def step(t, F, found, phase, anchor, cycle):
     """Search for one phase after ``anchor``.
 
     Returns {"phase", "window"} plus, when the vote ran, "core" (where the agreeing
     cues overlap), "weak" (no majority: the window is where the MOST weight agrees),
     and "votes"/"need" (the weight that agreed, and half the total). ``window`` is None
     when the gates never open or nothing agrees."""
-    if clip_start and phase == "digging" and anchor <= t[0] + 1e-9:
-        c = clip_start_dig(t, F)
-        if c is not None:
-            return {"phase": phase, "window": (max(c - MIN_HALF, t[0]), c + MIN_HALF)}
     graphs = found[phase]
     cycle["search_from"] = anchor
     gate = np.ones(len(t), bool)
@@ -957,7 +933,7 @@ def find_dig(t, F, found, anchor, cycle, reach=2, weak=True):
         hi = climb_start(t, F["height"], a, b, last=k == len(stretches) - 1)
         if hi <= lo:
             continue
-        s = step(t, F, found, "digging", lo, cycle, clip_start=False)
+        s = step(t, F, found, "digging", lo, cycle)
         if s["window"] is not None:
             ca, cb = s.get("core") or s["window"]
             if lo - 1e-9 <= (ca + cb) / 2 <= hi:

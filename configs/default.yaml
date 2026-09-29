@@ -53,11 +53,6 @@ track:
 geometry:
   occupancy_quantile: 0.90   # what counts as the machine's persistent core
   reach_percentile: 95.0     # defines L, the scale unit
-  bucket_band_low: 0.85      # bucket = outer 15% of the arm's radial extent
-  bucket_radius_frac: 0.22   # optical-flow patch size, in units of L
-  tip_process_noise: 2.0       # L/s^2  -- how much the bucket may accelerate
-  tip_measurement_noise: 0.02  # L      -- expected error of one pose fit
-  tip_gate_sigma: 3.0          # reject measurements beyond this many sigmas
 
 features:
   derivative_window_seconds: 0.9 # Savitzky-Golay; symmetric, so it moves no extremum

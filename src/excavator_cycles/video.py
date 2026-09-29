@@ -66,6 +66,16 @@ class VideoInfo:
             raise ValueError("rate_hz must be positive")
         return max(1, round(self.fps / rate_hz))
 
+    def actual_rate(self, rate_hz: float) -> float:
+        """The rate ``iter_samples`` really delivers: ``fps / stride``, not the request.
+
+        A stride is a whole number of frames, so 10 Hz asked of a 25 fps video is
+        12.5 Hz (stride 2). The samples are evenly spaced at this rate, and each
+        carries its own timestamp, so no duration depends on it; it is recorded so
+        the record says what happened.
+        """
+        return self.fps / self.stride_for(rate_hz)
+
     def summary(self) -> str:
         source = {
             "constant": "timestamps stored in the file  (constant frame rate)",

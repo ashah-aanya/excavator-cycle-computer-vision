@@ -1,4 +1,4 @@
-# Excavator Cycle Detecion Computer Vision Pipeline
+# Excavator Cycle Detection Computer Vision Pipeline
 
 This computer-vision pipeline uses rule-based state detection to find every phase of an excavator work cycle and reports the average duration of each phase and of a complete cycle.
 
@@ -64,7 +64,31 @@ These assumptions reduce generalizability, but yield consistent kinematic cues t
 
 ## Set up
 
+Requires [uv](https://docs.astral.sh/uv/getting-started/installation/).
+
+```bash
+uv sync
+```
+
+This installs Python 3.12 and the pinned dependencies (`uv.lock`), including PyTorch's CUDA 12.8 build on Linux. An NVIDIA GPU is recommended as detection and segmentation during development was run on an NCSA Jupyter cluster (H200). For reference, the pipeline took around 2 minutes to process a 30 second video and performs slower on CPU. 
+
+Two models download automatically from Hugging Face on the first run (about 1.1 GB in total, cached in `~/.cache/huggingface`):
+
+- [`IDEA-Research/grounding-dino-base`](https://huggingface.co/IDEA-Research/grounding-dino-base): Dino zero-shot detection of the excavator and the truck
+- [`facebook/sam2.1-hiera-tiny`](https://huggingface.co/facebook/sam2.1-hiera-tiny): SAM 2.1 segmentation and tracking
+
 ## Running it
+
+```bash
+uv run run.py run path/to/video.mp4 --out results
+```
+
+The results folder (default `outputs/<video name>`) holds:
+
+- `answer.json`: the cycle count and the average duration of each phase and of a complete cycle, in seconds
+- `annotated.mp4`: the video with the masks, boxes, current phase and its timer, the complete-cycle count, a timeline of the phases with their durations, and the feature graphs with each detected phase start
+- `phases.json` and `features.png`: every phase start with its search interval, and every feature plotted against time
+- the cache (`masks.npz`, `features.npz`, ...) and `run.json`, a record of the run
 
 ---
 

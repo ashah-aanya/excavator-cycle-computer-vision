@@ -119,7 +119,7 @@ def test_render_writes_every_source_frame(fake_cache: Path):
     ok, frame = written.read()
     written.release()
     assert ok
-    assert frame.shape[0] > 120, "a readout panel is appended below the frame"
+    assert frame.shape[:2] == (120, 160), "without graphs the output is just the video"
 
 
 def test_render_needs_no_model(fake_cache: Path, monkeypatch):
@@ -401,3 +401,85 @@ def test_the_cycle_counter_is_drawn(cache_with_features: Path):
     render(cache_with_features, out_path=one, scale=1.0, starts=starts, cycles=[finished])
     corner = (slice(0, 40), slice(0, 110))
     assert _changed(_frame_at(none, 40)[corner], _frame_at(one, 40)[corner]) > 0
+
+
+# --- the clock, and the timeline strip --------------------------------------------
+
+
+def test_a_frame_is_put_on_the_pipelines_clock_so_the_last_cycle_is_counted():
+    """The provided video's last frame is stamped 29.500 s, but the tracker stamps the
+    sample on that same frame 29.526 s -- and the closing dig, which ends the only cycle,
+    is at that sample. Compared as the file's clock against the pipeline's, the counter
+    read 0 on every frame of the video while `answer.json` said 1."""
+    from excavator_cycles.cycles import Cycle
+    from excavator_cycles.render import banner_text, sample_clock
+
+    starts = [
+        _start("digging", 4.804),
+        _start("hauling", 10.509),
+        _start("dumping", 20.618),
+        _start("swinging", 22.82),
+        _start("digging", 29.5256),
+    ]
+    cycle = Cycle({s.phase: s.time for s in starts[:4]}, end=29.5256)
+
+    assert banner_text(starts, [cycle], 29.5000)[1] == "complete cycles: 0", "the bug"
+    now = sample_clock(sample_time=29.5256, sample_frame_time=29.5, frame_time=29.5)
+    assert banner_text(starts, [cycle], now)[1] == "complete cycles: 1"
+
+
+def test_between_samples_a_frame_keeps_counting_time_from_its_sample():
+    """Samples are 0.1 s apart and frames 1/30 s, so a frame's time is its sample's time
+    plus how long after the sample's frame it is."""
+    from excavator_cycles.render import sample_clock
+
+    assert sample_clock(10.0, 9.9, 9.9) == pytest.approx(10.0)
+    assert sample_clock(10.0, 9.9, 9.9 + 2 / 30) == pytest.approx(10.0 + 2 / 30)
+
+
+def test_a_start_exactly_at_the_current_time_counts_whatever_the_last_float_digit_says():
+    from excavator_cycles.cycles import Cycle
+    from excavator_cycles.render import banner_text
+
+    cycle = Cycle({s.phase: s.time for s in CYCLE_STARTS[:4]}, end=29.0)
+    assert banner_text(CYCLE_STARTS, [cycle], 29.0 - 1e-9)[1] == "complete cycles: 1"
+
+
+@pytest.mark.parametrize("overlap_with_truck", [0.02, 0.9])
+def test_the_detectors_box_is_not_drawn(fake_cache: Path, overlap_with_truck: float):
+    """The detector's box is a diagnostic of an early step, and it used to turn red and say
+    MERGED when it swallowed the truck. A reviewer needs the mask, the truck and the phase,
+    not the detector's doubts, so nothing about it is drawn: removing it from the record
+    must not change a single pixel, whether or not it overlaps the truck."""
+    track = fake_cache / "track.json"
+    record = json.loads(track.read_text())
+    for frame in record["frames"]:
+        if frame["detection_box"] is not None:
+            frame["detection_truck_iou"] = overlap_with_truck
+    track.write_text(json.dumps(record))
+    shown = fake_cache / "with_detections.mp4"
+    render(fake_cache, out_path=shown, scale=1.0)
+
+    for frame in record["frames"]:
+        frame["detection_box"] = frame["detection_score"] = frame["detection_truck_iou"] = None
+    track.write_text(json.dumps(record))
+    bare = fake_cache / "without_detections.mp4"
+    render(fake_cache, out_path=bare, scale=1.0)
+
+    assert _changed(_first_frame(shown), _first_frame(bare)) == 0
+
+
+def test_the_video_is_centred_vertically_on_black_beside_the_graphs(cache_with_features: Path):
+    """With the graph column present the canvas is taller than the video, and the video sits
+    in the middle of it with black above and below -- no bar under it."""
+    path = cache_with_features / "centred.mp4"
+    render(cache_with_features, out_path=path, scale=1.0)
+    frame = _first_frame(path)
+    video = frame[:, :160]  # the video's column: 160 px wide at scale 1
+    assert frame.shape[0] > 120, "taller than the 120 px video"
+    nonblack = np.flatnonzero(video.max(axis=(1, 2)) > 12)
+    above, below = nonblack[0], frame.shape[0] - 1 - nonblack[-1]
+    assert nonblack[-1] - nonblack[0] + 1 == 120, (
+        "the whole video, and nothing else, is in the column"
+    )
+    assert above > 0 and abs(above - below) <= 1, f"centred: {above} rows above, {below} below"

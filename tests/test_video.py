@@ -56,6 +56,17 @@ def test_stride_adapts_to_frame_rate(tmp_path: Path, fps: float, expected_stride
     assert info.stride_for(10.0) == expected_stride
 
 
+@pytest.mark.parametrize("fps,rate", [(30.0, 10.0), (25.0, 12.5), (24.0, 12.0), (10.0, 10.0)])
+def test_actual_rate_is_what_the_stride_delivers(tmp_path: Path, fps: float, rate: float):
+    """A whole-frame stride cannot hit every request, so the rate that is RECORDED
+    must be the one delivered: 10 Hz asked of 25 fps is 12.5 Hz, and the real gaps show it."""
+    clip = _write_video(tmp_path / f"rate{fps}.mp4", fps=fps, n_frames=int(fps * 3))
+    info = probe(clip)
+    assert info.actual_rate(10.0) == pytest.approx(rate)
+    times = [s.time_seconds for s in iter_samples(clip, rate_hz=10.0)]
+    assert np.diff(times) == pytest.approx(1 / rate, rel=1e-3)
+
+
 def test_stride_never_zero(tmp_path: Path):
     """A video slower than the requested rate is sampled every frame, not skipped."""
     clip = _write_video(tmp_path / "slow.mp4", fps=5.0, n_frames=10)
