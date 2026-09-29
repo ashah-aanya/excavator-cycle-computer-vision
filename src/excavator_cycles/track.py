@@ -172,14 +172,17 @@ class DetectionPass:
     truck: dict[int, Detection] = field(default_factory=dict)
 
 
-def detect_anchors(samples: list[Sample], detector, config: Config) -> DetectionPass:
+def detect_anchors(
+    samples: list[Sample], detector, config: Config, sample_rate_hz: float | None = None
+) -> DetectionPass:
     """Run the detector on a sparse, evenly spaced subset of the samples.
 
     Sparse because detection is expensive and, on this kind of footage,
     unreliable: its role is to seed the tracker and to provide an opinion that is
     independent of it, not to be believed frame by frame.
     """
-    every = max(1, round(config.sampling.rate_hz / config.sampling.anchor_rate_hz))
+    rate = sample_rate_hz or config.sampling.rate_hz  # the rate the samples really have
+    every = max(1, round(rate / config.sampling.anchor_rate_hz))
     result = DetectionPass(sample_positions=list(range(0, len(samples), every)))
 
     log.info(
@@ -702,6 +705,7 @@ def track(
     video_path = Path(video_path)
     output_dir = Path(output_dir)
     info = probe(video_path, verify=True)
+    sample_rate = info.actual_rate(config.sampling.rate_hz)
 
     with run_record("track", output_dir, config.to_dict()) as record:
         record.add_input("video", video_path)
@@ -716,12 +720,12 @@ def track(
         log.info(
             "%d samples at %.1f Hz from %.1f s of video",
             len(samples),
-            config.sampling.rate_hz,
+            sample_rate,
             info.duration_seconds,
         )
 
         detector = build_detector(detector_name, config.detection, device=device)
-        detections = detect_anchors(samples, detector, config)
+        detections = detect_anchors(samples, detector, config, sample_rate)
         truck_box = estimate_truck_box(detections, config)
         negatives = negative_points(truck_box, config)
         seed_position, seed_box = choose_seed(detections, config)
@@ -883,7 +887,7 @@ def track(
             height=height,
             fps=info.fps,
             duration_seconds=info.duration_seconds,
-            rate_hz=config.sampling.rate_hz,
+            rate_hz=sample_rate,
             seed={
                 "sample_position": seed_position,
                 "frame_index": samples[seed_position].frame_index,

@@ -1,7 +1,8 @@
 """Command line interface.
 
-Grows one subcommand per pipeline stage. Today it can inspect a video; the
-stages are added as they are built, so there is always something runnable.
+`run` chains the stages: video in, answer.json and an annotated video out. Each stage
+is also its own subcommand, because only tracking needs a GPU and the later stages
+read its cache in seconds.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         "--out",
         type=Path,
         default=None,
-        help="cache directory (default: outputs/track/<video stem>)",
+        help="cache directory (default: outputs/<video stem>)",
     )
     track_parser.add_argument("--device", default=None, help="cuda / mps / cpu")
     track_parser.add_argument(
@@ -76,8 +77,9 @@ def main(argv: list[str] | None = None) -> int:
 
     run_parser = subparsers.add_parser(
         "run",
-        help="THE DELIVERABLE: video in, answer.json out. Chains track -> features "
-        "-> cycles so a reviewer needs one command and no knowledge of the stages.",
+        help="THE DELIVERABLE: video in, answer.json and an annotated video out. Chains "
+        "track -> features -> cycles -> render, so a reviewer needs one command and no "
+        "knowledge of the stages.",
     )
     run_parser.add_argument("video", type=Path)
     run_parser.add_argument("--config", type=Path, default=None)
@@ -85,13 +87,8 @@ def main(argv: list[str] | None = None) -> int:
         "--out",
         type=Path,
         default=None,
-        help="answer.json path (default: <work dir>/answer.json)",
-    )
-    run_parser.add_argument(
-        "--work-dir",
-        type=Path,
-        default=None,
-        help="where the intermediate cache goes (default: outputs/track/<video stem>)",
+        help="results directory: the cache, answer.json and annotated.mp4 all go here "
+        "(default: outputs/<video stem>)",
     )
     run_parser.add_argument("--device", default=None, help="cuda / mps / cpu")
     run_parser.add_argument(
@@ -103,28 +100,17 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument(
         "--reuse",
         action="store_true",
-        help="skip stages whose output is already in the work directory. For iterating "
+        help="skip stages whose output is already in the results directory. For iterating "
         "on later stages without re-running the GPU pass. Once a stage runs, every "
         "later stage runs too. Settings are NOT compared: after changing --config or "
-        "--rate, delete the work directory or run without --reuse.",
-    )
-    run_parser.add_argument(
-        "--test",
-        action="store_true",
-        help="also render the diagnostic video and print the per-cycle breakdown",
-    )
-    run_parser.add_argument(
-        "--labels",
-        type=Path,
-        default=None,
-        help="EVALUATION ONLY. Ground truth to draw and score.",
+        "--rate, delete the results directory or run without --reuse.",
     )
     run_parser.add_argument("--scale", type=float, default=2.0, help="video resize factor")
     run_parser.set_defaults(func=_cmd_run)
 
     render_parser = subparsers.add_parser(
         "render",
-        help="Rebuild the video with the cached masks and detections drawn on it. "
+        help="Rebuild the video with the cached masks, detections and phases drawn on it. "
         "Reads the cache only -- no model, no GPU.",
     )
     render_parser.add_argument("track_dir", type=Path, help="a directory produced by `track`")
@@ -152,29 +138,13 @@ def main(argv: list[str] | None = None) -> int:
 
     cycles_parser = subparsers.add_parser(
         "cycles",
-        help="Stage 4: find the work cycles and write answer.json. --test also "
-        "renders a diagnostic video and scores the result. No models, no GPU.",
+        help="Stage 4: find the phase starts and the complete cycles, and write "
+        "answer.json and phases.json. No models, no GPU.",
     )
     cycles_parser.add_argument("track_dir", type=Path, help="a directory from `features`")
-    cycles_parser.add_argument("--config", type=Path, default=None)
     cycles_parser.add_argument(
         "--out", type=Path, default=None, help="answer.json (default: <track_dir>/answer.json)"
     )
-    cycles_parser.add_argument(
-        "--test",
-        action="store_true",
-        help="also render the windows and predicted onsets over the video, and "
-        "print the per-cycle breakdown",
-    )
-    cycles_parser.add_argument(
-        "--labels",
-        type=Path,
-        default=None,
-        help="EVALUATION ONLY: hand-made ground truth to draw and score against. "
-        "Passed in, never discovered -- the pipeline cannot reach the answer on "
-        "its own.",
-    )
-    cycles_parser.add_argument("--scale", type=float, default=2.0, help="video resize factor")
     cycles_parser.set_defaults(func=_cmd_cycles)
 
     args = parser.parse_args(argv)
@@ -189,6 +159,7 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     log.info("probed %s (%.2f s, %.3f fps)", info.path.name, info.duration_seconds, info.fps)
 
     stride = info.stride_for(config.sampling.rate_hz)
+    actual_rate = info.actual_rate(config.sampling.rate_hz)
     anchor_stride = info.stride_for(config.sampling.anchor_rate_hz)
     n_samples = info.frame_count // stride if stride else 0
     n_anchors = info.frame_count // anchor_stride if anchor_stride else 0
@@ -206,6 +177,7 @@ def _cmd_probe(args: argparse.Namespace) -> int:
                     "sampling": {
                         "rate_hz": config.sampling.rate_hz,
                         "stride_frames": stride,
+                        "actual_rate_hz": actual_rate,
                         "n_samples": n_samples,
                         "anchor_rate_hz": config.sampling.anchor_rate_hz,
                         "n_anchor_detections": n_anchors,
@@ -220,15 +192,15 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     print()
     print("  with the current config:")
     print(
-        f"    features/FSM : {config.sampling.rate_hz:g} Hz "
-        f"-> every {stride} frame(s), ~{n_samples} samples"
+        f"    features     : {config.sampling.rate_hz:g} Hz "
+        f"-> every {stride} frame(s) = {actual_rate:g} Hz, ~{n_samples} samples"
     )
     print(
         f"    detection    : {config.sampling.anchor_rate_hz:g} Hz "
         f"-> ~{n_anchors} detector calls"
     )
     print(
-        f"    sample gap   : {1 / config.sampling.rate_hz:.3f} s "
+        f"    sample gap   : {1 / actual_rate:.3f} s "
         f"(tolerance is 0.6 s, so quantisation is not the limit)"
     )
     return 0
@@ -240,7 +212,7 @@ def _cmd_track(args: argparse.Namespace) -> int:
 
     overrides = {"sampling": {"rate_hz": args.rate}} if args.rate else None
     config = Config.load(args.config, overrides)
-    out_dir = args.out or Path("outputs/track") / Path(args.video).stem
+    out_dir = args.out or Path("outputs") / Path(args.video).stem
 
     result = track(
         video_path=args.video,
@@ -279,14 +251,19 @@ def _cmd_track(args: argparse.Namespace) -> int:
 
 
 def _cmd_render(args: argparse.Namespace) -> int:
-    """Draw the cached masks back onto the video."""
+    """Draw the cached masks, and the phases `cycles` found, back onto the video."""
+    from .cycles import read_phases
     from .render import render
 
+    phases = args.track_dir / "phases.json"
+    starts, cycles = read_phases(phases) if phases.exists() else (None, None)
     stats = render(
         output_dir=args.track_dir,
         out_path=args.out,
         scale=args.scale,
         draw_boxes=not args.no_boxes,
+        starts=starts,
+        cycles=cycles,
     )
     print(f"\n  wrote {stats.output_path}")
     print(f"  {stats.frames_written} frames, {stats.frames_with_mask} carrying a mask")
@@ -294,29 +271,24 @@ def _cmd_render(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    """Video in, answer.json out. The whole pipeline, one command.
+    """Video in, answer.json and an annotated video out. The whole pipeline, one command.
 
-    The four stages exist because only one of them needs a GPU and the other three
-    are worth re-running on a cached result in under a second. That division is
-    right for development and wrong for a reviewer, who should not have to know it
-    exists to get an answer out of a video.
+    The stages exist because only one of them needs a GPU and the others are worth
+    re-running on a cached result in seconds. That division is right for development and
+    wrong for a reviewer, who should not have to know it exists to get an answer out of
+    a video.
 
-    So this adds no new logic. It calls the same three subcommands in order, with
-    the same arguments, through their own `_cmd_*` functions -- which means the
-    thing a reviewer runs is the thing the tests exercise, rather than a second
-    path that can drift from it.
+    So this adds no new logic. It calls the same subcommands in order, with the same
+    arguments, through their own `_cmd_*` functions -- which means the thing a reviewer
+    runs is the thing the tests exercise, rather than a second path that can drift
+    from it.
     """
-    work_dir = args.work_dir or Path("outputs/track") / Path(args.video).stem
-    cached = work_dir / "answer.json"
-
-    # `cycles` writes to the work directory unconditionally, so the cache stays
-    # self-contained, and the answer is copied to `--out` afterwards. Passing
-    # `--out` down to the stage instead would have it write the right file and then
-    # be overwritten by the copy -- which is exactly the bug this shape avoids.
+    out_dir = args.out or Path("outputs") / Path(args.video).stem
     stages = (
-        ("track", work_dir / "masks.npz", _cmd_track, {"out": work_dir}),
-        ("features", work_dir / "features.npz", _cmd_features, {"no_plots": False}),
-        ("cycles", None, _cmd_cycles, {"out": cached}),
+        ("track", out_dir / "masks.npz", _cmd_track, {"out": out_dir}),
+        ("features", out_dir / "features.npz", _cmd_features, {"no_plots": False}),
+        ("cycles", None, _cmd_cycles, {"out": out_dir / "answer.json"}),
+        ("render", None, _cmd_render, {"out": out_dir / "annotated.mp4", "no_boxes": False}),
     )
 
     # A QA verdict is ADVISORY here, and only for `track`. `track` returns non-zero
@@ -326,9 +298,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # tracker wobble on a hidden video into zero for every field, which is strictly
     # worse than a flagged answer. A genuine failure raises rather than returning.
     #
-    # The concern is not swallowed: it is logged, printed beside the answer, and
-    # returned as this command's own exit code, so a caller checking the status
-    # still learns about it.
+    # The concern is not swallowed: it is logged and printed beside the answer.
+    # It is NOT the exit code: the answer and video were written, and a caller that
+    # reads a non-zero status as "no result" would discard a good one. Only a stage
+    # that genuinely fails returns non-zero.
     concerns: list[str] = []
     # `--reuse` asked each stage separately whether its product existed, so a
     # re-run `track` could be followed by a REUSED `features.npz` built from the
@@ -336,9 +309,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # Once any stage runs, everything downstream of it is out of date.
     #
     # What `--reuse` still does not do is compare settings. `track.json` records a
-    # digest, but of the WHOLE config: comparing it would re-run the GPU pass for an
-    # `fsm` change that cannot affect tracking, and `features` records none. So a
-    # changed `--config` or `--rate` is the caller's to handle; the help says so.
+    # digest, but of the WHOLE config, and `features` records none. So a changed
+    # `--config` or `--rate` is the caller's to handle; the help says so.
     upstream_ran = False
     for name, product, run_stage, extra in stages:
         if args.reuse and not upstream_ran and product is not None and product.exists():
@@ -348,7 +320,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         log.info("%s: running", name)
         # A copy per stage, so one stage's arguments cannot leak into the next.
         stage_args = argparse.Namespace(**vars(args))
-        stage_args.track_dir = work_dir
+        stage_args.track_dir = out_dir
         for key, value in extra.items():
             setattr(stage_args, key, value)
         status = run_stage(stage_args)
@@ -365,22 +337,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
         log.error("%s failed with status %d; stopping", name, status)
         return status
 
-    answer = Path(args.out) if args.out else cached
-    # Compared RESOLVED. The same file can be spelled two ways -- relative and
-    # absolute -- and a textual comparison called those different, so
-    # `copyfile` was asked to copy a file onto itself and raised `SameFileError`
-    # after the whole pipeline had succeeded.
-    if answer.resolve() != cached.resolve():
-        import shutil
-
-        answer.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(cached, answer)
-        log.info("copied the answer to %s", answer)
     print()
-    print(f"  ANSWER: {answer}")
+    print(f"  ANSWER: {out_dir / 'answer.json'}")
+    print(f"  VIDEO : {out_dir / 'annotated.mp4'}")
     for concern in concerns:
         print(f"  CONCERN: {concern}")
-    return 1 if concerns else 0
+    return 0
 
 
 def _cmd_features(args: argparse.Namespace) -> int:
@@ -414,153 +376,39 @@ def _cmd_features(args: argparse.Namespace) -> int:
 
 
 def _cmd_cycles(args: argparse.Namespace) -> int:
-    """Stage 4: features -> onsets -> cycles -> answer.json.
-
-    `--test` does not change what the pipeline computes. It only adds evidence:
-    the same run, plus a video showing where each window was and where each cue
-    fired, plus the per-cycle breakdown. What is tested is what ships.
-    """
-
-    from .cycles import assemble, summarise, write_answer
+    """Stage 4: features -> phase starts -> cycles -> answer.json and phases.json."""
+    from .cues import NoPhases
+    from .cycles import assemble, summarise, write_answer, write_phases
     from .features import load as load_features
-    from .fsm import calibrate, evidence_within, locate, walk
+    from .starts import PhaseSearch, find_phase_starts
 
-    config = Config.load(args.config)
-    table, _scene = load_features(args.track_dir)
-
-    levels = calibrate(table, config)
-    print()
-    print(levels.report())
-
-    detections = walk(table, levels, config=config)
-    onsets = locate(detections, table, config)
-    # Evidence is asked about each cycle's OWN span. A single set built from the
-    # whole video and copied into every cycle marks them all complete as soon as
-    # any one of them was.
-    cycles = assemble(
-        onsets,
-        evidence=lambda start, end: evidence_within(table, levels, start, end),
-    )
+    table, scene = load_features(args.track_dir)
+    try:
+        search = find_phase_starts(table, scene)
+    except NoPhases as exc:
+        # Some videos do not show what the method needs. That is a finding, not a
+        # crash: the answer says no cycles, and this says why.
+        log.warning("no phases can be found: %s", exc)
+        stop = {"phase": "digging", "search_from": 0.0, "why": str(exc)}
+        search = PhaseSearch(starts=[], gaps=[], stop=stop)
+    cycles = assemble(search.starts)
     answer = summarise(cycles)
 
     out = args.out or args.track_dir / "answer.json"
     write_answer(answer, out)
+    write_phases(search, cycles, args.track_dir / "phases.json")
 
     print()
-    print(f"  cycles occurred  : {answer.cycle_count}")
-    print(f"  cycles measured  : {sum(1 for c in cycles if c.measurable)}")
-    print(f"  average cycle    : {answer.average_cycle_duration_seconds:.3f} s")
+    print(f"  phase starts found : {len(search.starts)}")
+    for gap in search.gaps:
+        print(
+            f"  abandoned a cycle  : {gap['phase']} from {gap['from']:.1f} s -- {gap['why']}"
+        )
+    if search.stop:
+        print(f"  search stopped     : {search.stop['phase']} -- {search.stop['why']}")
+    print(f"  complete cycles    : {answer.cycle_count}")
+    print(f"  average cycle      : {answer.average_cycle_duration_seconds:.3f} s")
     for phase, seconds in answer.average_phase_duration_seconds.items():
-        print(f"    {phase:9s}      : {seconds:.3f} s")
-    print(f"  wrote            : {out}")
-
-    if not args.test:
-        return 0
-
-    truth = _read_labels(args.labels) if args.labels else {}
-    _print_breakdown(cycles, onsets, truth)
-    _render_diagnostic(args, table, detections, onsets, truth, levels)
+        print(f"    {phase:9s}        : {seconds:.3f} s")
+    print(f"  wrote              : {out}")
     return 0
-
-
-def _read_labels(path: Path) -> dict[str, float]:
-    """EVALUATION ONLY. The pipeline never calls this; only --test does."""
-    import json
-
-    labels = json.loads(path.read_text())
-    fps = float(labels["video"]["fps"])
-    keys = {
-        "digging": "digging_begins",
-        "hauling": "hauling_begins",
-        "dumping": "dumping_begins",
-        "swinging": "swinging_begins",
-    }
-    truth = {name: labels["boundaries"][key] / fps for name, key in keys.items()}
-    # The closing dig, so both ends of the cycle are drawn. Keyed apart from the
-    # phases because `_print_breakdown` scores by phase name and must not see it.
-    if "cycle_ends" in labels["boundaries"]:
-        truth["cycle end"] = labels["boundaries"]["cycle_ends"] / fps
-    return truth
-
-
-def _print_breakdown(cycles, onsets, truth: dict[str, float]) -> None:
-    print()
-    print("  --- onsets " + "-" * 52)
-    header = f"  {'phase':10}{'predicted':>11}"
-    if truth:
-        header += f"{'truth':>9}{'err':>8}"
-    print(header)
-    seen: set[str] = set()
-    for onset in onsets:
-        # A dig that abandoned the cycle in progress is worth seeing: the cycle
-        # before it is cut short, and a stray one mid-phase is the symptom of a
-        # cue or a perception gap going wrong.
-        note = "   (interrupted a cycle)" if onset.out_of_sequence else ""
-        # An onset with no refined time is the interesting case, not one to skip:
-        # the cycle is still counted, and the coarse time shows where pass 1 was.
-        if onset.refined is None:
-            line = f"  {onset.phase:10}{'--':>11}   (pass 2 found nothing; "
-            line += f"pass 1 fired at {onset.coarse:.2f}s)"
-            print(line + note)
-            seen.add(onset.phase)
-            continue
-        line = f"  {onset.phase:10}{onset.refined:>11.2f}"
-        if truth and onset.phase not in seen:
-            line += f"{truth[onset.phase]:>9.2f}{onset.refined - truth[onset.phase]:>+8.2f}"
-        seen.add(onset.phase)
-        print(line + note)
-
-    print()
-    print("  --- cycles " + "-" * 52)
-    if not cycles:
-        print("  none: fewer than two digging onsets, so no span is bounded")
-    for index, cycle in enumerate(cycles, 1):
-        verdict = "measured" if cycle.measurable else f"EXCLUDED -- {cycle.reason}"
-        print(f"  cycle {index}: {verdict}")
-        for phase, seconds in cycle.durations().items():
-            print(f"      {phase:9s} {seconds:6.2f} s")
-
-
-def _render_diagnostic(args, table, detections, onsets, truth, levels) -> None:
-    from .render import render
-
-    # The line each trigger compares against, drawn on the signal it gates, so a
-    # window that fires late can be traced to where its level sits. A truck level
-    # too weak to time dumping is still drawn -- it is what the evidence check uses
-    # -- but labelled as switched off, so the picture does not overstate it.
-    truck = levels.over_truck_observed
-    truck_label = "Otsu" if levels.over_truck is not None else "Otsu (weak, off)"
-    drawn_levels = {
-        "height": ("Otsu", levels.low_height.threshold),
-        "speed_x": ("Otsu", levels.moving.threshold),
-    }
-    if truck is not None:
-        drawn_levels["truck_overlap"] = (truck_label, truck.threshold)
-
-    times = table.time_seconds
-    windows = [
-        (d.phase, float(times[d.window.lo]), float(times[min(d.window.hi, len(times) - 1)]))
-        for d in detections
-    ]
-    predicted: dict[str, float] = {}
-    for onset in onsets:
-        if onset.refined is not None:
-            predicted.setdefault(onset.phase, onset.refined)
-
-    out = args.track_dir / "cycles.mp4"
-    stats = render(
-        args.track_dir,
-        out_path=out,
-        scale=args.scale,
-        windows=windows,
-        onsets=predicted,
-        reference=truth or None,
-        levels=drawn_levels,
-    )
-    print()
-    print(f"  wrote {stats.output_path}  ({stats.frames_written} frames)")
-    print("    shaded span   the window pass 1 searched")
-    print("    solid line    the refined onset pass 2 returned")
-    print("    dashed gold   the calibrated (Otsu) level each trigger compares against")
-    if truth:
-        print("    dashed white  the hand-labelled truth")

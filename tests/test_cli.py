@@ -1,196 +1,176 @@
-"""The command line, which had no tests at all.
+"""The command line: the `cycles` stage, and the `run` chain a reviewer types.
 
-Why this file exists
---------------------
-Changing `locate` to return `Onset` objects instead of `(phase, time)` tuples broke
-`--test` outright -- `for phase, when in onsets` raised `TypeError: cannot unpack
-non-iterable Onset object` -- and the full suite stayed green, because nothing
-exercised the diagnostic path. The pipeline's own output was fine; the thing a
-reviewer runs to JUDGE that output was dead on arrival.
-
-That is a worse failure than a wrong number, because a reviewer who cannot run the
-diagnostic has no way to see that a number is wrong. The two tests below cover the
-shape of the bug: the printing path over a mix of refined and unrefined onsets, and
-the command wiring from a real feature table through to `answer.json`.
-
-Video rendering is deliberately NOT covered here -- it needs the source clip and the
-mask cache, neither of which belongs in a fixture. `--test`'s render call is still
-exercised by hand; these cover everything reachable without a GPU pass.
+Everything reachable without a GPU pass is covered here. Video rendering needs the source
+clip and the mask cache, neither of which belongs in a fixture, so the `render` stage is
+checked only for what it is handed (`tests/test_render.py` covers the drawing itself).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
-from excavator_cycles.cli import _cmd_cycles, _print_breakdown
-from excavator_cycles.cycles import Cycle
-from excavator_cycles.fsm import Onset
+from excavator_cycles import cli
+from excavator_cycles.cycles import PHASES, read_phases
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "dev_clip"
-PHASES = ("digging", "hauling", "dumping", "swinging")
+
+# What the phase search gives on the provided video: five phase starts, one cycle.
+EXPECTED = {
+    "cycle_count": 1,
+    "average_cycle_duration_seconds": 24.721,
+    "average_phase_duration_seconds": {
+        "digging": 5.705,
+        "hauling": 10.109,
+        "dumping": 2.202,
+        "swinging": 6.706,
+    },
+}
 
 
-def test_the_breakdown_prints_an_onset_whose_refinement_failed(capsys):
-    """The exact break: `Onset` is not a 2-tuple.
+@pytest.fixture
+def features_dir(tmp_path):
+    """A directory holding stage 3's output for the provided video."""
+    directory = tmp_path / "clip"
+    directory.mkdir()
+    for name in ("features.npz", "scene.json"):
+        shutil.copyfile(FIXTURE / name, directory / name)
+    return directory
 
-    And an unrefined onset must be VISIBLE rather than skipped -- it is the case a
-    reader most needs to see, since the cycle is still counted and the missing
-    onset is why the averages are empty.
-    """
-    onsets = [
-        Onset("digging", None, 3.40),
-        Onset("hauling", 11.91, 12.71),
-        Onset("dumping", 13.71, 13.51),
-        Onset("swinging", 25.52, 25.72),
+
+def _cycles_args(track_dir, out=None):
+    return argparse.Namespace(track_dir=track_dir, out=out)
+
+
+# --- the cycles stage ------------------------------------------------------------
+
+
+def test_cycles_writes_the_answer_the_method_gives_on_a_real_feature_table(features_dir):
+    assert cli._cmd_cycles(_cycles_args(features_dir)) == 0
+    answer = json.loads((features_dir / "answer.json").read_text())
+    assert answer["cycle_count"] == EXPECTED["cycle_count"]
+    assert answer["average_cycle_duration_seconds"] == pytest.approx(
+        EXPECTED["average_cycle_duration_seconds"], abs=0.0015
+    )
+    for phase, seconds in EXPECTED["average_phase_duration_seconds"].items():
+        assert answer["average_phase_duration_seconds"][phase] == pytest.approx(
+            seconds, abs=0.0015
+        ), phase
+
+
+def test_cycles_writes_the_answer_where_it_is_told(features_dir, tmp_path):
+    out = tmp_path / "elsewhere.json"
+    cli._cmd_cycles(_cycles_args(features_dir, out))
+    assert json.loads(out.read_text())["cycle_count"] == 1
+
+
+def test_cycles_also_writes_the_phases_the_video_is_drawn_from(features_dir):
+    cli._cmd_cycles(_cycles_args(features_dir))
+    starts, cycles = read_phases(features_dir / "phases.json")
+    assert [s.phase for s in starts] == [
+        "digging",
+        "hauling",
+        "dumping",
+        "swinging",
+        "digging",
     ]
-    _print_breakdown([], onsets, truth={})
+    assert len(cycles) == 1
+
+
+def test_cycles_says_what_it_found(features_dir, capsys):
+    cli._cmd_cycles(_cycles_args(features_dir))
     out = capsys.readouterr().out
-    assert "digging" in out
-    assert "pass 2 found nothing" in out, "a failed refinement must be reported, not dropped"
-    assert "3.40" in out, "the coarse time is what is left to show"
-    assert "11.91" in out
+    assert "complete cycles    : 1" in out
+    for phase in PHASES:
+        assert phase in out
 
 
-def test_the_breakdown_prints_errors_against_the_truth(capsys):
-    """The `--labels` column. Truth is optional, so it has its own path."""
-    onsets = [Onset("hauling", 11.91, 12.71)]
-    _print_breakdown([], onsets, truth={"hauling": 10.74})
-    out = capsys.readouterr().out
-    assert "10.74" in out
-    assert "+1.17" in out, "the signed error is the number being judged"
+def _without_a_truck(features_dir):
+    arrays = dict(np.load(features_dir / "features.npz"))
+    arrays["rel_truck_x"] = np.full_like(arrays["rel_truck_x"], np.nan)
+    np.savez_compressed(features_dir / "features.npz", **arrays)
 
 
-def test_the_breakdown_explains_an_excluded_cycle(capsys):
-    """`reason` is a sentence for a reader, so it has to actually reach them."""
-    cycle = Cycle(
-        onsets={"hauling": 1.0, "dumping": 2.0, "swinging": 3.0},  # digging missing
-        ends=4.0,
-        span=(0.0, 4.0),
-        occurred=set(PHASES),
-    )
-    _print_breakdown([cycle], [], truth={})
-    out = capsys.readouterr().out
-    assert "EXCLUDED" in out
-    assert "digging occurred but its onset was not located" in out
-
-
-def test_the_breakdown_says_so_when_there_are_no_cycles(capsys):
-    """Silence would read as "no output yet" rather than "nothing to report"."""
-    _print_breakdown([], [], truth={})
-    assert "fewer than two digging onsets" in capsys.readouterr().out
-
-
-def test_cycles_writes_an_answer_from_a_real_feature_table(tmp_path):
-    """The command's whole job, wired end to end without a GPU.
-
-    Asserts the schema the task specifies, exactly, and that the count is the one
-    the clip contains -- this is the regression that `cycle_count: 0` was.
-    """
-    out = tmp_path / "answer.json"
-    args = argparse.Namespace(
-        track_dir=FIXTURE,
-        config=None,
-        out=out,
-        test=False,
-        labels=None,
-        scale=2.0,
-    )
-    assert _cmd_cycles(args) == 0
-
-    answer = json.loads(out.read_text())
-    assert set(answer) == {
-        "cycle_count",
-        "average_cycle_duration_seconds",
-        "average_phase_duration_seconds",
-    }
+def test_a_video_with_no_truck_still_gets_an_answer_that_says_no_cycles(features_dir, caplog):
+    """The method needs a truck to measure against. A video without one is a finding,
+    not a crash: the file must exist, with every field, and the reason must be kept."""
+    _without_a_truck(features_dir)
+    assert cli._cmd_cycles(_cycles_args(features_dir)) == 0
+    answer = json.loads((features_dir / "answer.json").read_text())
+    assert answer["cycle_count"] == 0
+    assert answer["average_cycle_duration_seconds"] == 0.0
     assert set(answer["average_phase_duration_seconds"]) == set(PHASES)
-    assert answer["cycle_count"] == 1, "the dev clip holds exactly one complete cycle"
-    assert isinstance(answer["average_cycle_duration_seconds"], float)
+    assert "no truck" in caplog.text
+    reason = json.loads((features_dir / "phases.json").read_text())["stop"]["why"]
+    assert "no truck" in reason
 
 
-def test_cycles_prints_the_levels_it_derived(tmp_path, capsys):
-    """A reviewer has to be able to see what "low" and "moving" were taken to mean,
-    including which side the truck was decided to be on."""
-    args = argparse.Namespace(
-        track_dir=FIXTURE,
-        config=None,
-        out=tmp_path / "answer.json",
-        test=False,
-        labels=None,
-        scale=2.0,
-    )
-    _cmd_cycles(args)
-    out = capsys.readouterr().out
-    for expected in ("low height", "over truck", "moving", "dump side", "cycles occurred"):
-        assert expected in out, f"the run summary must mention {expected!r}"
+def test_the_command_line_has_no_label_arguments():
+    """Labels only ever score a result, from outside the pipeline. The commands that run
+    it must not even offer to read them."""
+    for argv in (["cycles", "dir", "--labels", "x"], ["run", "v.mp4", "--labels", "x"]):
+        with pytest.raises(SystemExit) as raised:
+            cli.main(argv)
+        assert raised.value.code == 2, argv
 
 
-def test_the_unrefined_onsets_are_reported_as_warnings(caplog, monkeypatch):
-    """A silently missing onset is how `cycle_count: 0` went unnoticed for a branch.
-
-    When pass 2 finds nothing, that must be loud -- it zeroes the phase averages.
-    The dev clip used to fail this way on its own; with the shape cues it no longer
-    does, so the failure is forced here by making every refinement come back empty.
-    """
-    import logging
-
-    import excavator_cycles.fsm as fsm
-
-    monkeypatch.setattr(fsm, "refine", lambda *a, **k: None)
-
-    args = argparse.Namespace(
-        track_dir=FIXTURE,
-        config=None,
-        out=Path("/dev/null"),
-        test=False,
-        labels=None,
-        scale=2.0,
-    )
-    with caplog.at_level(logging.WARNING):
-        _cmd_cycles(args)
-    warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any("cue found no" in m for m in warnings), (
-        f"expected a refinement warning: {warnings}"
-    )
-    assert any("none could be measured" in m for m in warnings)
+# --- the render stage ------------------------------------------------------------
 
 
-@pytest.mark.parametrize("phase", PHASES)
-def test_every_phase_appears_in_the_answer_even_when_it_could_not_be_measured(tmp_path, phase):
-    """The schema is fixed by the task: all four keys, always, zero if unmeasured."""
-    out = tmp_path / "answer.json"
-    _cmd_cycles(
-        argparse.Namespace(
-            track_dir=FIXTURE, config=None, out=out, test=False, labels=None, scale=2.0
-        )
-    )
-    assert phase in json.loads(out.read_text())["average_phase_duration_seconds"]
+@pytest.fixture
+def drawn(monkeypatch):
+    """Replace the drawing with a recorder, and return what it was handed."""
+    import excavator_cycles.render as render_module
+
+    seen: dict = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(output_path="x.mp4", frames_written=1, frames_with_mask=1)
+
+    monkeypatch.setattr(render_module, "render", fake)
+    return seen
 
 
-# --- the `run` chain ----------------------------------------------------------
+def _render_args(track_dir):
+    return argparse.Namespace(track_dir=track_dir, out=None, scale=1.0, no_boxes=False)
+
+
+def test_render_is_handed_the_phases_and_cycles_that_cycles_found(features_dir, drawn):
+    cli._cmd_cycles(_cycles_args(features_dir))
+    cli._cmd_render(_render_args(features_dir))
+    assert len(drawn["starts"]) == 5
+    assert len(drawn["cycles"]) == 1
+
+
+def test_render_still_works_when_no_phases_were_found_yet(features_dir, drawn):
+    """`render` on a directory straight from `track`: masks and boxes, no phases."""
+    cli._cmd_render(_render_args(features_dir))
+    assert drawn["starts"] is None and drawn["cycles"] is None
+
+
+# --- the `run` chain -------------------------------------------------------------
 #
-# `_cmd_run` had NO test. It shipped with a bug that made the one command the help
-# text calls "THE DELIVERABLE" emit a STALE answer and exit 0: it passed `--out`
-# down to the `cycles` stage, which wrote the correct file there, and then copied
-# the work directory's older `answer.json` over the top of it.
+# `run` is the one command the help text calls "THE DELIVERABLE": video in, answer.json
+# and an annotated video out. It calls the other stages through their own `_cmd_*`
+# functions, so what a reviewer runs is what these tests exercise.
 
 
-def _run_args(video, work_dir, out, **kw):
+def _run_args(video, out, **kw):
     base = dict(
         video=video,
         config=None,
         out=out,
-        work_dir=work_dir,
         device=None,
         detector="grounding_dino",
         rate=None,
         reuse=True,
-        test=False,
-        labels=None,
         scale=2.0,
     )
     base.update(kw)
@@ -198,152 +178,103 @@ def _run_args(video, work_dir, out, **kw):
 
 
 @pytest.fixture
-def reusable_work_dir(tmp_path):
-    """A work directory already holding stage 3's output, so `--reuse` skips the GPU."""
-    import shutil
-
-    work = tmp_path / "work"
-    work.mkdir()
+def out_dir(tmp_path):
+    """A results directory already holding stage 3's output, so `--reuse` skips the GPU."""
+    directory = tmp_path / "results"
+    directory.mkdir()
     for name in ("features.npz", "scene.json"):
-        shutil.copyfile(FIXTURE / name, work / name)
+        shutil.copyfile(FIXTURE / name, directory / name)
     # `masks.npz` need only EXIST for `--reuse` to skip tracking.
-    (work / "masks.npz").write_bytes(b"")
-    return work
+    (directory / "masks.npz").write_bytes(b"")
+    return directory
 
 
-def test_run_writes_the_answer_to_out_and_not_a_stale_one(reusable_work_dir, tmp_path):
-    """The exact bug: a pre-existing work-dir answer must not reach `--out`."""
-    from excavator_cycles.cli import _cmd_run
-
-    stale = {"cycle_count": 999, "STALE": True}
-    (reusable_work_dir / "answer.json").write_text(json.dumps(stale))
-    out = tmp_path / "elsewhere" / "answer.json"
-    out.parent.mkdir()
-
-    assert _cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, out)) == 0
-
-    written = json.loads(out.read_text())
-    assert written != stale, "the stale work-dir answer was copied over the real one"
-    assert written["cycle_count"] == 1
-    # And the work directory must hold the same fresh answer, not the stale one.
-    assert json.loads((reusable_work_dir / "answer.json").read_text()) == written
+@pytest.fixture
+def stub_render(monkeypatch):
+    """The render stage needs real masks and the source clip; record its arguments."""
+    calls: list[argparse.Namespace] = []
+    monkeypatch.setattr(cli, "_cmd_render", lambda args: calls.append(args) or 0)
+    return calls
 
 
-def test_run_defaults_the_answer_into_the_work_directory(reusable_work_dir):
-    """No `--out`: the answer belongs beside the cache it came from."""
-    from excavator_cycles.cli import _cmd_run
+def test_run_writes_the_answer_and_asks_for_the_video_beside_it(out_dir, stub_render):
+    assert cli._cmd_run(_run_args(Path("clip.mp4"), out_dir)) == 0
+    assert json.loads((out_dir / "answer.json").read_text())["cycle_count"] == 1
+    assert (out_dir / "phases.json").exists()
+    (call,) = stub_render
+    assert call.out == out_dir / "annotated.mp4"
+    assert call.track_dir == out_dir
 
-    assert _cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, None)) == 0
-    assert json.loads((reusable_work_dir / "answer.json").read_text())["cycle_count"] == 1
+
+def test_run_replaces_a_stale_answer(out_dir, stub_render):
+    (out_dir / "answer.json").write_text(json.dumps({"cycle_count": 999, "STALE": True}))
+    cli._cmd_run(_run_args(Path("clip.mp4"), out_dir))
+    written = json.loads((out_dir / "answer.json").read_text())
+    assert "STALE" not in written and written["cycle_count"] == 1
+
+
+def test_run_puts_its_results_in_outputs_named_for_the_video_by_default(
+    tmp_path, monkeypatch, stub_render
+):
+    monkeypatch.chdir(tmp_path)
+    results = tmp_path / "outputs" / "clip"
+    results.mkdir(parents=True)
+    for name in ("features.npz", "scene.json"):
+        shutil.copyfile(FIXTURE / name, results / name)
+    (results / "masks.npz").write_bytes(b"")
+    assert cli._cmd_run(_run_args(Path("some/where/clip.mp4"), None)) == 0
+    assert (results / "answer.json").exists()
 
 
 def test_run_continues_past_a_track_qa_concern_and_still_answers(
-    reusable_work_dir, tmp_path, monkeypatch
+    out_dir, monkeypatch, stub_render, capsys
 ):
     """`track` returns non-zero for a QA VERDICT, having written the masks anyway.
 
     Aborting turned one tracker wobble on a hidden video into zero for every graded
-    field, which is strictly worse than a flagged answer. The concern must survive
-    as this command's exit code rather than being swallowed.
+    field, which is strictly worse than a flagged answer. The concern must stay
+    visible in the output, and the exit code stays 0 because the answer and video
+    exist: a non-zero status reads as "no result" to a caller and could discard them.
     """
-    from excavator_cycles import cli
-
-    # Remove the tracking product so the (stubbed) track stage actually runs. A
-    # stage that runs makes everything after it run too, so features is stubbed to
-    # leave the fixture's `features.npz` in place rather than needing real masks.
-    (reusable_work_dir / "masks.npz").unlink()
+    # Remove the tracking product so the (stubbed) track stage actually runs. A stage
+    # that runs makes everything after it run too, so features is stubbed to leave the
+    # fixture's `features.npz` in place rather than needing real masks.
+    (out_dir / "masks.npz").unlink()
     monkeypatch.setattr(cli, "_cmd_track", lambda args: 1)
     monkeypatch.setattr(cli, "_cmd_features", lambda args: 0)
-    out = tmp_path / "flagged.json"
-    status = cli._cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, out))
-    assert out.exists(), "a QA concern must not cost the answer entirely"
-    assert json.loads(out.read_text())["cycle_count"] == 1
-    assert status == 1, "and the concern must still be visible in the exit code"
+    status = cli._cmd_run(_run_args(Path("clip.mp4"), out_dir))
+    assert json.loads((out_dir / "answer.json").read_text())["cycle_count"] == 1
+    assert len(stub_render) == 1, "a QA concern must not cost the video either"
+    assert status == 0, "the answer exists, so the run has not failed"
+    assert "CONCERN: track QA flagged this run" in capsys.readouterr().out
 
 
-def test_run_stops_when_a_later_stage_genuinely_fails(
-    reusable_work_dir, tmp_path, monkeypatch
-):
+def test_run_stops_when_a_later_stage_genuinely_fails(out_dir, monkeypatch, stub_render):
     """Only `track`'s status is advisory. A features or cycles failure is fatal."""
-    from excavator_cycles import cli
-
-    # Remove stage 3's product so the (stubbed) features stage runs; keep the
-    # tracking product so stage 2 is skipped.
-    (reusable_work_dir / "features.npz").unlink()
+    (out_dir / "features.npz").unlink()
     monkeypatch.setattr(cli, "_cmd_features", lambda args: 3)
-    out = tmp_path / "never.json"
-    assert cli._cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, out)) == 3
-    assert not out.exists()
+    assert cli._cmd_run(_run_args(Path("clip.mp4"), out_dir)) == 3
+    assert not (out_dir / "answer.json").exists()
+    assert stub_render == [], "nothing after the failed stage may run"
 
 
-def test_run_skips_a_stage_whose_product_is_already_there(reusable_work_dir, monkeypatch):
-    """`--reuse` is what makes iterating on stages 3 and 4 bearable; if it silently
+def test_run_skips_a_stage_whose_product_is_already_there(out_dir, monkeypatch, stub_render):
+    """`--reuse` is what makes iterating on the later stages bearable; if it silently
     re-ran the GPU pass it would be worse than useless."""
-    from excavator_cycles import cli
-
     called: list[str] = []
     monkeypatch.setattr(cli, "_cmd_track", lambda args: called.append("track") or 0)
     monkeypatch.setattr(cli, "_cmd_features", lambda args: called.append("features") or 0)
-    cli._cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, None))
+    cli._cmd_run(_run_args(Path("clip.mp4"), out_dir))
     assert called == [], f"both products exist, so neither stage should run; ran {called}"
 
 
-def test_reuse_reruns_every_stage_after_one_that_ran(reusable_work_dir, monkeypatch):
-    """`--reuse` asked each stage alone whether its product existed, so fresh masks
-    could be followed by a REUSED `features.npz` built from the old ones -- an
-    answer from neither run. Once a stage runs, everything downstream is stale."""
-    from excavator_cycles import cli
-
-    (reusable_work_dir / "masks.npz").unlink()
+def test_reuse_reruns_every_stage_after_one_that_ran(out_dir, monkeypatch, stub_render):
+    """`--reuse` asked each stage alone whether its product existed, so fresh masks could
+    be followed by a REUSED `features.npz` built from the old ones -- an answer from
+    neither run. Once a stage runs, everything downstream is stale."""
+    (out_dir / "masks.npz").unlink()
     called: list[str] = []
     monkeypatch.setattr(cli, "_cmd_track", lambda args: called.append("track") or 0)
     monkeypatch.setattr(cli, "_cmd_features", lambda args: called.append("features") or 0)
-    cli._cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, None))
+    cli._cmd_run(_run_args(Path("clip.mp4"), out_dir))
     assert called == ["track", "features"], called
-
-
-def test_run_out_naming_the_cached_answer_another_way_does_not_crash(
-    reusable_work_dir, monkeypatch
-):
-    """The work dir given relative, `--out` given absolute: the same file spelled
-    two ways. Compared as text they differed, so `copyfile` was asked to copy the
-    file onto itself and raised `SameFileError` after the pipeline had succeeded."""
-    from excavator_cycles.cli import _cmd_run
-
-    monkeypatch.chdir(reusable_work_dir.parent)
-    out = (reusable_work_dir / "answer.json").resolve()
-    assert _cmd_run(_run_args(Path("clip.mp4"), Path(reusable_work_dir.name), out)) == 0
-    assert json.loads(out.read_text())["cycle_count"] == 1
-
-
-def test_run_out_creates_the_directories_it_needs(reusable_work_dir, tmp_path):
-    from excavator_cycles.cli import _cmd_run
-
-    out = tmp_path / "not" / "yet" / "there" / "answer.json"
-    assert _cmd_run(_run_args(Path("clip.mp4"), reusable_work_dir, out)) == 0
-    assert json.loads(out.read_text())["cycle_count"] == 1
-
-
-def test_the_breakdown_marks_a_dig_that_interrupted_a_cycle(capsys):
-    """`Onset.out_of_sequence` was carried from pass 1 into every onset and read by
-    nothing. A dig that abandoned a cycle is exactly what someone debugging a
-    short cycle count needs to see."""
-    from excavator_cycles.cli import _print_breakdown
-    from excavator_cycles.fsm import Onset
-
-    _print_breakdown(
-        [],
-        [
-            Onset("digging", 1.0, 1.0),
-            Onset("digging", 6.0, 6.0, out_of_sequence=True),
-            Onset("digging", None, 9.0, out_of_sequence=True),
-        ],
-        {},
-    )
-    lines = [
-        line for line in capsys.readouterr().out.splitlines() if line.startswith("  digging")
-    ]
-    assert len(lines) == 3, lines
-    assert "interrupted a cycle" not in lines[0]
-    assert "interrupted a cycle" in lines[1]
-    assert "interrupted a cycle" in lines[2], "an unrefined onset must be marked too"

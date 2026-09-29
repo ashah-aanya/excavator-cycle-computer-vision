@@ -1,10 +1,8 @@
-"""Cycles: what the machine DID, and what we could MEASURE.
+"""Cycles and the answer: the arithmetic the task is graded on.
 
-Two different questions, deliberately kept apart. A cycle the machine performed
-is complete whether or not all four of its onsets could be pinned, so
-`cycle_count` counts occurrences while the averages come from measurements. The
-consequence -- that `cycle_count * average_cycle_duration` will NOT equal the
-elapsed time -- is correct and will look like a bug to anyone reading it cold.
+A cycle runs from one digging start to the next. Each phase lasts until the next one
+starts, and swinging lasts until the next dig. The averages are over complete cycles
+only, and the file has exactly the fields and names the task specifies.
 """
 
 from __future__ import annotations
@@ -13,347 +11,181 @@ import json
 
 import pytest
 
-from excavator_cycles.cycles import Answer, Cycle, assemble, summarise, write_answer
-from excavator_cycles.fsm import Onset
-
-PHASES = ("digging", "hauling", "dumping", "swinging")
-
-
-def _span(onsets: dict, ends) -> tuple[float, float]:
-    """The coarse bounds a real assembler would have produced for these onsets.
-
-    Kept explicit rather than defaulted on `Cycle`, because a wrong span is
-    silent: it is what the evidence check is asked about.
-    """
-    start = onsets.get("digging", 0.0)
-    return (start, ends if ends is not None else max(onsets.values()))
+from excavator_cycles.cycles import (
+    PHASES,
+    Answer,
+    Cycle,
+    assemble,
+    read_phases,
+    summarise,
+    write_answer,
+    write_phases,
+)
+from excavator_cycles.starts import PhaseSearch, PhaseStart
 
 
-def _onsets(start=0.0, dig=2.0, haul=4.0, dump=6.0, swing=8.0):
-    return {
-        "digging": start + dig,
-        "hauling": start + haul,
-        "dumping": start + dump,
-        "swinging": start + swing,
+def start(phase: str, time: float, low_agreement: bool = False) -> PhaseStart:
+    return PhaseStart(phase, time, (time - 0.5, time + 0.5), False, low_agreement)
+
+
+def one_cycle(dig: float = 2.0, haul: float = 5.0, dump: float = 9.0, swing: float = 12.0):
+    return [
+        start("digging", dig),
+        start("hauling", haul),
+        start("dumping", dump),
+        start("swinging", swing),
+    ]
+
+
+# --- durations -----------------------------------------------------------------
+
+
+def test_each_phase_lasts_until_the_next_one_starts():
+    cycle = Cycle({"digging": 2.0, "hauling": 5.0, "dumping": 9.0, "swinging": 12.0}, end=17.0)
+    assert cycle.durations() == {
+        "digging": 3.0,
+        "hauling": 4.0,
+        "dumping": 3.0,
+        "swinging": 5.0,
     }
 
 
-# --- what makes a cycle complete ------------------------------------------
+def test_swinging_runs_to_the_next_digging_start_not_to_where_it_stops_moving():
+    """The spec: swinging *ends immediately before the next digging phase begins*."""
+    cycle = Cycle({"digging": 0.0, "hauling": 1.0, "dumping": 2.0, "swinging": 3.0}, end=10.0)
+    assert cycle.durations()["swinging"] == 7.0
 
 
-def test_a_cycle_with_all_four_onsets_is_measured():
+def test_the_four_phases_add_up_to_the_cycle():
     cycle = Cycle(
-        onsets=_onsets(), ends=12.0, span=_span(_onsets(), 12.0), occurred=set(PHASES)
+        {"digging": 2.0, "hauling": 5.5, "dumping": 9.25, "swinging": 12.0}, end=19.0
     )
-    assert cycle.complete and cycle.measurable
-    assert cycle.reason is None
+    assert sum(cycle.durations().values()) == pytest.approx(cycle.duration)
+    assert cycle.duration == 17.0
 
 
-def test_a_missing_onset_WITH_evidence_counts_but_does_not_average():
-    """Case 2. The phase happened -- the bucket was over the bed at some point
-    -- and the cue failed to say when. A cycle occurred, so it counts; we cannot
-    measure it, so it must not pollute the averages."""
-    onsets = _onsets()
-    del onsets["dumping"]
-    cycle = Cycle(onsets=onsets, ends=12.0, span=_span(onsets, 12.0), occurred=set(PHASES))
-    assert cycle.complete, "the machine did perform a full cycle"
-    assert not cycle.measurable, "but we cannot time it"
-    assert "dumping" in cycle.reason
+# --- which spans count as cycles -------------------------------------------------
 
 
-def test_a_missing_onset_with_NO_evidence_is_not_a_cycle_at_all():
-    """Case 3. The bucket never went near the truck: the machine re-dug instead
-    of dumping, so no cycle happened and nothing should count it."""
-    onsets = _onsets()
-    del onsets["dumping"]
-    cycle = Cycle(
-        onsets=onsets,
-        ends=12.0,
-        span=_span(onsets, 12.0),
-        occurred={"digging", "hauling", "swinging"},
-    )
-    assert not cycle.complete
-    assert not cycle.measurable
-    assert "dumping" in cycle.reason
-
-
-def test_onsets_out_of_order_are_not_measurable():
-    onsets = _onsets()
-    onsets["dumping"] = onsets["hauling"] - 0.5
-    cycle = Cycle(onsets=onsets, ends=12.0, span=_span(onsets, 12.0), occurred=set(PHASES))
-    assert not cycle.measurable
-    assert "order" in cycle.reason.lower()
-
-
-def test_a_cycle_that_never_closed_is_not_measurable():
-    """No next digging onset means the clip ended mid-cycle."""
-    cycle = Cycle(
-        onsets=_onsets(), ends=None, span=_span(_onsets(), None), occurred=set(PHASES)
-    )
-    assert not cycle.measurable
-
-
-# --- durations ------------------------------------------------------------
-
-
-def test_phase_durations_are_the_gaps_between_onsets():
-    cycle = Cycle(
-        onsets=_onsets(dig=2, haul=4, dump=6, swing=8),
-        ends=12.0,
-        span=_span(_onsets(dig=2, haul=4, dump=6, swing=8), 12.0),
-        occurred=set(PHASES),
-    )
-    d = cycle.durations()
-    assert d == {"digging": 2.0, "hauling": 2.0, "dumping": 2.0, "swinging": 4.0}
-
-
-def test_swinging_runs_to_the_NEXT_digging_onset():
-    """The spec: swinging ends immediately before the next digging phase."""
-    cycle = Cycle(
-        onsets=_onsets(swing=8),
-        ends=15.0,
-        span=_span(_onsets(swing=8), 15.0),
-        occurred=set(PHASES),
-    )
-    assert cycle.durations()["swinging"] == pytest.approx(7.0)
-
-
-def test_cycle_duration_is_onset_to_next_onset():
-    cycle = Cycle(
-        onsets=_onsets(dig=2),
-        ends=15.0,
-        span=_span(_onsets(dig=2), 15.0),
-        occurred=set(PHASES),
-    )
-    assert cycle.duration == pytest.approx(13.0)
-
-
-# --- assembling a run of detections ---------------------------------------
-
-
-def test_head_and_tail_partials_fall_outside_every_cycle():
-    """Not a special case: a cycle is dig-onset to dig-onset, so footage before
-    the first and after the last is in no cycle at all."""
-    onsets = [
-        Onset("digging", 2.0, 2.0),
-        Onset("hauling", 4.0, 4.0),
-        Onset("dumping", 6.0, 6.0),
-        Onset("swinging", 8.0, 8.0),
-        Onset("digging", 12.0, 12.0),
-    ]
-    cycles = assemble(onsets, evidence=lambda start, end: set(PHASES))
+def test_a_dig_to_the_next_dig_with_all_four_phases_is_a_cycle():
+    cycles = assemble([*one_cycle(), start("digging", 17.0)])
     assert len(cycles) == 1
-    assert cycles[0].onsets["digging"] == 2.0 and cycles[0].ends == 12.0
+    assert cycles[0].end == 17.0
+    assert cycles[0].starts["hauling"] == 5.0
 
 
-def test_three_cycles_assemble_into_three():
-    onsets = []
-    for i in range(4):  # four digging onsets bound THREE cycles
-        base = i * 10.0
-        onsets.append(Onset("digging", base + 2, base + 2))
-        if i < 3:
-            onsets += [
-                Onset("hauling", base + 4, base + 4),
-                Onset("dumping", base + 6, base + 6),
-                Onset("swinging", base + 8, base + 8),
-            ]
-    cycles = assemble(onsets, evidence=lambda start, end: set(PHASES))
-    assert len(cycles) == 3
-    assert all(c.measurable for c in cycles)
+def test_one_digging_start_bounds_no_cycle():
+    """A cycle needs the dig that closes it. A lone dig is the head or tail of one."""
+    assert assemble(one_cycle()) == []
 
 
-def test_a_single_digging_onset_bounds_no_cycles():
-    assert (
-        assemble([Onset("digging", 2.0, 2.0)], evidence=lambda start, end: set(PHASES)) == []
+def test_footage_before_the_first_dig_and_after_the_last_is_ignored():
+    """The spec: ignore any incomplete cycle at the beginning or end of the video."""
+    starts = [
+        start("swinging", 0.5),  # the tail of a cycle that began before the video
+        *one_cycle(dig=2.0, haul=5.0, dump=9.0, swing=12.0),
+        start("digging", 17.0),
+        start("hauling", 20.0),  # the head of a cycle that the video ends inside
+    ]
+    cycles = assemble(starts)
+    assert len(cycles) == 1
+    assert cycles[0].starts["digging"] == 2.0 and cycles[0].end == 17.0
+
+
+def test_a_span_missing_a_phase_is_dropped_and_the_next_cycle_still_counts():
+    starts = [
+        start("digging", 2.0),
+        start("hauling", 5.0),  # no dump, no swing: the search abandoned this cycle
+        *one_cycle(dig=17.0, haul=20.0, dump=24.0, swing=27.0),
+        start("digging", 32.0),
+    ]
+    cycles = assemble(starts)
+    assert len(cycles) == 1
+    assert cycles[0].starts["digging"] == 17.0 and cycles[0].end == 32.0
+
+
+def test_two_complete_cycles_in_a_row_share_the_middle_dig():
+    starts = [*one_cycle(), *one_cycle(dig=17.0, haul=20.0, dump=24.0, swing=27.0)]
+    starts.append(start("digging", 32.0))
+    cycles = assemble(starts)
+    assert [c.end for c in cycles] == [17.0, 32.0]
+
+
+# --- the answer ------------------------------------------------------------------
+
+
+def test_the_answer_averages_every_phase_and_the_cycle_over_the_complete_cycles():
+    first = Cycle({"digging": 0.0, "hauling": 2.0, "dumping": 6.0, "swinging": 8.0}, end=12.0)
+    second = Cycle(
+        {"digging": 12.0, "hauling": 16.0, "dumping": 18.0, "swinging": 22.0}, end=30.0
     )
+    answer = summarise([first, second])
+    assert answer.cycle_count == 2
+    assert answer.average_phase_duration_seconds == {
+        "digging": 3.0,  # (2 + 4) / 2
+        "hauling": 3.0,  # (4 + 2) / 2
+        "dumping": 3.0,  # (2 + 4) / 2
+        "swinging": 6.0,  # (4 + 8) / 2
+    }
+    assert answer.average_cycle_duration_seconds == 15.0  # (12 + 18) / 2
 
 
-# --- the answer -----------------------------------------------------------
+def test_no_complete_cycle_is_reported_as_zeros_not_an_error():
+    """A clip shorter than one cycle has nothing to average; the file must still exist."""
+    answer = summarise([])
+    assert answer.cycle_count == 0
+    assert answer.average_cycle_duration_seconds == 0.0
+    assert answer.average_phase_duration_seconds == dict.fromkeys(PHASES, 0.0)
 
 
-def test_averages_come_only_from_measurable_cycles():
-    good = Cycle(
-        onsets=_onsets(), ends=12.0, span=_span(_onsets(), 12.0), occurred=set(PHASES)
+def test_the_answer_has_exactly_the_fields_the_task_specifies():
+    """The task's schema, key for key, and nothing else."""
+    answer = Answer(
+        1, 15.2, {"digging": 2.501, "hauling": 3.342, "dumping": 4.234, "swinging": 5.123}
     )
-    broken = dict(_onsets(start=20.0))
-    del broken["dumping"]
-    unmeasurable = Cycle(
-        onsets=broken, ends=32.0, span=_span(broken, 32.0), occurred=set(PHASES)
-    )
-    answer = summarise([good, unmeasurable])
-    assert answer.cycle_count == 2, "both cycles OCCURRED"
-    assert answer.average_phase_duration_seconds["digging"] == pytest.approx(2.0), (
-        "only the measurable one contributes to the average"
-    )
-
-
-def test_the_schema_matches_the_task_exactly(tmp_path):
-    answer = summarise(
-        [Cycle(onsets=_onsets(), ends=12.0, span=_span(_onsets(), 12.0), occurred=set(PHASES))]
-    )
-    path = write_answer(answer, tmp_path / "answer.json")
-    data = json.loads(path.read_text())
-    assert set(data) == {
+    record = answer.to_dict()
+    assert list(record) == [
         "cycle_count",
         "average_cycle_duration_seconds",
         "average_phase_duration_seconds",
-    }
-    assert set(data["average_phase_duration_seconds"]) == set(PHASES)
-    assert isinstance(data["cycle_count"], int)
+    ]
+    assert list(record["average_phase_duration_seconds"]) == [
+        "digging",
+        "hauling",
+        "dumping",
+        "swinging",
+    ]
 
 
-def test_no_measurable_cycles_is_reported_not_crashed():
-    """A legitimate outcome on a clip too short to contain a full cycle."""
-    answer = summarise([])
-    assert answer.cycle_count == 0
-    assert isinstance(answer, Answer)
+def test_durations_are_written_to_three_decimals_and_the_count_is_an_integer():
+    answer = Answer(2, 24.72149999, dict.fromkeys(PHASES, 5.7054999))
+    record = answer.to_dict()
+    assert record["average_cycle_duration_seconds"] == 24.721
+    assert record["average_phase_duration_seconds"]["digging"] == 5.705
+    assert isinstance(record["cycle_count"], int)
 
 
-# --- portability: a video this code has never seen -------------------------
-#
-# The development clip has 1.2 cycles at 10 Hz with a truck. Every one of those
-# is an accident of one file, and the hidden videos share none of them
-# necessarily. These fixtures vary each in turn.
+def test_write_answer_writes_readable_json(tmp_path):
+    answer = summarise(assemble([*one_cycle(), start("digging", 17.0)]))
+    path = write_answer(answer, tmp_path / "answer.json")
+    text = path.read_text()
+    assert text.endswith("\n")
+    assert json.loads(text) == answer.to_dict()
+    assert json.loads(text)["cycle_count"] == 1
 
 
-class _SyntheticTable:
-    """A machine doing `cycles` clean cycles at `rate_hz`.
-
-    Built from the PHASE STRUCTURE rather than from any recording, so it shares
-    none of the development clip's accidents. Each phase gets the motion measured
-    on the 83 s clip's three cycles -- the shapes the onset cues read -- and the
-    levels the state conditions read:
-
-        digging    bucket low and still
-        hauling    bucket lifts and travels toward the truck, then arrives and holds
-        dumping    over the bed; the bucket lifts a little as it uncurls
-        swinging   the empty bucket is pushed up and out, clear of the bed, then
-                   swings back and down, braking onto the pile
-
-    The truck is on the +x side (`rel_cabin_x > 0` while hauling and dumping).
-    """
-
-    def __init__(self, cycles=3, rate_hz=10.0, cycle_seconds=20.0, truck=True):
-        import numpy as np
-
-        step = 1.0 / rate_hz
-        n = int(cycles * cycle_seconds / step) + 1
-        self.time_seconds = np.arange(n) * step
-        phase_of = (self.time_seconds % cycle_seconds) / (cycle_seconds / 4.0)
-        dig = phase_of < 1
-        haul = (phase_of >= 1) & (phase_of < 2)
-        dump = (phase_of >= 2) & (phase_of < 3)
-        swing = phase_of >= 3
-        w = phase_of % 1.0  # 0..1 through whichever phase we are in
-
-        lifting = np.clip(w / 0.5, 0.0, 1.0)  # haul: rise over its first half, then hold
-        push = swing & (w < 0.2)  # swing: pushed clear of the bed first
-        back = np.clip((w - 0.2) / 0.8, 0.0, 1.0)  # ...then back down to the pile
-        self.height = np.select(
-            [dig, haul, dump, swing],
-            [
-                -0.10,
-                -0.10 + 0.40 * lifting,
-                0.30 + 0.10 * w,
-                np.where(push, 0.40 + 0.25 * w, 0.45 - 0.55 * back),
-            ],
-        )
-        # Horizontal velocity: + is toward the truck. The swing back brakes to a
-        # stop over its last 40%, which is where the dig begins.
-        brake = np.clip((1.0 - back) / 0.4, 0.0, 1.0)
-        self.dx_dt = np.select(
-            [dig, haul, dump, swing],
-            [0.0, np.where(w < 0.5, 0.5, 0.0), 0.0, np.where(push, 0.3, -0.5 * brake)],
-        )
-        self.dh_dt = np.gradient(self.height, self.time_seconds)
-        self.d2h_dt2 = np.gradient(self.dh_dt, self.time_seconds)
-        self.speed_x = np.abs(self.dx_dt)
-        self.truck_overlap = np.where(dump, 0.40, 0.0) if truck else np.full(n, np.nan)
-        self.rel_cabin_x = np.where(haul | dump, 0.5, -0.5)
-        self.aspect_ratio = np.where(dump, 1.8, 1.2)
-        self.bucket_x = np.cumsum(self.dx_dt) * step
-        self.bucket_y = -self.height  # image y points down
-        self.found = np.ones(n, bool)
+# --- what the annotated video is drawn from --------------------------------------
 
 
-def _run(table):
-    from excavator_cycles.config import Config
-    from excavator_cycles.fsm import calibrate, evidence_within, locate, walk
+def test_the_phases_survive_a_round_trip_through_phases_json(tmp_path):
+    starts = [
+        *one_cycle(),
+        start("digging", 17.0, low_agreement=True),
+    ]
+    cycles = assemble(starts)
+    search = PhaseSearch(starts=starts, gaps=[], stop=None)
+    path = write_phases(search, cycles, tmp_path / "phases.json")
 
-    config = Config.load()
-    levels = calibrate(table, config)
-    detections = walk(table, levels, config=config)
-    onsets = locate(detections, table, config)
-    cycles = assemble(
-        onsets, evidence=lambda start, end: evidence_within(table, levels, start, end)
-    )
-    return cycles, detections
-
-
-def test_it_runs_on_a_video_it_has_never_seen():
-    """The whole chain, on data built from the phase structure rather than from
-    any recording. It need not be ACCURATE -- the cues are known-wrong -- but it
-    must complete and produce a well-formed answer."""
-    cycles, detections = _run(_SyntheticTable(cycles=3))
-    answer = summarise(cycles)
-    assert isinstance(answer.cycle_count, int)
-    assert set(answer.average_phase_duration_seconds) == set(PHASES)
-    assert detections, "something should have been detected"
-
-
-def test_a_different_frame_rate_changes_nothing_structural():
-    """25 Hz rather than 10. Every parameter is a duration, so the same clip
-    sampled differently must behave the same way."""
-    slow, _ = _run(_SyntheticTable(cycles=3, rate_hz=10.0))
-    fast, _ = _run(_SyntheticTable(cycles=3, rate_hz=25.0))
-    assert len(slow) == len(fast), (
-        f"{len(slow)} cycles at 10 Hz but {len(fast)} at 25 Hz -- "
-        "some parameter is in samples, not seconds"
-    )
-
-
-def test_a_video_with_no_truck_still_completes():
-    """truck_overlap is all-nan when nothing truck-like was detected. That is a
-    legitimate video: the dumping gate is unavailable, not false."""
-    cycles, _ = _run(_SyntheticTable(cycles=2, truck=False))
-    answer = summarise(cycles)
-    assert isinstance(answer.cycle_count, int), "must not raise"
-
-
-def test_the_cycle_count_follows_the_data_not_a_constant():
-    """Nothing may assume the development video's 1.2 cycles."""
-    two, _ = _run(_SyntheticTable(cycles=2))
-    five, _ = _run(_SyntheticTable(cycles=5))
-    assert len(five) > len(two), f"2-cycle clip gave {len(two)}, 5-cycle gave {len(five)}"
-
-
-def test_a_clip_too_short_for_a_cycle_reports_zero_rather_than_raising():
-    cycles, _ = _run(_SyntheticTable(cycles=1, cycle_seconds=6.0))
-    answer = summarise(cycles)
-    assert answer.cycle_count >= 0
-
-
-def test_what_is_frame_rate_invariant_and_what_is_not():
-    """The same clip sampled at 5-30 Hz yields the same cycle count.
-
-    This test previously asserted "denser sampling should never make FEWER cycles
-    measurable" from a single pair of rates, and that claim was FALSE -- sweeping the
-    same fixture showed 1 measurable at 12.5 Hz and 0 at 15 Hz. It passed only for
-    the pair it happened to sample.
-
-    It then recorded a floor: at 5 Hz one extra closing dig was detected, because
-    the clip tail cleared a truncated-hold bar it could not clear at 3+ samples. The
-    shape cues removed that difference -- the edge of the clip where a shape cannot
-    be read is now a DURATION (`shape_min_side_seconds`), so the fallback there
-    behaves the same at every rate -- and 5 Hz now joins the rest. The 83 s clip is
-    sampled at 5 Hz, so this is not a hypothetical rate.
-    """
-    counts = {
-        rate: len(_run(_SyntheticTable(cycles=3, rate_hz=rate))[0])
-        for rate in (5.0, 10.0, 12.5, 15.0, 20.0, 25.0, 30.0)
-    }
-    assert len(set(counts.values())) == 1, (
-        f"the cycle count must not depend on sampling rate: {counts}"
-    )
-    stable = next(iter(counts.values()))
-    assert stable > 0, "and it must actually find cycles, or the above proves nothing"
+    read_starts, read_cycles = read_phases(path)
+    assert read_starts == starts
+    assert read_cycles == cycles

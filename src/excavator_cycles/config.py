@@ -40,10 +40,10 @@ class SamplingConfig:
     """How often each stage looks at the video.
 
     These are deliberately decoupled. Decoding is cheap, detection is expensive,
-    and the state machine needs neither every frame nor the source frame rate.
+    and the phase search needs neither every frame nor the source frame rate.
     """
 
-    # Rate at which masks, features and the state machine are computed.
+    # Rate at which masks, features and the phase search are computed.
     # 10 Hz is chosen from the *fastest event* we must resolve -- the bucket's
     # uncurl at the start of dumping, a few tenths of a second -- not from the
     # shortest phase. Boundary precision does not depend on this rate, because
@@ -194,27 +194,6 @@ class GeometryConfig:
     # A percentile rather than the max, so one bad frame cannot set the scale.
     reach_percentile: float = 95.0
 
-    # The bucket region is the outermost part of the arm, as a fraction of the
-    # machine's CURRENT radial reach -- not a disk around the tip. A circular
-    # crop makes any region circular: measured that way the bucket's elongation
-    # is 1.25 (apparently shapeless), measured as a radial band it is 2.13.
-    bucket_band_low: float = 0.85
-
-    # Size of the optical-flow patch below the bucket, in units of L.
-    bucket_radius_frac: float = 0.22
-
-    # Temporal filter on the bucket's position (design doc section 4.3). All in
-    # units of the machine's reach L and in seconds, so one set of values serves
-    # any video at any scale or frame rate.
-    #
-    # process_noise is how much the bucket's velocity may change per second: it
-    # sets how much the filter trusts its own motion model against the next
-    # measurement. Too low and a real swing gets rejected; too high and the
-    # filter believes everything and does nothing.
-    tip_process_noise: float = 2.0  # L per second squared
-    tip_measurement_noise: float = 0.02  # L, expected error of one pose fit
-    tip_gate_sigma: float = 3.0  # reject beyond this many sigmas
-
 
 @dataclass(frozen=True)
 class FeatureConfig:
@@ -260,63 +239,6 @@ class FeatureConfig:
 
 
 @dataclass(frozen=True)
-class FSMConfig:
-    """The state machine's parameters. Every one is a DURATION, never a count.
-
-    A window given in samples means something different at every frame rate: 3
-    samples is 0.3 s at 10 Hz and 0.15 s at 20 Hz, so the same footage sampled
-    differently would produce different onsets. Seconds convert through the
-    observed sample spacing exactly once, at the boundary.
-    """
-
-    # How long a transition's evidence must persist before it is believed. A
-    # trigger is not a transition; one noisy sample must not advance the state.
-    # The SAME value for all four, on purpose: any residual confirmation lag is
-    # then common-mode and cancels in the phase DURATIONS, which is what the
-    # task grades.
-    hold_seconds: float = 0.30
-
-    # The bar for a DIGGING trigger that arrives out of turn. Higher, because
-    # expected evidence is cheap and unexpected evidence should be expensive --
-    # a spurious dig mid-haul would silently truncate a good cycle.
-    strict_hold_seconds: float = 0.60
-
-    # How far the coarse window reaches back before the trigger. An onset is
-    # where a signal LEFT rest, found by walking backward from the excursion, so
-    # a window starting at the trigger would exclude what it is looking for.
-    lookback_seconds: float = 0.80
-
-    # Pass 2: how many multiples of a window's own noise still count as "at
-    # rest". Dimensionless -- a multiple of a quantity measured from the same
-    # window -- so it carries no assumption about any video's scale.
-    rest_sigma: float = 3.0
-
-    # ...and the floor under that band, as a fraction of what the signal does
-    # across the window. Rest cannot be defined more tightly than this: on an
-    # exactly flat lead-in the measured noise is zero, and a zero band makes
-    # every sample an excursion.
-    rest_floor_fraction: float = 0.02
-
-    # The onset cues read the SHAPE of a signal around each sample (`shapes.py`):
-    # a line fitted to this many seconds on each side...
-    shape_side_seconds: float = 2.0
-
-    # ...reads as flat when it moves less than this fraction of the signal's
-    # p95 - p5 spread over that time. A fraction of the video's own spread, so it
-    # carries no assumption about the machine's size or distance.
-    shape_flat_fraction: float = 0.08
-
-    # When both sides move the same way, a slope ratio above this reads as
-    # "speeds up" (below its inverse, "slows down").
-    shape_steeper: float = 1.5
-
-    # At the clip's edges a side is fitted on what exists, down to this long. Below
-    # it the shape is unknown, and the digging cue falls back to the digging state.
-    # A duration, so the unreadable edge is the same size at every frame rate.
-    shape_min_side_seconds: float = 0.4
-
-
-@dataclass(frozen=True)
 class QAConfig:
     """Pass/fail bands for the perception quality gate.
 
@@ -345,7 +267,6 @@ class Config:
     track: TrackConfig = field(default_factory=TrackConfig)
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
-    fsm: FSMConfig = field(default_factory=FSMConfig)
     qa: QAConfig = field(default_factory=QAConfig)
 
     @classmethod

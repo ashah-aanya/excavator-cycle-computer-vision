@@ -63,13 +63,6 @@ ALLOWED = {
     "save_objects",
     "encode",
     "decode",
-    # A tested pass-2 primitive with no caller YET. `motion_boundary` fixes the rest
-    # level at exactly zero rather than estimating it, which
-    # `docs/state-detection-inventory.md` calls the design's preferred approach, and
-    # `fsm.refine` currently estimates instead. Kept deliberately, with 11 tests, as
-    # a candidate for the refinement work -- NOT an unkept promise, because the code
-    # exists and does what it says.
-    "motion_boundary",
     # Dataclass/protocol surface: read by callers as attributes, not called.
     "to_dict",
     "from_dict",

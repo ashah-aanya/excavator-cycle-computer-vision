@@ -3,7 +3,7 @@
 An excavator arm is three rigid links -- boom, stick, bucket -- so its pose is
 fully described by four points: where the boom meets the body, the boom-stick
 joint, the stick-bucket joint, and the bucket tip. That is the parameterisation
-the pose-estimation literature uses, and everything the state machine needs
+the pose-estimation literature uses, and everything the phase search needs
 follows from it.
 
 Why not simply take the mask pixel farthest from the machine's centre, which is

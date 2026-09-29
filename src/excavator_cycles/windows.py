@@ -1,10 +1,8 @@
-"""Phase windows: gates, then the required cue, then a majority of supporting cues.
+"""Pass 1 of the phase search: find the interval each phase starts in.
 
-**Evaluation scaffolding, not pipeline code.** Imports nothing from the pipeline.
-
-Each phase is searched for after the hand-marked start of the previous phase (the
-first dig: from the clip's start, with the clip-start rule). For each phase, in
-this ORDER (Aanya, 2026-09-27):
+Each phase is searched for after the previous phase's window (the first dig: from the
+clip's start, with the clip-start rule), so the order dig -> haul -> dump -> swing is
+enforced. For each phase, in this order (Aanya, 2026-09-27):
 
 1. GATES -- the necessary thresholds. None of the phase's cues are considered until
    all of its gates hold; cues may begin ``GATE_LOOKAHEAD`` s before that, and an
@@ -14,81 +12,43 @@ this ORDER (Aanya, 2026-09-27):
    height above the dig height. Return swing: none.
 2. REQUIRED CUE -- haul: height must be part of the window. Dump: the aspect
    ratio's steepest drop IS the window.
-3. SUPPORTING CUES -- a majority of the cues that found something must agree
-   (overlap the window; for dump, a majority of the rest must overlap the aspect
-   window). Every cue is a pattern from Aanya's key, skipping graphs that are only
-   a constant shift of another.
+3. SUPPORTING CUES -- a majority of the cue weight must agree (overlap the window;
+   for dump, a majority of the rest must overlap the aspect window). Every cue is a
+   pattern from Aanya's key, skipping graphs that are only a constant shift of another.
 
 A cue's window is its event's centre widened by its timing uncertainty (noise /
 slope change), clamped to ``MIN_HALF``..``MAX_HALF``; a span cue is its span padded
 by the minimum; a "check" cue (dump) is a condition read inside the aspect window.
-Every number drawn from the output is computed here; the marks are loaded to set
-where each search starts and to be shown.
 
-Usage::
-
-    uv run python eval/interval_votes.py --clip long --out votes.json
+Nothing here reads a label: labels only score the result, outside ``src/``.
+`starts.py` picks one frame inside each window.
 """
 
 from __future__ import annotations
 
-import argparse
-import importlib.util
-import json
-import sys
-from pathlib import Path
-
 import numpy as np
 
-EVAL = Path(__file__).resolve().parent
-ORDER = ("digging", "hauling", "dumping", "swinging")
+from . import cues
+from .rates import noise_scale
 
-# Window half-widths, in seconds. Minimum +/-0.4 s (0.8 s wide) and maximum +/-0.6 s
-# (1.2 s wide) -- Aanya, 2026-09-27; the minimum was first 0.25 s. Rate signals are
-# smoothed over 0.9 s, so their events cannot be placed more tightly than about
-# +/-0.45 s, which overrides the 0.4 s floor.
-# Broadened again (Aanya: wider is safer once several cues validate a window --
-# missing the transition cannot be undone). The maximum stays under the shortest
-# phase (a dump, about 2.5 s), so no window can hold two phase starts.
-# EXPERIMENT, off unless --dump-reweight: over the truck votes 3 for a dump, read
-# at the tip and only in the first DUMP_VISIT_EARLY of the visit; dh/dt near 0
-# votes 0.5 (Aanya: "vote the overlap higher and the dh/dt a lot weaker").
-DUMP_REWEIGHT = {"on": False}
-DUMP_VISIT_EARLY = 0.7  # chosen from the data: real tips at <= 65% of a visit
+# Window half-widths, in seconds. Minimum +/-0.75 s and maximum +/-1.2 s -- Aanya,
+# 2026-09-27; broadened (wider is safer once several cues validate a window --
+# missing the transition cannot be undone). Rate signals are smoothed over 0.9 s, so
+# their events cannot be placed more tightly than about +/-0.45 s. The maximum stays
+# under the shortest phase (a dump, about 2.5 s), so no window can hold two phase
+# starts.
 MIN_HALF = 0.75
 RATE_MIN_HALF = 0.75
 MAX_HALF = 1.2
 SLOPE_SIDE = 1.0  # seconds either side of an event for the slope-change estimate
-RATES = {"dx_dt", "dh_dt", "speed_2d", "d2x_dt2", "speed_x", "pile_truck_pos_dt"}
+RATES = {"dh_dt", "speed_2d", "pile_truck_pos_dt"}
 GATE_LOOKAHEAD = 1.0  # s after a haul event in which its gates may be met
 HAUL_HEIGHT_SECONDS = 1.5  # "a second long or something", broadened from 1.0
 NEAR = 5.0  # s: a haul cue further than this from height's window is not counted
 STEEP = 0.25  # a 2 s line moving >= this fraction of the spread is a steep rise
-CLIP_START_SECONDS = 5.0  # how far into a clip the opening-dig rule may look
-
-
-def _check_cues():
-    spec = importlib.util.spec_from_file_location("check_cues", EVAL / "check_cues.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-cc = _check_cues()
 
 
 # ------------------------------------------------------------------ uncertainty
-
-
-def noise_scale(values: np.ndarray) -> float:
-    """How much the signal jitters sample to sample: the MAD of successive
-    differences, scaled to a standard deviation. Same formula as the pipeline's
-    ``onsets.noise_scale``, re-implemented so this file needs no pipeline import."""
-    v = np.asarray(values, dtype=float)
-    v = v[np.isfinite(v)]
-    steps = np.diff(v)
-    return float(np.median(np.abs(steps - np.median(steps))) * 1.4826 / np.sqrt(2.0))
 
 
 def half_width(
@@ -112,11 +72,6 @@ def half_width(
 
 
 # ---------------------------------------------------------------------- finders
-
-
-def shape_runs(values, times, shape):
-    """Spans where the 2 s shape reading is ``shape``."""
-    return cc._runs(cc.hits(cc.shapes(values, times), shape), times)
 
 
 def _i(t, s):
@@ -151,42 +106,23 @@ def finders(t, F, side):
     """
     h = F["height"]
     speed = F["speed_2d"]
-    dx = F["dx_dt"] * side
-    x = F["bucket_x"] * side
     rel_cabin_x = F["rel_cabin_x"] * side
-    rel_truck_x = F["rel_truck_x"] * side
-    if HORIZONTAL["mode"] == "distance":
-        # "let's try with making it distance to truck": the bucket's straight-line
-        # image distance from the truck's centre (in the arm lengths L the features use),
-        # negated so + is still "toward the truck". It shrinks on approach whichever
-        # image direction the approach runs in, where x assumes a side-on camera.
-        # ASSUMPTION (Aanya): the dump target is a truck -- a dump onto a pile or into
-        # a hopper would break this, and most of the rules with it.
-        x = -F["truck_distance"]
-        dx = -F["truck_distance_dt"]
-        rel_truck_x = x
-    elif HORIZONTAL["mode"] == "pile_truck":
-        # "the goal is to get rid of the position specific ones": where the bucket is
-        # along the line from the pile to the truck (-1 pile, 0 truck, + past it), the
-        # line's direction found from the video, not assumed to be image left-right
-        x = F["pile_truck_pos"]
-        dx = F["pile_truck_pos_dt"]
-        rel_truck_x = x
-    elif HORIZONTAL["mode"] == "truck_x":
-        # "can you do like x distance to truck?": the signed LEFT-RIGHT gap to the
-        # truck's centre. It keeps the direction (past the truck vs back toward the
-        # pile) that plain distance loses.
-        x = rel_truck_x
+    # "the goal is to get rid of the position specific ones": where the bucket is
+    # along the line from the pile to the truck (-1 pile, 0 truck, + past it), the
+    # line's direction found from the video, not assumed to be image left-right
+    x = F["pile_truck_pos"]
+    dx = F["pile_truck_pos_dt"]
+    rel_truck_x = x
     overlap = F["truck_overlap"]
 
-    humps = cc.excursion_windows(speed, t, "peak", min_size=0.5)
-    dx_dips = cc.excursion_windows(dx, t, "dip", min_size=0.5)
-    h_drops = cc.big_drops(h, t, min_drop=0.5, max_seconds=6.0)
-    aspect_drops = cc.big_drops(F["aspect_ratio"], t)
+    humps = cues.excursion_windows(speed, t, "peak", min_size=0.5)
+    dx_dips = cues.excursion_windows(dx, t, "dip", min_size=0.5)
+    h_drops = cues.big_drops(h, t, min_drop=0.5, max_seconds=6.0)
+    aspect_drops = cues.big_drops(F["aspect_ratio"], t)
     # "You can detect them multiple times, and then you can figure out which is the
     # real signal based on validating across multiple": every drop of >= 30% of the
     # range is a candidate tip; step() keeps the one the other cues support most
-    aspect_candidates = cc.big_drops(F["aspect_ratio"], t, min_drop=0.3)
+    aspect_candidates = cues.big_drops(F["aspect_ratio"], t, min_drop=0.3)
 
     def aspect_all(anchor, _cycle):
         return [
@@ -200,7 +136,7 @@ def finders(t, F, side):
         ]
 
     spread = np.nanpercentile(h, 95) - np.nanpercentile(h, 5)
-    from scipy.signal import find_peaks, peak_widths
+    from scipy.signal import find_peaks
 
     h_peaks = find_peaks(h, prominence=0.03 * spread)[0]
     dx_noise = noise_scale(dx)
@@ -252,19 +188,18 @@ def finders(t, F, side):
         }
 
     # ---- haul (gated per cycle, see haul_gate)
-    dip_spike = cc.dip_then_rise_mask(dx, t)
     # "consider more of the knee" (Aanya). The STRICT knee picks WHICH bend (the sharp
     # one); a LOOSER knee -- before moves < 2x the flat limit, after rises >= half the
     # steep limit -- measures how far that bend extends. The loose one alone also
     # matched a smaller bend mid-dig.
-    takeoff_tx = cc.knee_mask(rel_truck_x, t, "rising", "flat_to_steep") & (rel_truck_x < 0)
-    bend_tx = cc._runs(
-        cc.knee_mask(
+    takeoff_tx = cues.knee_mask(rel_truck_x, t, "rising", "flat_to_steep") & (rel_truck_x < 0)
+    bend_tx = cues.runs(
+        cues.knee_mask(
             rel_truck_x,
             t,
             "rising",
             "flat_to_steep",
-            flat_max=2 * cc.FLAT,
+            flat_max=2 * cues.FLAT,
             steep_min=STEEP / 2,
         )
         & (rel_truck_x < 0),
@@ -277,7 +212,7 @@ def finders(t, F, side):
         the gate skipped the right event: the bottom of the dx/dt dip comes a moment
         BEFORE the bucket rises above its dig height -- the lift is the spike after."""
         gate = haul_gate(t, F, anchor, cycle)
-        for a, b in cc._runs(mask, t):
+        for a, b in cues.runs(mask, t):
             if b < anchor:
                 continue
             a = max(a, anchor)
@@ -285,7 +220,7 @@ def finders(t, F, side):
                 return (a, b)
         return None
 
-    _, h_after = cc.side_changes(h, t, cc.SIDE)
+    _, h_after = cues.side_changes(h, t, cues.SIDE)
 
     def haul_height(_anchor, cycle):
         """Aanya: "draw a line from the tallest height in dig window to the graph for
@@ -304,7 +239,7 @@ def finders(t, F, side):
             (
                 j
                 for j in range(_i(t, w[1]), len(t))
-                if h[j] > level and np.isfinite(h_after[j]) and h_after[j] >= cc.FLAT
+                if h[j] > level and np.isfinite(h_after[j]) and h_after[j] >= cues.FLAT
             ),
             None,
         )
@@ -317,14 +252,6 @@ def finders(t, F, side):
             "context": None,
             "level": level,
         }
-
-    def haul_dx_min(anchor, cycle):
-        e = gated_first(dip_spike, anchor, cycle)
-        if e is None:
-            return None
-        lo, hi = _i(t, max(e[0] - cc.SIDE, anchor)), _i(t, e[1]) + 1
-        m = lo + int(np.nanargmin(dx[lo:hi]))
-        return {"event": e, "centre": float(t[m]), "context": None}
 
     def haul_truck_x(anchor, cycle):
         e = gated_first(takeoff_tx, anchor, cycle)
@@ -343,7 +270,7 @@ def finders(t, F, side):
     # hump that it needs to contain. There's a dip and then a second hump, and it
     # should contain it on the going-up part of that hump. It can find the maximum of
     # the second hump and then backtrack a little bit to make the interval."
-    _, cabin_after = cc.side_changes(rel_cabin_x, t, cc.SIDE)
+    _, cabin_after = cues.side_changes(rel_cabin_x, t, cues.SIDE)
     cabin_noise = noise_scale(rel_cabin_x)
     with np.errstate(invalid="ignore"):
         cabin_steep = cabin_after >= STEEP  # the 2 s ahead rises by >= a quarter of the spread
@@ -376,19 +303,6 @@ def finders(t, F, side):
             dip += 1
         lo = top + int(np.nanargmin(rel_cabin_x[top : dip + 1]))
         return (lo, e) if e - lo >= 2 else None
-
-    def cabin_x_going_up(anchor, cycle):
-        # the down-bump is read from the phase's search start (the haul's start), not
-        # from where the gates open: "skip the haul's rise" needs the rise in view
-        found = cabin_down_bump(cycle.get("search_from", anchor))
-        if found is None:
-            return None
-        dip, e = found
-        return {
-            "event": (float(t[dip]), float(t[e])),
-            "centre": float(t[dip]),
-            "context": None,
-        }
 
     def aspect_steepest(anchor, cycle):
         """The first big aspect-ratio drop whose steepest point comes after bucket -
@@ -444,12 +358,10 @@ def finders(t, F, side):
         }
 
     # ---- features added from Aanya's key (2026-09-27), skipping constant shifts
-    radius = F["radius"]
     dh = F["dh_dt"]
     dh_noise = noise_scale(dh)
-    x_drops = cc.big_drops(x, t, min_drop=0.5, max_seconds=6.0)
+    x_drops = cues.big_drops(x, t, min_drop=0.5, max_seconds=6.0)
     x_noise = noise_scale(x)
-    radius_dips = cc.excursion_windows(radius, t, "dip", min_size=0.5)
 
     def dig_dh(anchor, _cycle):
         """dh/dt, key: "negative approaching 0" -- after the big height drop, where
@@ -464,21 +376,6 @@ def finders(t, F, side):
             "event": (d["steepest"], float(t[j])),
             "centre": float(t[j]),
             "context": (d["onset"], d["bottom"]),
-        }
-
-    def dig_radius(anchor, _cycle):
-        """radius, key: "after big dip and upswing downward trend" -- after the big
-        dip, the top of the upswing, where the downward trend begins."""
-        dip = next((d for d in radius_dips if d["apex"] >= anchor), None)
-        if dip is None:
-            return None
-        k = _i(t, dip["apex"])
-        while k + 1 < len(t) and radius[k + 1] >= radius[k]:
-            k += 1
-        return {
-            "event": (dip["apex"], float(t[k])),
-            "centre": float(t[k]),
-            "context": (dip["start"], dip["end"]),
         }
 
     def dig_x(anchor, _cycle):
@@ -506,72 +403,15 @@ def finders(t, F, side):
             "context": (d["onset"], d["bottom"]),
         }
 
-    def haul_radius(anchor, _cycle):
-        """radius, key: "start of dip" -- where the big V-shaped dip starts. (A knee
-        from FLAT to falling found almost nothing: radius is never flat going in.)"""
-        dip = next((d for d in radius_dips if d["apex"] >= anchor), None)
-        if dip is None:
-            return None
-        return {
-            "event": (dip["start"], dip["apex"]),
-            "centre": dip["start"],
-            "context": (dip["start"], dip["end"]),
-        }
-
     with np.errstate(invalid="ignore"):
         dump_dh_mask = np.abs(dh) <= 3 * dh_noise  # key: "close to or at 0"
         dump_dx_mask = dx > 0  # key: "positive"
         dump_overlap_mask = overlap > 0  # key (bucket - truck x): "overlap"
         swing_dh_mask = (dh > dh_noise) & (np.gradient(dh, t) < 0)  # "positive decreasing"
-    if DUMP_REWEIGHT["on"]:
-        for va, vb in cc._runs(overlap > 0, t):
-            dump_overlap_mask &= ~((t > va + DUMP_VISIT_EARLY * (vb - va)) & (t <= vb))
-    radius_peaks = cc.excursion_windows(radius, t, "peak", min_size=0.5)
-    radius_slope = np.gradient(radius, t)
-
-    def swing_radius(anchor, _cycle):
-        """radius, key: "start of bump after" -- where the STEEP part of the big bump
-        begins: back from its peak while the rise is at least a quarter of its
-        steepest. (Back to where it stopped falling lands seconds early: radius creeps
-        up slowly before the bump.)"""
-        bump = next((d for d in radius_peaks if d["apex"] >= anchor), None)
-        if bump is None:
-            return None
-        a, p = _i(t, bump["start"]), _i(t, bump["apex"])
-        if p <= a:
-            return None
-        steepest = float(np.nanmax(radius_slope[a:p]))
-        q = p
-        while q > a and radius_slope[q - 1] >= 0.25 * steepest:
-            q -= 1
-        return {
-            "event": (float(t[q]), bump["apex"]),
-            "centre": float(t[q]),
-            "context": (bump["start"], bump["end"]),
-        }
-
-    def swing_dx_bump(anchor, _cycle):
-        """dx/dt, key: "upward bump right after" -- the bump just before the big
-        dip of the swing back: the highest dx/dt between the search start and it."""
-        dip = next((d for d in dx_dips if d["apex"] >= anchor), None)
-        if dip is None or dip["start"] <= anchor:
-            return None
-        lo, hi = _i(t, anchor), _i(t, dip["start"]) + 1
-        top = lo + int(np.nanargmax(dx[lo:hi]))
-        # the swing starts where dx/dt starts rising INTO the bump, not at its top:
-        # walk back from the top to the low point before it (the top was 1-1.5 s late)
-        k = top
-        while k > lo and dx[k - 1] <= dx[k]:
-            k -= 1
-        return {
-            "event": (float(t[k]), float(t[top])),
-            "centre": float(t[k]),
-            "context": (dip["start"], dip["end"]),
-        }
 
     def first_run(mask, at="start"):
         def find(anchor, _cycle):
-            e = first_event(cc._runs(mask, t), anchor)
+            e = first_event(cues.runs(mask, t), anchor)
             if e is None:
                 return None
             return {
@@ -586,8 +426,8 @@ def finders(t, F, side):
     # either way: on the long clip the bucket first moves past the truck, on Untitled4
     # it heads straight back toward the pile (the "swing overshoot" question)
     x_takeoff = sorted(
-        cc.knee_windows(x, t, "rising", "flat_to_steep")
-        + cc.knee_windows(x, t, "falling", "flat_to_steep")
+        cues.knee_windows(x, t, "rising", "flat_to_steep")
+        + cues.knee_windows(x, t, "falling", "flat_to_steep")
     )
     # No truck-overlap cue for the swing. Aanya, 2026-09-28: "this isn't a
     # requirement for swinging. i never said it can't overlap" -- the bucket can
@@ -603,12 +443,6 @@ def finders(t, F, side):
     # the glitch at 65 s is 1.2 s) -- sharp, rounded and plateau tops all count.
     fps = 1.0 / float(np.median(np.diff(t)))
     h_tops, h_top_info = find_peaks(h, prominence=0.15 * spread, width=2.0 * fps)
-    # each candidate's high region: the part within 20% of its top
-    _, _, h_top_l, h_top_r = peak_widths(h, h_tops, rel_height=0.2)
-    h_high_regions = [
-        (float(np.interp(a, np.arange(len(t)), t)), float(np.interp(b, np.arange(len(t)), t)))
-        for a, b in zip(h_top_l, h_top_r, strict=True)
-    ]
 
     def swing_height(anchor, _cycle):
         """height: choose, among all the candidate tops, the LAST one before this
@@ -647,138 +481,47 @@ def finders(t, F, side):
         id_,
         key,
         values,
-        label,
         find,
         mode="centre",
         min_half=None,
-        background=(),
         role="support",
         mask=None,
         candidates=None,
         before_end=False,
     ):
-        if HORIZONTAL["mode"] == "pile_truck" and key in PILE_TRUCK_NAMES:
-            # name the signal the cue actually reads
-            key, (old, new) = PILE_TRUCK_NAMES[key]
-            label = label.replace(old, new)
         return {
             "id": id_,
-            "key": key,
+            "key": key,  # the signal the cue reads; decides which minimum half-width applies
             "values": values,
-            "label": label,
             "find": find,
             "mode": mode,
             "min_half": min_half,
-            "background": list(background),
             "role": role,  # "required" (haul), "primary" (dump) or "support"
             "mask": mask,  # mode "check": a condition checked inside the primary window
             "candidates": candidates,  # primary only: every candidate event, to validate
             "before_end": before_end,  # the window must stop before the event's end
         }
 
-    def check(id_, key, values, label, mask):
-        return g(
-            id_,
-            key,
-            values,
-            label,
-            None,
-            mode="check",
-            mask=mask,
-            background=cc._runs(mask, t),
-        )
+    def check(id_, key, values, mask):
+        return g(id_, key, values, None, mode="check", mask=mask)
 
     return {
         "digging": [
-            g(
-                "speed_min",
-                "speed_2d",
-                speed,
-                "2D speed: the minimum right after the big hump, before it rises again",
-                speed_min,
-                background=[(d["start"], d["end"]) for d in humps],
-            ),
-            g(
-                "height_drop_end",
-                "height",
-                h,
-                "height: the end of the big drop",
-                height_drop_end,
-                background=[(d["onset"], d["bottom"]) for d in h_drops],
-            ),
-            g(
-                "dx_crossing",
-                "dx_dt",
-                dx,
-                "dx/dt (toward truck +): after the big dip, from crossing 0 upward, over the "
-                "little peak, to crossing 0 downward",
-                dx_crossing,
-                mode="span",
-                background=[(d["start"], d["end"]) for d in dx_dips],
-            ),
-            g(
-                "dh_back_to_0",
-                "dh_dt",
-                dh,
-                "dh/dt: negative, approaching 0 -- back to 0 after the big height drop",
-                dig_dh,
-                background=[(d["onset"], d["bottom"]) for d in h_drops],
-            ),
-            g(
-                "radius_turn",
-                "radius",
-                radius,
-                "radius: after the big dip and upswing, where the downward trend begins",
-                dig_radius,
-                background=[(d["start"], d["end"]) for d in radius_dips],
-            ),
-            g(
-                "x_drop_end",
-                "bucket_x",
-                x,
-                "bucket x (toward truck +): arrived back at the pile side after the big drop",
-                dig_x,
-                mode="fixed",
-                background=[(d["onset"], d["bottom"]) for d in x_drops],
-            ),
+            g("speed_min", "speed_2d", speed, speed_min),
+            g("height_drop_end", "height", h, height_drop_end),
+            g("dx_crossing", "pile_truck_pos_dt", dx, dx_crossing, mode="span"),
+            g("dh_back_to_0", "dh_dt", dh, dig_dh),
+            g("x_drop_end", "pile_truck_pos", x, dig_x, mode="fixed"),
         ],
         "hauling": [
-            g(
-                "height_takeoff",
-                "height",
-                h,
-                "height: where it first rises above the tallest height in the dig window; "
-                "1 s from there",
-                haul_height,
-                mode="fixed",
-                role="required",
-            ),
-            g(
-                "dx_min",
-                "dx_dt",
-                dx,
-                "dx/dt (toward truck +): the minimum after the plateau, before the spike",
-                haul_dx_min,
-                background=cc._runs(dip_spike, t),
-            ),
+            g("height_takeoff", "height", h, haul_height, mode="fixed", role="required"),
             g(
                 "truck_x_takeoff",
-                "rel_truck_x",
+                "pile_truck_pos",
                 rel_truck_x,
-                "bucket - truck x (toward truck +): the whole knee bend, flat -> rising, "
-                "while negative",
                 haul_truck_x,
                 mode="span",
                 min_half=0.5,
-                background=cc._runs(takeoff_tx, t),
-            ),
-            g(
-                "radius_dip_start",
-                "radius",
-                radius,
-                "radius: the start of a dip -- a knee from flat to falling",
-                haul_radius,
-                background=[(d["start"], d["end"]) for d in radius_dips],
             ),
         ],
         "dumping": [
@@ -786,92 +529,19 @@ def finders(t, F, side):
                 "aspect_steepest",
                 "aspect_ratio",
                 F["aspect_ratio"],
-                "box aspect ratio: the steepest part of a drop -- every drop of >= 30% "
-                "is a candidate; the one the other cues support most is kept",
                 aspect_steepest,
-                background=[(d["onset"], d["bottom"]) for d in aspect_candidates],
                 role="primary",
                 candidates=aspect_all,
             ),
-            g(
-                "cabin_x_going_up",
-                "rel_cabin_x",
-                rel_cabin_x,
-                "bucket - cabin x (toward truck +): from the down-bump's minimum, going up, "
-                "until the swing's steep rise",
-                cabin_x_going_up,
-                mode="span",
-                background=cc._runs(cabin_steep, t),
-            ),
-            g(
-                "height_second_hump",
-                "height",
-                h,
-                "height: the middle of the climb into the second hump (the hump's "
-                "maximum must exist, but is not in the window)",
-                height_second_hump,
-                before_end=True,
-                background=[(float(t[p]) - 0.1, float(t[p]) + 0.1) for p in h_peaks],
-            ),
-            check(
-                "dh_near_0",
-                "dh_dt",
-                dh,
-                "dh/dt: close to or at 0 (within 3x its noise)",
-                dump_dh_mask,
-            ),
-            check(
-                "dx_positive", "dx_dt", dx, "dx/dt (toward truck +): positive", dump_dx_mask
-            ),
-            check(
-                "overlapping",
-                "truck_overlap",
-                overlap,
-                "bucket ^ truck box: overlapping the truck",
-                dump_overlap_mask,
-            ),
+            g("height_second_hump", "height", h, height_second_hump, before_end=True),
+            check("dh_near_0", "dh_dt", dh, dump_dh_mask),
+            check("dx_positive", "pile_truck_pos_dt", dx, dump_dx_mask),
+            check("overlapping", "truck_overlap", overlap, dump_overlap_mask),
         ],
         "swinging": [
-            g(
-                "x_takeoff",
-                "bucket_x",
-                x,
-                "bucket x (toward truck +): knee, flat -> steep, either way",
-                from_spans(x_takeoff),
-                background=x_takeoff,
-            ),
-            g(
-                "height_peak",
-                "height",
-                h,
-                "height: last top before the big drop, where the climb gets within 20% of it",
-                swing_height,
-                background=h_high_regions,
-            ),
-            g(
-                "dh_positive_falling",
-                "dh_dt",
-                dh,
-                "dh/dt: positive and decreasing",
-                first_run(swing_dh_mask, "mid"),
-                background=cc._runs(swing_dh_mask, t),
-            ),
-            g(
-                "dx_bump",
-                "dx_dt",
-                dx,
-                "dx/dt (toward truck +): where the upward bump starts, before the big dip",
-                swing_dx_bump,
-                background=[(d["start"], d["end"]) for d in dx_dips],
-            ),
-            g(
-                "radius_bump_start",
-                "radius",
-                radius,
-                "radius: where the steep part of the big bump begins",
-                swing_radius,
-                background=[(d["start"], d["end"]) for d in radius_peaks],
-            ),
+            g("x_takeoff", "pile_truck_pos", x, from_spans(x_takeoff)),
+            g("height_peak", "height", h, swing_height),
+            g("dh_positive_falling", "dh_dt", dh, first_run(swing_dh_mask, "mid")),
         ],
     }
 
@@ -885,28 +555,9 @@ def haul_gate(t, F, anchor, cycle):
         inside = (t >= w[0]) & (t <= w[1])
         ref = np.full(len(t), float(np.nanmedian(F["height"][inside])))
     else:
-        ref = cc._running_median(F["height"], int(np.searchsorted(t, anchor)))
+        ref = cues.running_median(F["height"], int(np.searchsorted(t, anchor)))
     with np.errstate(invalid="ignore"):
         return (F["height"] > ref) & (F["truck_overlap"] <= 0)
-
-
-def clip_start_dig(t, F, side):
-    """The first dig when the clip opens mid-dig, from WEAK signals (there is no swing
-    before it to read): the first moment, in the first few seconds, when the bucket is
-    down (height < 0), on the pile side of the truck, not overlapping it, and at rest
-    (2D speed within its rest band: 3 x its noise, at least 2% of its range)."""
-    speed = F["speed_2d"]
-    rest = max(3 * noise_scale(speed), 0.02 * float(np.nanmax(speed) - np.nanmin(speed)))
-    with np.errstate(invalid="ignore"):
-        ok = (
-            (F["height"] < 0)
-            & (side_signals(F, side)[0][2] < 0)
-            & (F["truck_overlap"] <= 0)
-            & (speed <= rest)
-            & (t <= t[0] + CLIP_START_SECONDS)
-        )
-    idx = np.flatnonzero(ok)
-    return None if idx.size == 0 else float(t[idx[0]])
 
 
 # ----------------------------------------------------------------------- search
@@ -960,7 +611,7 @@ def widen(t, graph, found, anchor):
 
 
 def _runs_in(t, mask, lo, hi):
-    return [(a, b) for a, b in cc._runs(mask, t) if b >= lo and a <= hi]
+    return [(a, b) for a, b in cues.runs(mask, t) if b >= lo and a <= hi]
 
 
 def dig_reference(t, F, anchor, cycle):
@@ -970,86 +621,37 @@ def dig_reference(t, F, anchor, cycle):
     if w is not None:
         inside = (t >= w[0]) & (t <= w[1])
         return np.full(len(t), float(np.nanmedian(F["height"][inside])))
-    return cc._running_median(F["height"], int(np.searchsorted(t, anchor)))
+    return cues.running_median(F["height"], int(np.searchsorted(t, anchor)))
 
 
-def side_signals(F, side):
-    """The two "which side" signals the gates read: the bucket's side of the TRUCK
-    (< 0 = pile side) and of the CABIN (> 0 = truck side). With the default pile-truck
-    line both come from positions along that line, so no image direction is assumed;
-    otherwise from image x, signed toward the truck."""
-    if HORIZONTAL["mode"] == "pile_truck":
-        pos = F["pile_truck_pos"]
-        return (
-            ("pile_truck_pos", "pile-to-truck position < 0", pos),
-            (
-                "pos_past_cabin",
-                "pile-to-truck position past the cabin's",
-                pos - F["cabin_pile_truck_pos"],
-            ),
-        )
-    return (
-        ("rel_truck_x", "bucket - truck x < 0", F["rel_truck_x"] * side),
-        ("rel_cabin_x", "bucket - cabin x > 0", F["rel_cabin_x"] * side),
-    )
+def side_signals(F):
+    """The two "which side" signals the gates read, both positions along the pile-to-truck
+    line so no image direction is assumed: the bucket's side of the TRUCK (< 0 = pile
+    side) and of the CABIN (> 0 = truck side)."""
+    pos = F["pile_truck_pos"]
+    return pos, pos - F["cabin_pile_truck_pos"]
 
 
-def gates(t, F, side, phase, anchor, cycle):
+def gates(t, F, phase, anchor, cycle):
     """STEP 1 -- the necessary thresholds. None of a phase's cues are considered
     until all of its gates hold (Aanya: "some of the things are above a certain
     threshold that's necessary, so none of the cues are even considered until that
-    happens"). Each is (id, label, signal key, mask)."""
+    happens"). Returns one boolean mask per gate."""
     h, overlap = F["height"], F["truck_overlap"]
-    (tk, tlabel, tgap), (ck, clabel, cgap) = side_signals(F, side)
+    truck_gap, cabin_gap = side_signals(F)
     with np.errstate(invalid="ignore"):
         if phase == "digging":
-            return [
-                (
-                    "D1",
-                    "not over the truck (within its left-right span, above its middle)",
-                    "truck_overlap",
-                    overlap <= 0,
-                ),
-                (
-                    "D2",
-                    f"on the pile side of the truck ({tlabel})",
-                    tk,
-                    tgap < 0,
-                ),
-            ]
+            # not over the truck (within its left-right span, above its middle), and on
+            # the pile side of it
+            return [overlap <= 0, truck_gap < 0]
         if phase == "hauling":
-            return [
-                (
-                    "H1",
-                    "height above this cycle's dig height",
-                    "height",
-                    h > dig_reference(t, F, anchor, cycle),
-                ),
-                (
-                    "H0",
-                    "not over the truck (within its left-right span, above its middle)",
-                    "truck_overlap",
-                    overlap <= 0,
-                ),
-            ]
+            # above this cycle's dig height, and not over the truck
+            return [h > dig_reference(t, F, anchor, cycle), overlap <= 0]
         if phase == "dumping":
-            return [
-                (
-                    "P1",
-                    f"on the truck side of the cabin ({clabel})",
-                    ck,
-                    cgap > 0,
-                ),
-                (
-                    "P2",
-                    "height above this cycle's dig height",
-                    "height",
-                    h > dig_reference(t, F, anchor, cycle),
-                ),
-                # EXPERIMENT: no "above the cabin (bucket - cabin y > 0)" gate. On
-                # Untitled (low, far camera) the bucket is level with the cab while
-                # it dumps, so that gate held for one frame in 54 s.
-            ]
+            # on the truck side of the cabin, and above this cycle's dig height. No
+            # "above the cabin" gate: on a low, far camera the bucket is level with the
+            # cab while it dumps, so that gate held for one frame in 54 s.
+            return [cabin_gap > 0, h > dig_reference(t, F, anchor, cycle)]
     return []
 
 
@@ -1062,14 +664,6 @@ def fill_checks(t, graphs, windows, primary):
         if primary is None:
             continue
         a, b = primary["window"]
-        if (
-            DUMP_REWEIGHT["on"]
-            and g["id"] == "overlapping"
-            and primary.get("centre") is not None
-        ):
-            at = int(np.argmin(np.abs(np.asarray(t) - primary["centre"])))
-            if not g["mask"][at]:  # read at the tip itself
-                continue
         inside = [(max(x, a), min(y, b)) for x, y in _runs_in(t, g["mask"], a, b)]
         if inside:
             windows[k] = {
@@ -1083,64 +677,28 @@ def fill_checks(t, graphs, windows, primary):
             }
 
 
-def coverage(t, windows):
-    count = np.zeros(len(t), int)
-    for w in windows:
-        if w is not None:
-            count += (t >= w["window"][0] - 1e-9) & (t <= w["window"][1] + 1e-9)
-    return count
-
-
 # Tier weights -- strong 3, medium 2, weak 1 -- agreed with Aanya on 2026-09-27
 # ("some of these are a lot more valuable cues than others"). Set by judgment about
 # which motions really mark a phase, informed by (not fitted to) how often each cue
 # contained the marks: fitting them to these marks would only learn these clips.
 # Cues that only showed up on THESE clips' graphs, with no physical reason they must
-# happen on another video (the universality audit). Aanya: "let's get rid of the only
-# seen on graphs (radius) cues". Their finders stay, so a new clip can confirm one and
-# bring it back; they don't vote.
-# In the pile-truck mode the horizontal cues read the pile-to-truck line: the signal
-# key and the label's prefix each cue shows
-PILE_TRUCK_NAMES = {
-    "bucket_x": ("pile_truck_pos", ("bucket x (toward truck +)", "pile-to-truck position")),
-    "rel_truck_x": (
-        "pile_truck_pos",
-        ("bucket - truck x (toward truck +)", "pile-to-truck position"),
-    ),
-    "dx_dt": ("pile_truck_pos_dt", ("dx/dt (toward truck +)", "pile-to-truck speed")),
-}
-HORIZONTAL = {"mode": "pile_truck"}  # x | distance | truck_x | pile_truck; set by main
-
-SEEN_ONLY = {
-    "radius_turn",
-    "radius_dip_start",
-    "radius_bump_start",
-    "dx_min",
-    "dx_bump",
-    "cabin_x_going_up",
-}
-
+# happen on another video, do not vote and are not here (the universality audit;
+# Aanya: "let's get rid of the only seen on graphs (radius) cues").
 WEIGHTS = {
     ("digging", "speed_min"): 3,
     ("digging", "height_drop_end"): 3,
-    ("digging", "x_drop_end"): 3,  # the bucket back at the pile side: distance to the truck
+    ("digging", "x_drop_end"): 3,  # the bucket back at the pile side
     ("digging", "dx_crossing"): 2,
-    ("digging", "radius_turn"): 2,
     ("digging", "dh_back_to_0"): 1,
     ("hauling", "height_takeoff"): 3,
     ("hauling", "truck_x_takeoff"): 3,
-    ("hauling", "radius_dip_start"): 2,
-    ("hauling", "dx_min"): 1,
-    ("dumping", "cabin_x_going_up"): 2,
     ("dumping", "height_second_hump"): 2,
     ("dumping", "dh_near_0"): 1,
     ("dumping", "dx_positive"): 1,
     ("dumping", "overlapping"): 1,
     ("swinging", "x_takeoff"): 3,
-    ("swinging", "radius_bump_start"): 2,
     ("swinging", "dh_positive_falling"): 1,
     ("swinging", "height_peak"): 1,
-    ("swinging", "dx_bump"): 1,
 }
 
 
@@ -1157,8 +715,8 @@ def combine(t, phase, graphs, windows, cue_from):
             return None, 0, 0, None
         a, b = primary["window"]
         support = [(w, wt[k]) for k, w in enumerate(windows) if k != k0 and w is not None]
-        # EXPERIMENT: the majority is out of ALL the supporting cues' weight, not
-        # only the cues that found something -- one cue alone is not a majority
+        # the majority is out of ALL the supporting cues' weight, not only the cues
+        # that found something -- one cue alone is not a majority
         total = sum(x for k, x in enumerate(wt) if k != k0)
         agree = sum(x for w, x in support if w["window"][0] <= b and w["window"][1] >= a)
         return (a, b), agree, total / 2, (a, b)
@@ -1176,8 +734,8 @@ def combine(t, phase, graphs, windows, cue_from):
             for w in windows
         ]
     present = [(w, wt[k]) for k, w in enumerate(windows) if w is not None]
-    # EXPERIMENT: out of ALL the stage's cue weight, not only the cues that found
-    # something (a lone weak cue used to count as a unanimous vote)
+    # out of ALL the stage's cue weight, not only the cues that found something (a
+    # lone weak cue used to count as a unanimous vote)
     # Haul keeps the count of the cues that found something: it has only two cues
     # and already REQUIRES its height climb, so one silent cue must not halve it.
     total = sum(x for _, x in present) if phase == "hauling" else sum(wt)
@@ -1187,7 +745,7 @@ def combine(t, phase, graphs, windows, cue_from):
     ok = (2 * count > total) & (t >= cue_from - 1e-9)
     if phase == "hauling":
         ok &= (t >= ra - 1e-9) & (t <= rb + 1e-9)
-    runs = cc._runs(ok, t)
+    runs = cues.runs(ok, t)
     if not runs:
         # "there has to be something for that given stage transition ... have the bar
         # for triggering the stage lower, but we just rely on these cues to try to
@@ -1200,7 +758,7 @@ def combine(t, phase, graphs, windows, cue_from):
         if not allowed.any() or count[allowed].max() <= 0:
             return None, 0, total / 2, None
         best = count[allowed].max()
-        runs = cc._runs(allowed & (count >= best - 1e-9), t)
+        runs = cues.runs(allowed & (count >= best - 1e-9), t)
     a, b = runs[0]
     n = float(count[(t >= a) & (t <= b)].max())
     # Once most of the weight agrees, the window is the FULL extent of the cues that
@@ -1213,59 +771,21 @@ def combine(t, phase, graphs, windows, cue_from):
     return (max(lo, mid - MAX_HALF), min(hi, mid + MAX_HALF)), n, total / 2, (a, b)
 
 
-def step(t, F, side, found, phase, anchor, cycle, clip_start=True):
-    if clip_start and phase == "digging" and anchor <= t[0] + 1e-9:
-        c = clip_start_dig(t, F, side)
-        if c is not None:
-            window = (max(c - MIN_HALF, t[0]), c + MIN_HALF)
-            return {
-                "phase": phase,
-                "search_from": anchor,
-                "graphs": [None] * len(found[phase]),
-                "window": window,
-                "votes": 0,
-                "need": 0,
-                "agreed": True,
-                "start": window[0],
-                "clip_start": c,
-                # the clip-start rule includes the dig gates (no overlap, pile side):
-                # recorded over its first seconds so the page shows where they hold
-                "gates": [
-                    {
-                        "id": gid,
-                        "label": lab,
-                        "key": key,
-                        "runs": _runs_in(t, m, anchor, anchor + CLIP_START_SECONDS),
-                    }
-                    for gid, lab, key, m in gates(t, F, side, phase, anchor, cycle)
-                ],
-                "gates_open": c,
-                "cue_from": anchor,
-            }
+def step(t, F, found, phase, anchor, cycle):
+    """Search for one phase after ``anchor``.
+
+    Returns {"phase", "window"} plus, when the vote ran, "core" (where the agreeing
+    cues overlap), "weak" (no majority: the window is where the MOST weight agrees),
+    and "votes"/"need" (the weight that agreed, and half the total). ``window`` is None
+    when the gates never open or nothing agrees."""
     graphs = found[phase]
     cycle["search_from"] = anchor
-    gate_list = gates(t, F, side, phase, anchor, cycle)
     gate = np.ones(len(t), bool)
-    for *_, m in gate_list:
-        gate &= m
+    for mask in gates(t, F, phase, anchor, cycle):
+        gate &= mask
     open_idx = next((j for j in range(_i(t, anchor), len(t)) if gate[j]), None)
-    gate_info = [
-        {"id": gid, "label": lab, "key": key, "runs": _runs_in(t, m, anchor, anchor + 40)}
-        for gid, lab, key, m in gate_list
-    ]
-    base = {"phase": phase, "search_from": anchor, "gates": gate_info}
     if open_idx is None:
-        return {
-            **base,
-            "graphs": [None] * len(graphs),
-            "window": None,
-            "votes": 0,
-            "need": 0,
-            "agreed": False,
-            "start": anchor,
-            "gates_open": None,
-            "cue_from": None,
-        }
+        return {"phase": phase, "window": None}
     opened = float(t[open_idx])
     cue_from = max(anchor, opened - GATE_LOOKAHEAD)
 
@@ -1292,7 +812,9 @@ def step(t, F, side, found, phase, anchor, cycle, clip_start=True):
         # truck, and tips from a LATER visit belong to a later cycle -- without
         # this, a clean dump one cycle on outscored this cycle's real tip. Only
         # tips inside the first visit that ends after the search start compete.
-        visit = next((v for v in cc._runs(F["truck_overlap"] > 0, t) if v[1] > cue_from), None)
+        visit = next(
+            (v for v in cues.runs(F["truck_overlap"] > 0, t) if v[1] > cue_from), None
+        )
         if visit is not None:
             cands = [e for e in cands if visit[0] - 1e-9 <= e["centre"] <= visit[1] + 1e-9]
         tried = []
@@ -1301,54 +823,22 @@ def step(t, F, side, found, phase, anchor, cycle, clip_start=True):
             trial[k0] = widen(t, pg, e, cue_from)
             fill_checks(t, graphs, trial, trial[k0])
             got = combine(t, phase, graphs, trial, cue_from)
-            tried.append((got[1], -e["centre"], trial, got, e["centre"]))
-        candidates = [{"centre": c, "support": n} for n, _, _, _, c in tried]
+            tried.append((got[1], -e["centre"], got))
         if tried:  # the most support wins; ties go to the earlier candidate
-            best = max(tried, key=lambda x: (x[0], x[1]))
-            windows = best[2]
-            window, n, need, core = best[3]
+            window, n, need, core = max(tried, key=lambda x: (x[0], x[1]))[2]
         else:
             window, n, need, core = None, 0, 0, None
     else:
-        candidates = None
         window, n, need, core = combine(t, phase, graphs, windows, cue_from)
-    agreed = window is not None
-    weak = agreed and not (2 * n > 2 * need if need else True)
+    weak = window is not None and not (2 * n > 2 * need if need else True)
     return {
-        **base,
-        "candidates": candidates,
-        "weak": bool(weak),
-        "graphs": windows,
+        "phase": phase,
         "window": window,
         "core": core,
+        "weak": bool(weak),
         "votes": n,
         "need": need,
-        "agreed": agreed,
-        "start": window[0] if agreed else cue_from,
-        "gates_open": opened,
-        "cue_from": cue_from,
     }
-
-
-def from_marks(t, F, side, marks):
-    """Each marked onset, searched for after the previous MARKED onset."""
-    found = {
-        ph: [g for g in lst if g["id"] not in SEEN_ONLY]
-        for ph, lst in finders(t, F, side).items()
-    }
-    out, cycle = [], {}
-    for k, (phase, _) in enumerate(marks):
-        if phase == "digging":
-            cycle = {}
-        s = step(t, F, side, found, phase, marks[k - 1][1] if k else float(t[0]), cycle)
-        if s is not None:
-            if phase == "digging":
-                # later rules read "the dig window" -- the haul height line, the dig
-                # height gates -- from the CORE where the dig cues agree, not the
-                # widened output, which reaches back into the swing's descent
-                cycle["dig_window"] = s.get("core") or s["window"]
-            out.append(s)
-    return found, out
 
 
 PHASE_ORDER = ("digging", "hauling", "dumping", "swinging")
@@ -1358,7 +848,7 @@ def dump_stretches(t, F):
     """Where the bucket is over the truck long enough to dump: overlap stretches at
     least half as long as the longest one in the video. The short passes over the
     truck at the start of each return swing (about 1 s here) do not count."""
-    runs = cc._runs(F["truck_overlap"] > 0, t)
+    runs = cues.runs(F["truck_overlap"] > 0, t)
     if not runs:
         return []
     longest = max(b - a for a, b in runs)
@@ -1404,52 +894,31 @@ def pile_and_arrival(t, h, a, b, last):
     return lo, hi
 
 
-def settled_in_pile(t, F, side, a, b, levels):
+def settled_in_pile(t, F, a, b, levels):
     """WEAK dig signal, used only when the dig cues find nothing in the stretch: the
     first moment in (a, b) the bucket is low (within a quarter of the way from the
     stretch's pile level to its arrival height), on the pile side, off the truck and
     at rest (2D speed within 3x its noise, at least 2% of its range)."""
     m = (t >= a) & (t <= b)
     if not m.any():
-        return None, []
+        return None
     h, speed = F["height"], F["speed_2d"]
     p5, p95 = levels
     rest = max(3 * noise_scale(speed), 0.02 * float(np.nanmax(speed) - np.nanmin(speed)))
     low = p5 + 0.25 * (p95 - p5)
     with np.errstate(invalid="ignore"):
-        conditions = [
-            (
-                "low",
-                f"height <= {low:+.2f} (a quarter of the way up to the truck)",
-                "height",
-                h <= low,
-            ),
-            (
-                "pile side",
-                "pile-to-truck position < 0",
-                "pile_truck_pos",
-                side_signals(F, side)[0][2] < 0,
-            ),
-            (
-                "off the truck",
-                "not over the truck (within its left-right span, above its middle)",
-                "truck_overlap",
-                F["truck_overlap"] <= 0,
-            ),
-            ("at rest", f"2D speed <= {rest:.3f} (its rest band)", "speed_2d", speed <= rest),
-        ]
-    ok = m.copy()
-    for *_, c in conditions:
-        ok &= c
-    drawn = [
-        {"id": cid, "label": lab, "key": key, "runs": _runs_in(t, c & m, a, b)}
-        for cid, lab, key, c in conditions
-    ]
+        ok = (
+            m
+            & (h <= low)
+            & (side_signals(F)[0] < 0)
+            & (F["truck_overlap"] <= 0)
+            & (speed <= rest)
+        )
     idx = np.flatnonzero(ok)
-    return (None if idx.size == 0 else float(t[idx[0]])), drawn
+    return None if idx.size == 0 else float(t[idx[0]])
 
 
-def find_dig(t, F, side, found, anchor, cycle, reach=2, weak=True):
+def find_dig(t, F, found, anchor, cycle, reach=2, weak=True):
     """A dig, in the open stretch the search is in -- or, if nothing there, the next
     one (Aanya: "if you can't find a cue for digging in that then look at the next one
     and it has to be within one of those two"). In each stretch: the dig cues first,
@@ -1464,29 +933,18 @@ def find_dig(t, F, side, found, anchor, cycle, reach=2, weak=True):
         hi = climb_start(t, F["height"], a, b, last=k == len(stretches) - 1)
         if hi <= lo:
             continue
-        s = step(t, F, side, found, "digging", lo, cycle, clip_start=False)
-        if s is not None and s["window"] is not None:
+        s = step(t, F, found, "digging", lo, cycle)
+        if s["window"] is not None:
             ca, cb = s.get("core") or s["window"]
             if lo - 1e-9 <= (ca + cb) / 2 <= hi:
-                w = (s["window"][0], min(s["window"][1], hi))
-                return {**s, "window": w, "how": "dig cues", "region": (lo, hi)}
+                return {**s, "window": (s["window"][0], min(s["window"][1], hi))}
         if not weak:
             continue
         levels = pile_and_arrival(t, F["height"], a, b, last=k == len(stretches) - 1)
-        c, conditions = settled_in_pile(t, F, side, lo, hi, levels)
+        c = settled_in_pile(t, F, lo, hi, levels)
         if c is not None:
             w = (max(c - MIN_HALF, lo), min(c + MIN_HALF, hi))
-            base = s or step(t, F, side, found, "digging", lo, cycle, clip_start=False)
-            return {
-                **base,
-                "window": w,
-                "core": w,
-                "weak": True,
-                "clip_start": c,
-                "how": "settled in the pile (weak: no dig cue in this stretch)",
-                "weak_signal": {"at": c, "conditions": conditions},
-                "region": (lo, hi),
-            }
+            return {"phase": "digging", "window": w, "core": w, "weak": True}
     return None
 
 
@@ -1497,25 +955,24 @@ def from_found(t, F, side):
     prev interval holds before looking for the next stage"). Digs are found by
     find_dig (inside an open stretch, before its climb to the truck).
 
-    Recovery (the old state machine's guard: "a strong dig abandons the cycle and
-    restarts"): a STRONG dig is one the dig cues find, never the weak "settled in
-    the pile" signal. If a stage finds nothing, or finds its window only after a
-    strong dig, the cycle is abandoned, the search restarts at that dig, and the gap
-    is recorded -- a skipped stage is reported, never guessed. It stops only when no
-    strong dig is left."""
-    found = {
-        ph: [g for g in lst if g["id"] not in SEEN_ONLY]
-        for ph, lst in finders(t, F, side).items()
-    }
+    Recovery ("a strong dig abandons the cycle and restarts"): a STRONG dig is one the
+    dig cues find, never the weak "settled in the pile" signal. If a stage finds
+    nothing, or finds its window only after a strong dig, the cycle is abandoned, the
+    search restarts at that dig, and the gap is recorded -- a skipped stage is
+    reported, never guessed. It stops only when no strong dig is left.
+
+    Returns (steps, stop, gaps): one step per phase found, why the search stopped (or
+    None), and every abandoned cycle."""
+    found = finders(t, F, side)
     out, cycle, anchor, k, stop, gaps = [], {}, float(t[0]), 0, None, []
     dig_k = PHASE_ORDER.index("digging")
     while anchor < t[-1]:
         phase = PHASE_ORDER[k % len(PHASE_ORDER)]
         if phase == "digging":
             cycle = {}
-            s = find_dig(t, F, side, found, anchor, cycle)
+            s = find_dig(t, F, found, anchor, cycle)
             if s is None:
-                s = find_dig(t, F, side, found, anchor, cycle, reach=None, weak=False)
+                s = find_dig(t, F, found, anchor, cycle, reach=None, weak=False)
                 if s is not None:
                     gaps.append(
                         {
@@ -1527,9 +984,9 @@ def from_found(t, F, side):
                         }
                     )
         else:
-            s = step(t, F, side, found, phase, anchor, cycle)
-            strong = find_dig(t, F, side, found, anchor, {}, reach=None, weak=False)
-            missed = s is None or s["window"] is None
+            s = step(t, F, found, phase, anchor, cycle)
+            strong = find_dig(t, F, found, anchor, {}, reach=None, weak=False)
+            missed = s["window"] is None
             late = (
                 not missed
                 and strong is not None
@@ -1566,8 +1023,8 @@ def from_found(t, F, side):
                     }
                 )
                 cycle = {}
-                s, phase, k = {**strong, "how": "dig cues (restart)"}, "digging", dig_k
-        if s is None or s["window"] is None:
+                s, phase, k = strong, "digging", dig_k
+        if s["window"] is None:
             stop = {"phase": phase, "search_from": anchor, "why": "no window found"}
             break
         if phase == "digging":
@@ -1578,202 +1035,4 @@ def from_found(t, F, side):
             stop = {"phase": phase, "search_from": anchor, "why": "did not move forward"}
             break
         anchor, k = nxt, k + 1
-    return found, out, stop, gaps
-
-
-def score(steps, marks):
-    """Marks are used ONLY here: for each labelled onset, the found window of the same
-    stage that contains it, or else the nearest one."""
-    rows = []
-    for phase, m in marks:
-        same = [s for s in steps if s["phase"] == phase and s["window"]]
-        if not same:
-            rows.append({"phase": phase, "mark": m, "inside": False, "gap": None})
-            continue
-        best = min(same, key=lambda s: max(s["window"][0] - m, m - s["window"][1], 0.0))
-        gap = max(best["window"][0] - m, m - best["window"][1], 0.0)
-        rows.append(
-            {
-                "phase": phase,
-                "mark": m,
-                "inside": gap == 0.0,
-                "gap": gap,
-                "window": best["window"],
-            }
-        )
-    used = {tuple(r["window"]) for r in rows if r.get("window")}
-    extra = [s["window"] for s in steps if s["window"] and tuple(s["window"]) not in used]
-    return {"rows": rows, "extra_windows": extra}
-
-
-def _clean(v):
-    return None if v is None or not np.isfinite(v) else round(float(v), 4)
-
-
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--clip", choices=sorted(cc.CLIPS), default="long")
-    ap.add_argument(
-        "--features", type=Path, help="any pipeline features.npz (instead of --clip)"
-    )
-    ap.add_argument(
-        "--labels", type=Path, help="labels for --features, used only to score (optional)"
-    )
-    ap.add_argument(
-        "--anchor",
-        choices=("found", "marks"),
-        default="found",
-        help="start each stage's search after the window found for the stage before "
-        "(default: runs with no labels) or after the labelled mark (testing only)",
-    )
-    ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument(
-        "--horizontal",
-        choices=("pile_truck", "x", "distance", "truck_x"),
-        default="pile_truck",
-        help="horizontal cues from the position along the pile-to-truck line (default), "
-        "bucket x, the distance to the truck, or the x gap to it",
-    )
-    ap.add_argument(
-        "--dump-reweight",
-        action="store_true",
-        help="EXPERIMENT: over the truck votes 3 for a dump (at the tip, first 70%% of "
-        "the visit), dh/dt near 0 votes 0.5",
-    )
-    args = ap.parse_args(argv)
-    HORIZONTAL["mode"] = args.horizontal
-    if args.dump_reweight:
-        DUMP_REWEIGHT["on"] = True
-        WEIGHTS[("dumping", "overlapping")] = 3
-        WEIGHTS[("dumping", "dh_near_0")] = 0.5
-    if args.features is not None:
-        feat_path, label_path = args.features, args.labels
-    else:
-        feat_path, label_path = cc.CLIPS[args.clip]
-    try:
-        t, F = cc.load_features(feat_path)
-    except cc.CheckError as exc:
-        print(f"cannot find phases: {exc}")
-        return 2
-    side = cc.truck_side(F)
-    marks = cc.load_onsets(label_path) if label_path is not None else []
-    stop, gaps = None, []
-    if args.anchor == "marks":
-        if not marks:
-            raise SystemExit("--anchor marks needs labels")
-        found, steps = from_marks(t, F, side, marks)
-    else:
-        found, steps, stop, gaps = from_found(t, F, side)
-
-    data = {
-        "clip": args.features.parent.name if args.features is not None else args.clip,
-        "side": side,
-        "anchor": args.anchor,
-        "stop": stop,
-        "gaps": gaps,
-        "score": score(steps, marks) if marks else None,
-        "limits": {
-            "min_half": MIN_HALF,
-            "rate_min_half": RATE_MIN_HALF,
-            "max_half": MAX_HALF,
-            "slope_side": SLOPE_SIDE,
-        },
-        "times": [round(float(v), 3) for v in t],
-        "signals": {
-            **{
-                g["key"]: [_clean(v) for v in g["values"]] for ph in found.values() for g in ph
-            },
-            # the gates' signals, signed like the cues' (horizontal: + toward the truck)
-            "rel_truck_x": [_clean(v) for v in F["rel_truck_x"] * side],
-            "rel_cabin_x": [_clean(v) for v in F["rel_cabin_x"] * side],
-            "rel_cabin_y": [_clean(v) for v in F["rel_cabin_y"]],
-            "truck_overlap": [_clean(v) for v in F["truck_overlap"]],
-            "pile_truck_pos": [_clean(v) for v in F["pile_truck_pos"]],
-            "pos_past_cabin": [
-                _clean(v) for v in F["pile_truck_pos"] - F["cabin_pile_truck_pos"]
-            ],
-            # x vs straight-line distance to the truck, drawn side by side
-            "truck_distance": [_clean(v) for v in F["truck_distance"]],
-            "toward_dist_dt": [_clean(v) for v in -F["truck_distance_dt"]],
-            "toward_dx_dt": [_clean(v) for v in F["dx_dt"] * side],
-        },
-        "horizontal_mode": HORIZONTAL["mode"],
-        "pile_truck_angle": float(F["pile_truck_angle"][0]),
-        # the big dips the dig "dx crosses back to 0" cue picks from, per signal
-        "horizontal_dips": {
-            "toward_dx_dt": [
-                d["apex"]
-                for d in cc.excursion_windows(F["dx_dt"] * side, t, "dip", min_size=0.5)
-            ],
-            "toward_dist_dt": [
-                d["apex"]
-                for d in cc.excursion_windows(-F["truck_distance_dt"], t, "dip", min_size=0.5)
-            ],
-        },
-        "finders": {
-            ph: [
-                {
-                    "id": g["id"],
-                    "signal": g["key"],
-                    "label": g["label"],
-                    "mode": g["mode"],
-                    "spans": g["background"],
-                    "role": g["role"],
-                    "weight": WEIGHTS.get((ph, g["id"]), 1),
-                    "contexts": [],
-                }
-                for g in lst
-            ]
-            for ph, lst in found.items()
-        },
-        "steps": [
-            {
-                **s,
-                "graphs": [
-                    None if w is None else {**w, "raw": _clean(w["raw"])} for w in s["graphs"]
-                ],
-            }
-            for s in steps
-        ],
-        "marks": [{"phase": p, "t": s} for p, s in marks],
-    }
-    args.out.write_text(json.dumps(data))
-    for gp in gaps:
-        print(f"  GAP: {gp['phase']} from {gp['from']:.2f}s to {gp['to']:.2f}s: {gp['why']}")
-    for s in steps:
-        if s["window"] is None:
-            w = "no 2 agree"
-        else:
-            w = f"[{s['window'][0]:.2f}, {s['window'][1]:.2f}]"
-        halves = " ".join(
-            "  --  "
-            if g is None
-            else (
-                " span "
-                if g["half"] is None
-                else f"±{g['half']:.2f}{'*' if g['capped'] else ' '}"
-            )
-            for g in s["graphs"]
-        )
-        print(f"  {s['phase']:<9} from {s['search_from']:6.2f}s  half-widths {halves}  -> {w}")
-    print("  (* = hit the maximum)")
-    if stop:
-        print(
-            f"  stopped at {stop['phase']} (searched from {stop['search_from']:.2f}s): "
-            f"{stop['why']}"
-        )
-    if marks:
-        sc = data["score"] if data["score"] else score(steps, marks)
-        n_in = sum(r["inside"] for r in sc["rows"])
-        print(f"  labels (scoring only): {n_in}/{len(sc['rows'])} marks inside a window")
-        for r in sc["rows"]:
-            if not r["inside"]:
-                gap = "no window" if r["gap"] is None else f"{r['gap']:.2f} s outside"
-                print(f"    missed {r['phase']} at {r['mark']:.2f}s: {gap}")
-        if sc["extra_windows"]:
-            print(f"  windows with no mark: {len(sc['extra_windows'])}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    return out, stop, gaps
