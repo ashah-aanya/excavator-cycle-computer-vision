@@ -227,13 +227,14 @@ def test_run_puts_its_results_in_outputs_named_for_the_video_by_default(
 
 
 def test_run_continues_past_a_track_qa_concern_and_still_answers(
-    out_dir, monkeypatch, stub_render
+    out_dir, monkeypatch, stub_render, capsys
 ):
     """`track` returns non-zero for a QA VERDICT, having written the masks anyway.
 
     Aborting turned one tracker wobble on a hidden video into zero for every graded
-    field, which is strictly worse than a flagged answer. The concern must survive as
-    this command's exit code rather than being swallowed.
+    field, which is strictly worse than a flagged answer. The concern must stay
+    visible in the output, and the exit code stays 0 because the answer and video
+    exist: a non-zero status reads as "no result" to a caller and could discard them.
     """
     # Remove the tracking product so the (stubbed) track stage actually runs. A stage
     # that runs makes everything after it run too, so features is stubbed to leave the
@@ -244,7 +245,8 @@ def test_run_continues_past_a_track_qa_concern_and_still_answers(
     status = cli._cmd_run(_run_args(Path("clip.mp4"), out_dir))
     assert json.loads((out_dir / "answer.json").read_text())["cycle_count"] == 1
     assert len(stub_render) == 1, "a QA concern must not cost the video either"
-    assert status == 1, "and the concern must still be visible in the exit code"
+    assert status == 0, "the answer exists, so the run has not failed"
+    assert "CONCERN: track QA flagged this run" in capsys.readouterr().out
 
 
 def test_run_stops_when_a_later_stage_genuinely_fails(out_dir, monkeypatch, stub_render):

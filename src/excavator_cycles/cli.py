@@ -298,9 +298,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # tracker wobble on a hidden video into zero for every field, which is strictly
     # worse than a flagged answer. A genuine failure raises rather than returning.
     #
-    # The concern is not swallowed: it is logged, printed beside the answer, and
-    # returned as this command's own exit code, so a caller checking the status
-    # still learns about it.
+    # The concern is not swallowed: it is logged and printed beside the answer.
+    # It is NOT the exit code: the answer and video were written, and a caller that
+    # reads a non-zero status as "no result" would discard a good one. Only a stage
+    # that genuinely fails returns non-zero.
     concerns: list[str] = []
     # `--reuse` asked each stage separately whether its product existed, so a
     # re-run `track` could be followed by a REUSED `features.npz` built from the
@@ -341,7 +342,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     print(f"  VIDEO : {out_dir / 'annotated.mp4'}")
     for concern in concerns:
         print(f"  CONCERN: {concern}")
-    return 1 if concerns else 0
+    return 0
 
 
 def _cmd_features(args: argparse.Namespace) -> int:
