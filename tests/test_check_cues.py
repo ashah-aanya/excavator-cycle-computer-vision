@@ -160,7 +160,9 @@ def test_no_match_is_a_miss_not_a_crash(cc):
     [
         ("digging", "speed_2d", "drop ends -> flat", [-0.3, -0.6, 0.0]),
         ("swinging", "d2x_dt2", "peak", [-0.2, -0.2, -0.3]),
-        ("swinging", "truck_overlap", "drop ends -> flat", [-0.8, -0.4, -0.7]),
+        # truck_overlap "drop ends -> flat" is no longer a swing cue: the bucket can
+        # start swinging back while still over the truck box, so "overlap ends" came
+        # mid-swing, not at its start (see interval_votes.py's swing x_takeoff).
     ],
 )
 def test_long_clip_cues_found_so_far(cc, phase, feature, shape, start_errors):

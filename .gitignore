@@ -27,3 +27,4 @@ data/
 # submittable -- `git show reference/box-physics:reference/box-physics/README.md`.
 recovered-scratchpad/
 reference/
+.claude/settings.local.json
