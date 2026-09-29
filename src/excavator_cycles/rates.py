@@ -71,9 +71,9 @@ def noise_scale(signal: np.ndarray) -> float:
 
 
 def derivative(
-    signal: np.ndarray, times: np.ndarray, window_seconds: float = 0.9
+    signal: np.ndarray, times: np.ndarray, window_seconds: float = 0.9, polyorder: int = 2
 ) -> np.ndarray:
-    """Zero-phase first derivative, window in seconds.
+    """Zero-phase first derivative, window in seconds, polynomial of order ``polyorder``.
 
     Savitzky-Golay: fit a low-order polynomial over a sliding window and report the
     FITTED derivative, so the result is smooth and has no phase lag. `delta` converts
@@ -84,9 +84,16 @@ def derivative(
 
     filled = _interpolate(signal)
     width = _odd(max(3, _samples(window_seconds, times)))
+    if polyorder >= width:
+        raise ValueError(
+            f"polyorder {polyorder} must be less than the window of {width} samples "
+            f"({window_seconds} s); lengthen the window or lower the order"
+        )
     if len(filled) <= width or not np.isfinite(filled).any():
         return np.full_like(filled, np.nan)
-    out = savgol_filter(np.nan_to_num(filled), width, 2, deriv=1, delta=_spacing(times))
+    out = savgol_filter(
+        np.nan_to_num(filled), width, polyorder, deriv=1, delta=_spacing(times)
+    )
     return _restore_gaps(out, filled)
 
 

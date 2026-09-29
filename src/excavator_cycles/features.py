@@ -340,6 +340,7 @@ def _assemble(
     """Every column, from the two smoothed box tracks."""
     scale = scene.scale
     window = config.features.derivative_window_seconds
+    order = config.features.smoothing_polyorder
 
     bx = bucket.centre_x / scale
     by = bucket.centre_y / scale
@@ -349,8 +350,8 @@ def _assemble(
     # The one y-flip that matters: up-positive height above the slew centre.
     height = (scene.pivot[1] / scale) - by
 
-    dh = derivative(height, times, window_seconds=window)
-    dx = derivative(bx, times, window_seconds=window)
+    dh = derivative(height, times, window_seconds=window, polyorder=order)
+    dx = derivative(bx, times, window_seconds=window, polyorder=order)
 
     if scene.truck_box is not None:
         tx = (scene.truck_box[0] + scene.truck_box[2]) / 2.0 / scale
@@ -378,7 +379,7 @@ def _assemble(
         bucket_y=by,
         height=height,
         dh_dt=dh,
-        d2h_dt2=derivative(dh, times, window_seconds=window),
+        d2h_dt2=derivative(dh, times, window_seconds=window, polyorder=order),
         dx_dt=dx,
         speed_x=np.abs(dx),
         rel_cabin_x=bx - cx,

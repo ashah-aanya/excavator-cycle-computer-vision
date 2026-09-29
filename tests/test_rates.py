@@ -94,3 +94,19 @@ def test_a_broken_time_base_raises_instead_of_scaling_every_rate():
     10 Hz -- and the result stays plausible, so nothing downstream notices."""
     with pytest.raises(ValueError, match="not increasing"):
         derivative(np.arange(10.0), np.zeros(10))
+
+
+def test_polyorder_is_honoured_and_checked():
+    """The polynomial order is a real setting: a cubic fit of a cubic recovers its slope
+    exactly where a quadratic cannot, and an order the window cannot support is refused
+    with a message, not a scipy traceback."""
+    times = np.arange(60) * 0.1
+    signal = (times - 3.0) ** 3
+    truth = 3.0 * (times - 3.0) ** 2
+    inside = slice(10, 50)
+    quadratic = derivative(signal, times, window_seconds=0.9, polyorder=2)
+    cubic = derivative(signal, times, window_seconds=0.9, polyorder=3)
+    assert np.abs(cubic[inside] - truth[inside]).max() < 1e-6
+    assert np.abs(quadratic[inside] - truth[inside]).max() > 1e-3
+    with pytest.raises(ValueError, match="polyorder"):
+        derivative(signal, times, window_seconds=0.2, polyorder=3)
