@@ -206,11 +206,15 @@ def test_phase_at_returns_the_latest_start_that_has_passed():
 def test_the_banner_names_the_phase_its_timer_and_the_cycle_count():
     from excavator_cycles.render import banner_text
 
-    assert banner_text(CYCLE_STARTS, [_one_cycle()], 3.0) == [], "nothing before the first dig"
+    assert banner_text(CYCLE_STARTS, [_one_cycle()], 3.0) == [
+        "LOOKING FOR DIG START",
+        "complete cycles: 0",
+    ], "before the first dig it says what the search is doing"
     lines = banner_text(CYCLE_STARTS, [_one_cycle()], 12.0)
     assert lines[0] == "HAULING   2.0s"
     assert lines[1] == "complete cycles: 0"
     assert lines[2] == "this cycle: dig 6.0s  haul 2.0s"
+    assert lines[3] == "cycle: 8.0s", "the whole cycle so far: 12.0 s minus the dig at 4.0 s"
 
 
 def test_the_cycle_count_goes_up_when_a_cycle_ends():
@@ -228,6 +232,7 @@ def test_the_banner_shows_only_the_current_cycles_phases_so_far():
     lines = banner_text(CYCLE_STARTS, [_one_cycle()], 31.0)
     assert lines[0] == "DIGGING   2.0s"
     assert lines[2] == "this cycle: dig 2.0s", "the finished cycle's phases are not repeated"
+    assert lines[3] == "cycle: 2.0s", "and its total restarts with the new dig"
 
 
 def test_a_video_that_opens_mid_cycle_shows_no_empty_cycle_line():
@@ -334,6 +339,15 @@ def _frame_at(path: Path, index: int) -> np.ndarray:
         capture.release()
 
 
+def _video_corner(frame: np.ndarray, rows: int, columns: int) -> np.ndarray:
+    """The top-left corner of the VIDEO. With graphs beside it the video is centred
+    vertically on black, so it does not start at the canvas's first row."""
+    top = (
+        (frame.shape[0] - 120) // 2 if frame.shape[0] > 120 else 0
+    )  # the fixture is 120 px tall
+    return frame[top : top + rows, :columns]
+
+
 def _changed(a: np.ndarray, b: np.ndarray) -> int:
     assert a.shape == b.shape
     return int((a != b).any(axis=2).sum())
@@ -381,10 +395,46 @@ def test_the_banner_is_drawn_on_the_picture_once_a_phase_is_running(cache_with_f
     bare, drawn = cache_with_features / "nb.mp4", cache_with_features / "b.mp4"
     render(cache_with_features, out_path=bare, scale=1.0)
     render(cache_with_features, out_path=drawn, scale=1.0, starts=[_start("digging", 0.1)])
-    corner = (slice(0, 40), slice(0, 70))
-    assert _changed(_frame_at(bare, 30)[corner], _frame_at(drawn, 30)[corner]) > 0
-    assert _changed(_frame_at(bare, 0)[corner], _frame_at(drawn, 0)[corner]) == 0, (
-        "no banner before the first phase starts"
+    corner = (40, 70)
+    assert (
+        _changed(
+            _video_corner(_frame_at(bare, 30), *corner),
+            _video_corner(_frame_at(drawn, 30), *corner),
+        )
+        > 0
+    )
+
+
+def test_before_the_first_phase_the_banner_says_it_is_looking_for_the_dig(
+    cache_with_features: Path,
+):
+    """At 0 s no phase has started (the dig is at 0.5 s), and the box must not be empty."""
+    bare, waiting = cache_with_features / "nw.mp4", cache_with_features / "w.mp4"
+    render(cache_with_features, out_path=bare, scale=1.0)
+    render(cache_with_features, out_path=waiting, scale=1.0, starts=[_start("digging", 0.5)])
+    corner = (40, 70)
+    assert (
+        _changed(
+            _video_corner(_frame_at(bare, 0), *corner),
+            _video_corner(_frame_at(waiting, 0), *corner),
+        )
+        > 0
+    )
+
+
+def test_a_video_with_no_phases_at_all_still_gets_a_banner(cache_with_features: Path):
+    """`starts=[]` means the search ran and found nothing, which is different from `None`
+    (no search yet): the first draws "NO PHASE FOUND", the second draws no banner."""
+    unknown, none_found = cache_with_features / "u.mp4", cache_with_features / "n.mp4"
+    render(cache_with_features, out_path=unknown, scale=1.0, starts=None)
+    render(cache_with_features, out_path=none_found, scale=1.0, starts=[])
+    corner = (40, 70)
+    assert (
+        _changed(
+            _video_corner(_frame_at(unknown, 10), *corner),
+            _video_corner(_frame_at(none_found, 10), *corner),
+        )
+        > 0
     )
 
 
@@ -399,8 +449,13 @@ def test_the_cycle_counter_is_drawn(cache_with_features: Path):
         {"digging": 0.0, "hauling": 0.2, "dumping": 0.4, "swinging": 0.6}, end=0.8
     )
     render(cache_with_features, out_path=one, scale=1.0, starts=starts, cycles=[finished])
-    corner = (slice(0, 40), slice(0, 110))
-    assert _changed(_frame_at(none, 40)[corner], _frame_at(one, 40)[corner]) > 0
+    assert (
+        _changed(
+            _video_corner(_frame_at(none, 40), 40, 110),
+            _video_corner(_frame_at(one, 40), 40, 110),
+        )
+        > 0
+    )
 
 
 # --- the clock, and the timeline strip --------------------------------------------
@@ -483,3 +538,9 @@ def test_the_video_is_centred_vertically_on_black_beside_the_graphs(cache_with_f
         "the whole video, and nothing else, is in the column"
     )
     assert above > 0 and abs(above - below) <= 1, f"centred: {above} rows above, {below} below"
+
+
+def test_a_video_where_no_phase_was_found_says_so_on_every_frame():
+    from excavator_cycles.render import banner_text
+
+    assert banner_text([], [], 5.0) == ["NO PHASE FOUND", "complete cycles: 0"]

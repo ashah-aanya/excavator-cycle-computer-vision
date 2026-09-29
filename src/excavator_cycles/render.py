@@ -168,7 +168,7 @@ def render(
                 if record is not None
                 else seconds
             )
-            if starts:
+            if starts is not None:
                 _draw_phase_banner(canvas, starts, cycles or [], now)
             left = _centred(canvas, canvas_height)
             if graph_width:
@@ -350,20 +350,25 @@ def phase_at(starts: list[PhaseStart], now: float) -> PhaseStart | None:
 
 def banner_text(starts: list[PhaseStart], cycles: list[Cycle], now: float) -> list[str]:
     """What the frame says at ``now``: the running phase and how long it has run, the
-    count of complete cycles, and how long each phase of the current cycle has lasted so
-    far. Empty before the first phase starts."""
+    count of complete cycles, how long each phase of the current cycle has lasted so far,
+    and how long the cycle has lasted in all. Before the first phase starts it says what
+    the search is doing instead, so the box is never empty."""
+    complete = sum(1 for c in cycles if c.end <= now + EPS)
     current = phase_at(starts, now)
     if current is None:
-        return []
+        waiting = "LOOKING FOR DIG START" if starts else "NO PHASE FOUND"
+        return [waiting, f"complete cycles: {complete}"]
     lines = [
         f"{current.phase.upper()}   {now - current.time:.1f}s",
-        f"complete cycles: {sum(1 for c in cycles if c.end <= now + EPS)}",
+        f"complete cycles: {complete}",
     ]
     digs = [s.time for s in starts if s.phase == "digging" and s.time <= now + EPS]
     so_far = [s for s in starts if digs and digs[-1] <= s.time <= now + EPS]
+    if not so_far:  # the video opened mid-cycle: there is no cycle to break down yet
+        return lines
     edges = [s.time for s in so_far] + [now]
     parts = [f"{_SHORT[s.phase]} {edges[i + 1] - edges[i]:.1f}s" for i, s in enumerate(so_far)]
-    return lines + (["this cycle: " + "  ".join(parts)] if parts else [])
+    return [*lines, "this cycle: " + "  ".join(parts), f"cycle: {now - digs[-1]:.1f}s"]
 
 
 def _draw_phase_banner(
@@ -373,10 +378,11 @@ def _draw_phase_banner(
     lines = banner_text(starts, cycles, now)
     if not lines:
         return
-    colour = _PHASE_COLOUR.get(phase_at(starts, now).phase, _TEXT)
+    current = phase_at(starts, now)
+    colour = _PHASE_COLOUR.get(current.phase, _TEXT) if current else _MUTED
     font = max(0.5, canvas.shape[1] / 1400)
-    scales = [font, font * 0.7, font * 0.55][: len(lines)]
-    colours = [colour, _TEXT, _TEXT][: len(lines)]
+    scales = [font, font * 0.7, font * 0.55, font * 0.55][: len(lines)]
+    colours = [colour, _TEXT, _TEXT, _TEXT][: len(lines)]
     sizes = [
         cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, f, 2)
         for t, f in zip(lines, scales, strict=True)
