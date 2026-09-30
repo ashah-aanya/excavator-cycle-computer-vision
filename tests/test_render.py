@@ -27,8 +27,9 @@ def fake_cache(tmp_path: Path) -> Path:
     width, height, fps, n_frames = 160, 120, 30.0, 60
     video = tmp_path / "clip.mp4"
     writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    grain = np.random.default_rng(0)  # real footage is never flat; a flat clip re-encodes tiny
     for i in range(n_frames):
-        frame = np.full((height, width, 3), 60, dtype=np.uint8)
+        frame = grain.integers(40, 80, (height, width, 3)).astype(np.uint8)
         cv2.rectangle(frame, (20 + i, 40), (60 + i, 80), (40, 190, 230), -1)
         writer.write(frame)
     writer.release()

@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         default=1.0,
         help="resize factor; >1 makes overlays legible on small sources",
     )
-    render_parser.add_argument("--no-boxes", action="store_true", help="mask only")
+    render_parser.add_argument("--no-boxes", action="store_true", help="no truck box")
     render_parser.set_defaults(func=_cmd_render)
 
     features_parser = subparsers.add_parser(
