@@ -32,7 +32,7 @@ detection:
 
 
 track:
-  model_id: "facebook/sam2.1-hiera-tiny"   # ungated, Apache-2.0
+  model_id: "facebook/sam2.1-hiera-small"  # ungated, Apache-2.0; one size up from tiny
   max_clean_truck_iou: 0.30   # above this, the detector merged the two machines
   negative_rows: 2            # "not this" points placed inside the truck box
   negative_columns: 3
