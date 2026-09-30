@@ -75,7 +75,7 @@ This installs Python 3.12 and the pinned dependencies (`uv.lock`), including PyT
 Two models download automatically from Hugging Face on the first run (about 1.1 GB in total, cached in `~/.cache/huggingface`):
 
 - [`IDEA-Research/grounding-dino-base`](https://huggingface.co/IDEA-Research/grounding-dino-base): Dino zero-shot detection of the excavator and the truck
-- [`facebook/sam2.1-hiera-tiny`](https://huggingface.co/facebook/sam2.1-hiera-tiny): SAM 2.1 segmentation and tracking
+- [`facebook/sam2.1-hiera-small`](https://huggingface.co/facebook/sam2.1-hiera-small): SAM 2.1 segmentation and tracking
 
 ## Running it
 

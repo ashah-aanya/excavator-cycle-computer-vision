@@ -103,8 +103,9 @@ class TrackConfig:
     """
 
     # SAM 2 checkpoint. Ungated and Apache-2.0, so a reviewer can reproduce the
-    # run without requesting access to anything.
-    model_id: str = "facebook/sam2.1-hiera-tiny"
+    # run without requesting access to anything. "small" is one size up from
+    # "tiny" (tiny < small < base-plus < large).
+    model_id: str = "facebook/sam2.1-hiera-small"
 
     # Above this overlap between the excavator box and the truck box, the
     # detector has merged the two machines into one region rather than finding
