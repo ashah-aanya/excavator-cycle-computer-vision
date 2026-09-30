@@ -33,11 +33,14 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# In the order they were uploaded, so the ones that finish uploading first run first. A video
+# that is not in Drive yet, or is still uploading, is skipped and the batch moves on; rerun the
+# same command later and only the skipped ones run.
 VIDEOS=(
   "/content/drive/MyDrive/construction_excavator_cycle_duration_1.mp4"   # excavator_cycle
-  # "/content/drive/MyDrive/PLACEHOLDER_video_2.mp4"
-  # "/content/drive/MyDrive/PLACEHOLDER_video_3.mp4"
-  # "/content/drive/MyDrive/PLACEHOLDER_video_4.mp4"
+  "/content/drive/MyDrive/clip3_15.3s-73.6s.mp4"
+  "/content/drive/MyDrive/Untitled4.mov"
+  "/content/drive/MyDrive/vid1.mov"
 )
 if [ "$#" -gt 0 ]; then VIDEOS=("$@"); fi
 
@@ -67,11 +70,28 @@ echo "SAM model: $model   commit: $commit   frame rules: $RULES"
 echo "videos: ${#VIDEOS[@]}   copying each to: $DRIVE_OUT"
 echo
 
-done_count=0; skipped=0; missing=0; failed=0
+# Is this video there, finished uploading, and readable? A file still being written grows,
+# and one cut short will not open, so both are checked before any GPU time is spent on it.
+ready() {
+  [ -f "$1" ] || return 1
+  local before after
+  before="$(wc -c < "$1" 2>/dev/null | tr -d ' ')"
+  sleep 3
+  after="$(wc -c < "$1" 2>/dev/null | tr -d ' ')"
+  [ -n "$before" ] && [ "$before" -gt 0 ] && [ "$before" = "$after" ] || return 1
+  $PY -c "import av, sys; av.open(sys.argv[1]).close()" "$1" > /dev/null 2>&1
+}
+
+done_count=0; skipped=0; missing=0; failed=0; pending=""
 for video in "${VIDEOS[@]}"; do
   stem="$(basename "${video%.*}")"
   if [ ! -f "$video" ]; then
-    echo "MISSING  $stem  ($video)"; missing=$((missing + 1)); continue
+    echo "MISSING  $stem  (not in Drive yet: $video)"
+    missing=$((missing + 1)); pending="$pending $stem"; continue
+  fi
+  if ! ready "$video"; then
+    echo "NOT READY  $stem  (still uploading, or the file does not open); skipping it for now"
+    missing=$((missing + 1)); pending="$pending $stem"; continue
   fi
   # The rules run back to back on one video, so an interrupted batch leaves comparable pairs.
   for rule in $RULES; do
@@ -119,7 +139,10 @@ for video in "${VIDEOS[@]}"; do
 done
 
 echo
-echo "=== done: $done_count saved, $skipped skipped, $missing missing, $failed failed ==="
+echo "=== done: $done_count saved, $skipped skipped, $missing missing or not ready, $failed failed ==="
+if [ -n "$pending" ]; then
+  echo "NOT RUN (upload them, then run this same cell again; finished ones are skipped):$pending"
+fi
 for rule in $RULES; do echo "$rule: $(ls -1 "$DRIVE_OUT/$rule" 2>/dev/null | tr '\n' ' ')"; done
 echo "ALL DONE $(date '+%H:%M:%S')"
 [ "$failed" -eq 0 ]
