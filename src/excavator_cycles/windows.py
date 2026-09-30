@@ -983,6 +983,17 @@ def from_found(t, F, side):
                             "the next strong dig",
                         }
                     )
+                else:
+                    # After a clean swing the next stage is a dig. A clip that stops
+                    # filming soon after has none left to find, which is the end of the
+                    # footage, not an error -- the other stages stop the same way.
+                    stop = {
+                        "phase": phase,
+                        "search_from": anchor,
+                        "why": "no dig found after this point: the clip may end before "
+                        "another cycle starts",
+                    }
+                    break
         else:
             s = step(t, F, found, phase, anchor, cycle)
             strong = find_dig(t, F, found, anchor, {}, reach=None, weak=False)
