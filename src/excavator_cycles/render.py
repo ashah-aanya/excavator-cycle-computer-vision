@@ -45,7 +45,6 @@ _FOREARM_BAND = (250, 200, 90)
 _SURFACE = (60, 140, 255)
 _DIG = (90, 230, 120)
 _DUMP = (250, 180, 80)
-_TRACE = (220, 220, 220)
 _EDGE = (60, 60, 60)
 _PLAYHEAD = (110, 110, 110)
 
@@ -156,7 +155,7 @@ def render(
             sample_position = by_frame[ordered[current]] if current >= 0 else None
             mask = masks.get(sample_position) if sample_position is not None else None
 
-            canvas = _draw_frame(frame, mask, record, scale, draw_boxes)
+            canvas = _draw_frame(frame, record, scale, draw_boxes)
             if table is not None and sample_position is not None:
                 canvas = _draw_physics(canvas, table, scene, sample_position, scale)
             # Every phase start is on the pipeline's clock (sample time), so the frame's time
@@ -210,18 +209,10 @@ def render(
     )
 
 
-def _draw_frame(frame, mask, record, scale: float, draw_boxes: bool):
-    """The video frame with the mask and the truck's box drawn on it."""
+def _draw_frame(frame, record, scale: float, draw_boxes: bool):
+    """The video frame with the truck's box drawn on it. The masks are not drawn: the
+    boxes and the graphs are the evidence."""
     canvas = frame.copy()
-
-    if mask is not None and mask.shape[:2] == canvas.shape[:2]:
-        tint = np.array(_MASK_COLOR, dtype=np.float32)
-        canvas[mask] = ((1 - _MASK_ALPHA) * canvas[mask] + _MASK_ALPHA * tint).astype(np.uint8)
-        # Outline makes the mask boundary legible where the tint alone is subtle.
-        contours, _ = cv2.findContours(
-            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        cv2.drawContours(canvas, contours, -1, _MASK_COLOR, 1)
 
     if draw_boxes and record is not None and record.truck_box is not None:
         _dashed_box(canvas, record.truck_box, _TRUCK_COLOR)
@@ -267,10 +258,8 @@ def _draw_physics(canvas, table, scene, position: int, scale: float):
             round((bucket[1] + bucket[3]) / 2 * scale),
         )
         cv2.circle(canvas, centre, 3, _TIP, -1)
-        cv2.line(canvas, pivot, centre, _TRACE, 1)
 
     cv2.drawMarker(canvas, pivot, _PIVOT, cv2.MARKER_CROSS, 12, 2)
-    _label(canvas, "slew centre", (pivot[0] + 8, pivot[1] - 6), _PIVOT)
     return canvas
 
 
@@ -278,16 +267,14 @@ def _draw_physics(canvas, table, scene, position: int, scale: float):
 # all thirteen: these are the ones a phase boundary will be read off, and a
 # panel too short to see a shape in is worse than no panel.
 #
-# Each panel carries a plain title AND its unit. The bare symbols (`dh/dt`,
-# `|dx/dt|`) were legible only to whoever wrote the feature table, and a unit is
-# what lets a reader judge a number: 0.3 means nothing until it says "L/s".
+# Each panel carries a plain title, turned on its side in the left margin.
 _GRAPHS = (
-    ("BUCKET HEIGHT", "L, up is +", "height", _SURFACE),
-    ("VERTICAL SPEED dh/dt", "L/s, rising is +", "dh_dt", _DIG),
-    ("VERTICAL ACCEL d2h/dt2", "L/s^2", "d2h_dt2", (120, 200, 255)),
-    ("SIDEWAYS SPEED |dx/dt|", "L/s", "speed_x", (120, 235, 140)),
-    ("OVER THE TRUCK", "share of bucket box, 0-1", "truck_overlap", _DUMP),
-    ("BUCKET SHAPE", "box width / height", "aspect_ratio", (230, 160, 240)),
+    ("BUCKET HEIGHT", "height", _SURFACE),
+    ("Y VELOCITY", "dh_dt", _DIG),
+    ("Y ACCELERATION", "d2h_dt2", (120, 200, 255)),
+    ("X VELOCITY", "speed_x", (120, 235, 140)),
+    ("OVER THE TRUCK", "truck_overlap", _DUMP),
+    ("BUCKET SHAPE", "aspect_ratio", (230, 160, 240)),
 )
 
 _MUTED = (150, 150, 150)
@@ -375,6 +362,22 @@ def _draw_phase_banner(
         y += b
 
 
+def _side_title(column, title: str, colour, top: int, height: int) -> None:
+    """A panel's title turned on its side in the left margin, so it never sits on top of
+    the lines. The text is shrunk to the panel's height when it is too long."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    size = 0.4
+    (width, _), _ = cv2.getTextSize(title, font, size, 1)
+    if width > height - 8:
+        size = size * (height - 8) / width
+        (width, _), _ = cv2.getTextSize(title, font, size, 1)
+    strip = np.full((16, width + 2, 3), column[0, 0], dtype=np.uint8)
+    cv2.putText(strip, title, (0, 12), font, size, colour, 1, cv2.LINE_AA)
+    turned = cv2.rotate(strip, cv2.ROTATE_90_COUNTERCLOCKWISE)  # reads bottom to top
+    y = top + (height - turned.shape[0]) // 2
+    column[y : y + turned.shape[0], 4 : 4 + turned.shape[1]] = turned
+
+
 def _graph_column(
     table,
     position: int | None,
@@ -394,7 +397,7 @@ def _graph_column(
     """
     column = np.full((height, width, 3), _PANEL, dtype=np.uint8)
     rows = len(_GRAPHS)
-    axis_height = 44  # time axis, then two rows of key
+    axis_height = 58  # time axis, then three rows of key
     plot_bottom = height - axis_height
     each = plot_bottom // rows
     left, right = 56, width - 8  # room for the value scale on the left
@@ -420,15 +423,13 @@ def _graph_column(
             shade[: region.shape[0], : region.shape[1]], 0.22, region, 0.78, 0
         )
 
-    for index, (title, unit, field, colour) in enumerate(_GRAPHS):
+    for index, (title, field, colour) in enumerate(_GRAPHS):
         top = index * each
         ceiling, base = top + 24, top + each - 6
         values = np.asarray(getattr(table, field), dtype=float)
         finite = values[np.isfinite(values)]
 
-        (title_width, _), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-        text(title, (6, top + 14), colour, 0.4)
-        text(unit, (12 + title_width, top + 14), _MUTED, 0.32)
+        _side_title(column, title, colour, top, each)
         if finite.size == 0:
             text("not measured on this video", (left, (ceiling + base) // 2), _MUTED)
             continue
@@ -438,11 +439,7 @@ def _graph_column(
         def y_of(value, low=low, scale=scale, base=base, ceiling=ceiling):
             return base - round((value - low) / scale * (base - ceiling))
 
-        # The value scale: the panel's own top and bottom, so a shape can be read
-        # as a number without waiting for the playhead to reach it.
         cv2.line(column, (left, base + 3), (right, base + 3), _EDGE, 1)
-        text(f"{high:+.2f}", (4, ceiling + 4), _MUTED, 0.3)
-        text(f"{low:+.2f}", (4, base), _MUTED, 0.3)
         if low < 0 < high:
             zero = y_of(0.0)
             cv2.line(column, (left, zero), (right, zero), _EDGE, 1)
@@ -457,11 +454,6 @@ def _graph_column(
             if previous is not None:
                 cv2.line(column, previous, point, colour, 1, cv2.LINE_AA)
             previous = point
-
-        if position is not None and np.isfinite(values[position]):
-            now = f"now {values[position]:+.3f}"
-            (now_width, _), _ = cv2.getTextSize(now, cv2.FONT_HERSHEY_SIMPLEX, 0.36, 1)
-            text(now, (right - now_width, top + 14), _TEXT, 0.36)
 
     # Phase-start labels would sit on top of each other wherever two starts are close
     # (hauling and dumping start 1 s apart on the dev clip). Each label takes the
@@ -508,13 +500,12 @@ def _graph_column(
     # The key. Bars and lines mean different things, and nothing on the graph says so.
     key_y = axis_y + 14
     x = 6
-    text("BARS:", (x, key_y), _MUTED, 0.3)
-    x += 34
     for phase, colour in _PHASE_COLOUR.items():
         cv2.rectangle(column, (x, key_y - 7), (x + 10, key_y + 1), colour, -1)
         text(phase, (x + 14, key_y), _TEXT, 0.3)
         x += 14 + cv2.getTextSize(phase, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)[0][0] + 10
-    text("= window where that phase starts", (x, key_y), _MUTED, 0.3)
+    key_y += 12
+    text("BARS = window where that phase starts", (6, key_y), _MUTED, 0.3)
     key_y += 12
     cv2.line(column, (6, key_y - 6), (6, key_y + 2), _TEXT, 1)
     cv2.circle(column, (6, key_y - 6), 2, _TEXT, -1)
