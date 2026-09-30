@@ -17,7 +17,6 @@ intermediate shapes would draw something the pipeline never computed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import pairwise
 from pathlib import Path
 
 import cv2
@@ -26,7 +25,7 @@ import numpy as np
 from .cycles import Cycle
 from .logging_setup import get_logger
 from .starts import PhaseStart
-from .track import TrackResult, load_result
+from .track import load_result
 from .video import decode, frame_times, probe
 
 log = get_logger(__name__)
@@ -35,7 +34,6 @@ log = get_logger(__name__)
 # reported number.
 _MASK_COLOR = (80, 230, 90)
 _TRUCK_COLOR = (150, 150, 150)
-_NEGATIVE_COLOR = (70, 70, 240)
 _TEXT = (255, 255, 255)
 _PANEL = (28, 28, 28)
 _MASK_ALPHA = 0.45
@@ -158,7 +156,7 @@ def render(
             sample_position = by_frame[ordered[current]] if current >= 0 else None
             mask = masks.get(sample_position) if sample_position is not None else None
 
-            canvas = _draw_frame(frame, mask, record, result, scale, draw_boxes)
+            canvas = _draw_frame(frame, mask, record, scale, draw_boxes)
             if table is not None and sample_position is not None:
                 canvas = _draw_physics(canvas, table, scene, sample_position, scale)
             # Every phase start is on the pipeline's clock (sample time), so the frame's time
@@ -212,8 +210,8 @@ def render(
     )
 
 
-def _draw_frame(frame, mask, record, result: TrackResult, scale: float, draw_boxes: bool):
-    """The video frame with the mask, the truck's box and the prompt points drawn on it."""
+def _draw_frame(frame, mask, record, scale: float, draw_boxes: bool):
+    """The video frame with the mask and the truck's box drawn on it."""
     canvas = frame.copy()
 
     if mask is not None and mask.shape[:2] == canvas.shape[:2]:
@@ -227,18 +225,6 @@ def _draw_frame(frame, mask, record, result: TrackResult, scale: float, draw_box
 
     if draw_boxes and record is not None and record.truck_box is not None:
         _dashed_box(canvas, record.truck_box, _TRUCK_COLOR)
-
-    # The prompt that produced every mask in this video: worth seeing, because
-    # a bad seed explains everything downstream.
-    for point in result.seed["negative_points"]:
-        cv2.drawMarker(
-            canvas,
-            (int(point[0]), int(point[1])),
-            _NEGATIVE_COLOR,
-            cv2.MARKER_TILTED_CROSS,
-            7,
-            1,
-        )
 
     if scale != 1.0:
         canvas = cv2.resize(
@@ -282,17 +268,6 @@ def _draw_physics(canvas, table, scene, position: int, scale: float):
         )
         cv2.circle(canvas, centre, 3, _TIP, -1)
         cv2.line(canvas, pivot, centre, _TRACE, 1)
-
-        # Where the bucket centre has been, so a jump is visible rather than
-        # merely implied by a number changing.
-        trail = table.bucket_box[max(0, position - 25) : position + 1]
-        points = [
-            (round((b[0] + b[2]) / 2 * scale), round((b[1] + b[3]) / 2 * scale))
-            for b in trail
-            if np.isfinite(b).all()
-        ]
-        for start, end in pairwise(points):
-            cv2.line(canvas, start, end, _TRACE, 1)
 
     cv2.drawMarker(canvas, pivot, _PIVOT, cv2.MARKER_CROSS, 12, 2)
     _label(canvas, "slew centre", (pivot[0] + 8, pivot[1] - 6), _PIVOT)
@@ -543,7 +518,7 @@ def _graph_column(
     key_y += 12
     cv2.line(column, (6, key_y - 6), (6, key_y + 2), _TEXT, 1)
     cv2.circle(column, (6, key_y - 6), 2, _TEXT, -1)
-    text("LINE (phase-coloured) = the exact moment that phase starts", (14, key_y), _MUTED, 0.3)
+    text("LINE = the exact moment that phase starts", (14, key_y), _MUTED, 0.3)
 
     if position is not None:
         x = left + round(span * position / total)
