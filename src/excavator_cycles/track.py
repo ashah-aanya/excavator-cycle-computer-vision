@@ -392,6 +392,7 @@ def derive_bucket_seed(
         negative_count=config.track.bucket_negative_count,
         positions=positions,
         clear_of_truck=clear_of_truck,
+        rule=config.track.bucket_frame_rule,
     )
 
 
@@ -697,6 +698,11 @@ def track(
     set_seeds()
     # Checked before anything expensive happens: a typo here would otherwise
     # surface after the detector pass and a model download.
+    if config.track.bucket_frame_rule not in seeding.FRAME_RULES:
+        raise ValueError(
+            f"track.bucket_frame_rule is {config.track.bucket_frame_rule!r}; "
+            f"expected one of {seeding.FRAME_RULES}"
+        )
     if config.track.bucket_prompt not in BUCKET_PROMPT_FORMS:
         raise ValueError(
             f"track.bucket_prompt is {config.track.bucket_prompt!r}; "
@@ -934,6 +940,7 @@ def _seed_record(seed: BucketSeed, samples: list[Sample], config: Config) -> dic
         "frame_index": sample.frame_index,
         "time_seconds": sample.time_seconds,
         "prompt": config.track.bucket_prompt,
+        "frame_rule": config.track.bucket_frame_rule,
         "points": [[float(x), float(y)] for x, y in seed.points],
         "negative_points": [[float(x), float(y)] for x, y in seed.negatives],
         "box": [float(v) for v in seed.box],

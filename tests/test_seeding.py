@@ -20,12 +20,16 @@ attempts at arm pose:
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
+from excavator_cycles.config import Config
 from excavator_cycles.seeding import (
     choose_seed,
+    extension,
     geodesic_bands,
     interior_points,
     looks_like_the_boom_apex,
+    reach_score,
     score_frame,
 )
 
@@ -256,3 +260,105 @@ def test_a_raised_bucket_is_not_mistaken_for_the_apex():
     assert not looks_like_the_boom_apex(band, mask, SCALE), (
         "a legitimately raised bucket was rejected as the boom apex"
     )
+
+
+# --- the "reach" frame rule --------------------------------------------------
+
+
+def stretched_and_folded():
+    """Six frames, the arm stretched furthest at index 0 -- the edge of the clip."""
+    core = machine()[1]
+    buckets = [(285, 150), (240, 150), (215, 150), (195, 150), (180, 150), (170, 150)]
+    return core, [machine(bucket=b)[0] for b in buckets]
+
+
+def test_the_reach_rule_picks_the_most_stretched_arm():
+    core, masks = stretched_and_folded()
+    reaches = [extension(m, PIVOT) for m in masks]
+    assert reaches[0] == max(reaches), "fixture: frame 0 should be the most stretched"
+
+    seed = choose_seed(masks, core, PIVOT, SCALE, rule="reach")
+    assert seed is not None and seed.sample == 0
+
+
+def test_the_reach_rule_does_not_prefer_the_middle_of_the_clip():
+    """With arms of nearly equal length the older score follows its mid-clip bonus.
+
+    ``score_frame`` adds up to 0.5 for a frame in the middle of the clip, which outweighs a
+    few pixels of extra reach; "reach" is the arm alone, as tested offline. Frame 0 is the
+    edge of the clip and only slightly more stretched than the rest.
+    """
+    core = machine()[1]
+    buckets = [(245, 150), (240, 150), (240, 150), (240, 150), (240, 150), (240, 150)]
+    masks = [machine(bucket=b)[0] for b in buckets]
+    assert extension(masks[0], PIVOT) > max(extension(m, PIVOT) for m in masks[1:])
+
+    reach_pick = choose_seed(masks, core, PIVOT, SCALE, rule="reach")
+    score_pick = choose_seed(masks, core, PIVOT, SCALE, rule="score")
+    assert reach_pick is not None and score_pick is not None
+    assert reach_pick.sample == 0
+    assert score_pick.sample != 0
+
+
+def test_the_default_rule_is_still_the_older_score():
+    core, masks = stretched_and_folded()
+    default = choose_seed(masks, core, PIVOT, SCALE)
+    explicit = choose_seed(masks, core, PIVOT, SCALE, rule="score")
+    assert default is not None and explicit is not None
+    assert default.sample == explicit.sample and default.score == explicit.score
+
+
+def test_the_reach_score_is_a_fraction_of_the_arms_reach_and_ranks_by_extension():
+    mask, core = machine()
+    band = geodesic_bands(mask, core, PIVOT)[0]
+    assert reach_score(band, mask, PIVOT, SCALE) == pytest.approx(
+        extension(mask, PIVOT) / SCALE
+    )
+    longer = machine(bucket=(285, 150))[0]
+    longer_band = geodesic_bands(longer, core, PIVOT)[0]
+    assert reach_score(longer_band, longer, PIVOT, SCALE) > reach_score(
+        band, mask, PIVOT, SCALE
+    )
+
+
+def test_a_band_on_the_boom_apex_still_scores_zero_under_the_reach_rule():
+    """A raised boom must not win just because it reaches far in a straight line."""
+    mask, core = machine()
+    top_row = np.nonzero(mask)[0].min()
+    apex_band = np.zeros_like(mask)
+    apex_band[top_row : top_row + 10, 140:165] = True
+    real_band = geodesic_bands(mask, core, PIVOT)[0]
+    assert reach_score(apex_band, mask, PIVOT, SCALE) == 0.0
+    assert reach_score(real_band, mask, PIVOT, SCALE) > 0.0
+
+
+def test_an_empty_mask_or_band_has_no_reach_score():
+    mask, core = machine()
+    band = geodesic_bands(mask, core, PIVOT)[0]
+    empty = np.zeros(SHAPE, bool)
+    assert reach_score(empty, mask, PIVOT, SCALE) == 0.0
+    assert reach_score(band, empty, PIVOT, SCALE) == 0.0
+    assert extension(empty, PIVOT) == 0.0
+
+
+def test_an_unknown_frame_rule_is_refused():
+    core, masks = stretched_and_folded()
+    with pytest.raises(ValueError, match="frame rule"):
+        choose_seed(masks, core, PIVOT, SCALE, rule="sharpest")
+
+
+def test_the_configured_frame_rule_reaches_the_seed_choice(monkeypatch):
+    """track.bucket_frame_rule must be what derive_bucket_seed hands to choose_seed."""
+    from excavator_cycles import track
+
+    seen = []
+    monkeypatch.setattr(
+        track.seeding, "choose_seed", lambda *args, **kwargs: seen.append(kwargs["rule"])
+    )
+    masks = {i: machine(bucket=(240 + i, 150))[0] for i in range(4)}
+
+    assert Config().track.bucket_frame_rule == "reach"
+    for rule in ("reach", "score"):
+        config = Config.load(overrides={"track": {"bucket_frame_rule": rule}})
+        track.derive_bucket_seed(masks, len(masks), None, config)
+    assert seen == ["reach", "score"]

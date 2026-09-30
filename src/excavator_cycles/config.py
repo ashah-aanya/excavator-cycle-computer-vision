@@ -149,6 +149,13 @@ class TrackConfig:
     # the bucket cannot be held.
     bucket_prompt: str = "mask"
 
+    # Which frame the bucket is seeded from (seeding.choose_seed). "reach" ranks frames by how
+    # far the arm is stretched, straight-line from the pivot: the bucket is at the end of the
+    # arm, so a stretched arm puts the band on the bucket, and a folded one puts it on stick.
+    # "score" is the older blend (geodesic reach, compactness, truck clearance, mid-clip-ness),
+    # kept so the two can be compared on the same masks.
+    bucket_frame_rule: str = "reach"
+
     # The speck cut is a fraction of the MASK's own area, not the frame's, so it
     # is scale-free in principle. In practice it is not: SAM's strays are a few
     # dozen pixels whatever the object's size, and the bucket's mask is an order

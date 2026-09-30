@@ -1,0 +1,5 @@
+# One override on top of the defaults: rank the bucket's seed frame with the older blend
+# (score_frame) instead of "reach". Used by scripts/batch_track.sh to run the old rule
+# next to the new one on the same videos.
+track:
+  bucket_frame_rule: "score"
