@@ -282,13 +282,25 @@ def choose_pool(rows):
     return pool or [r for r, t in zip(rows, top, strict=True) if t] or rows
 
 
+def reference_lookup(track, ref_track):
+    """Map a sample of ``track`` to the nearest sample of ``ref_track`` by SOURCE FRAME number.
+
+    Never by time: two runs of one video can label the same frame differently (the old code
+    used index / fps, the current code uses the file's real timestamps, and on a variable-rate
+    recording they differ by seconds). The frame number is the same in both.
+    """
+    ref_frames = np.array([f["frame_index"] for f in ref_track["frames"]])
+    own = [f["frame_index"] for f in track["frames"]]
+    return lambda i: int(np.argmin(np.abs(ref_frames - own[i])))
+
+
 def evaluate(run, methods=ESTIMATORS, require=()):
     track = json.loads(Path(run["track"]).read_text())
     ref_track = json.loads(Path(run["ref_track"]).read_text())
     masks = mask_io.load_objects(run["masks"])[0]["excavator"]
     ref = mask_io.load_objects(run["ref_masks"])[0]["bucket"]
     times = np.array([f["time_seconds"] for f in track["frames"]])
-    ref_times = np.array([f["time_seconds"] for f in ref_track["frames"]])
+    lookup = reference_lookup(track, ref_track)
     usable = [m for m in masks.values() if m.any()]
     core = body_core(usable)
     pivot = boom_base(core)
@@ -296,8 +308,7 @@ def evaluate(run, methods=ESTIMATORS, require=()):
     pool = choose_pool(rows)
 
     def reference_at(i):
-        j = int(np.argmin(np.abs(ref_times - times[i])))
-        return ref.get(j)
+        return ref.get(lookup(i))
 
     frames = decode_frames(
         run["video"], {track["frames"][i]["frame_index"] for i, _, _ in rows}

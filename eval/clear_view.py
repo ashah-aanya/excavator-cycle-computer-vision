@@ -54,6 +54,7 @@ from bucket_consensus import (
     iou,
     mask_io,
     rank01,
+    reference_lookup,
 )
 
 from excavator_cycles.kinematics import body_core, boom_base
@@ -106,7 +107,7 @@ def evaluate(run):
     masks = mask_io.load_objects(run["masks"])[0]["excavator"]
     ref = mask_io.load_objects(run["ref_masks"])[0]["bucket"]
     times = np.array([f["time_seconds"] for f in track["frames"]])
-    ref_times = np.array([f["time_seconds"] for f in ref_track["frames"]])
+    lookup = reference_lookup(track, ref_track)
     core = body_core([m for m in masks.values() if m.any()])
     pivot = boom_base(core)
     rows = []
@@ -122,7 +123,7 @@ def evaluate(run):
     out = []
     for i, band in rows:
         view = clear_view(images[track["frames"][i]["frame_index"]], masks[i], core, pivot)
-        target = ref.get(int(np.argmin(np.abs(ref_times - times[i]))))
+        target = ref.get(lookup(i))
         overlap = iou(band, target) if target is not None and target.any() else 0.0
         if view is not None:
             out.append(

@@ -144,3 +144,27 @@ def test_a_required_estimator_that_abstains_zeroes_the_frame():
     assert (
         bc.frame_consensus({"geodesic": a, "thickness": b}, require=("thickness",))[0] == 1.0
     )
+
+
+def test_the_reference_is_matched_by_source_frame_not_by_each_runs_clock():
+    """Two runs of one video can label the same frame with clocks that differ by seconds."""
+    frames = list(range(0, 300, 3))
+    old_clock = [{"frame_index": f, "time_seconds": f / 26.0} for f in frames]
+    new_clock = [
+        {"frame_index": f, "time_seconds": f / 26.0 - 5.0 + f * 0.02} for f in frames
+    ]  # drifts
+    lookup = bc.reference_lookup({"frames": new_clock}, {"frames": old_clock})
+    assert [lookup(i) for i in (0, 10, 50, 99)] == [
+        0,
+        10,
+        50,
+        99,
+    ]  # sample i is the same frame
+    fast = [
+        {"frame_index": f} for f in range(0, 300, 6)
+    ]  # a reference tracked at half the rate
+    to_fast = bc.reference_lookup({"frames": new_clock}, {"frames": fast})
+    assert fast[to_fast(41)]["frame_index"] in (
+        120,
+        126,
+    )  # frame 123 -> the nearest of 120/126
