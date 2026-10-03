@@ -2,6 +2,18 @@
 
 This computer-vision pipeline uses rule-based state detection to find every phase of an excavator work cycle and reports the average duration of each phase and of a complete cycle.
 
+## Demo
+
+[![Annotated output: boxes and the current phase on the left, the feature graphs with each detected phase start on the right](docs/media/annotated-demo-poster.jpg)](docs/media/annotated-demo.mp4)
+
+*Click the image to watch the full annotated video (83 s, 6 MB). Left: the cabin, bucket and truck boxes with the current phase and its timer. Right: the kinematic features over time, with a shaded window and a line for each detected phase start.*
+
+Result on this clip (3 complete cycles):
+
+| Cycles | Digging | Hauling | Dumping | Swinging | Full cycle |
+|---|---|---|---|---|---|
+| 3 | 7.2 s | 8.9 s | 2.4 s | 7.3 s | 25.8 s |
+
 ## Design
 
 ![](assets/pipeline-simple.svg)
