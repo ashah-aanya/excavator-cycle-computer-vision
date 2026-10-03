@@ -97,6 +97,14 @@ The results folder (default `outputs/<video name>`) holds:
 - `phases.json` and `features.png`: every phase start with its search interval, and every feature plotted against time
 - the cache (`masks.npz`, `features.npz`, ...) and `run.json`, a record of the run
 
+## Development history
+
+The write-ups from building this (stage-by-stage findings, the original design doc, and the measurements behind the thresholds) were removed from the tree to keep it focused. They are still in git history, and comments in the code that cite `docs/...` refer to them. To read one:
+
+```bash
+git show 7366128:docs/stages/06-bucket-mask.md
+```
+
 ---
 
 Author: Aanya Shah (aanya3@illinois.edu)
