@@ -3,7 +3,7 @@
 **Evaluation only. The pipeline must never read anything in this directory.**
 
 The task spec forbids hardcoding video-specific values and forbids the pipeline
-reading `answer.json` (see `docs/pipeline-design.md` §1.2). These labels are the
+reading `answer.json`. These labels are the
 answer for one video. They live outside `src/` so that the separation is
 structural rather than a promise: nothing under `src/excavator_cycles/` imports
 `eval/`, `eval/score.py` imports nothing from `excavator_cycles`, and `eval/` is

@@ -1,5 +1,5 @@
 {
-  "_README": "Hand-made ground truth for ONE video. EVALUATION ONLY. Nothing under src/excavator_cycles/ may import or read this file, and the pipeline must never open it -- reading the answer is explicitly disallowed by the task spec (docs/pipeline-design.md 1.2). See eval/README.md.",
+  "_README": "Hand-made ground truth for ONE video. EVALUATION ONLY. Nothing under src/excavator_cycles/ may import or read this file, and the pipeline must never open it -- reading the answer is explicitly disallowed by the task spec. See eval/README.md.",
   "schema_version": 1,
 
   "video": {
@@ -19,7 +19,7 @@
 
   "boundaries": {
     "_units": "Each value is an INSTANT BETWEEN FRAMES, not a frame index: boundary f means 'immediately before frame f'. A value may legitimately be 886 or larger, meaning 'after the final decoded frame'.",
-    "_definition_source": "The four phase definitions come from the task spec, quoted in docs/pipeline-design.md 1.1. The four phases tile the cycle with no gaps: each phase ends immediately before the next phase begins. Only the four ONSETS are defined; no phase has an independently labelled end.",
+    "_definition_source": "The four phase definitions come from the task spec. The four phases tile the cycle with no gaps: each phase ends immediately before the next phase begins. Only the four ONSETS are defined; no phase has an independently labelled end.",
     "digging_begins": 125,
     "hauling_begins": 322,
     "dumping_begins": 559,
@@ -41,7 +41,7 @@
   },
 
   "expected_answer": {
-    "_note": "The shape a correct answer.json takes (docs/pipeline-design.md 1.1), filled in with these labels. eval/score.py scores a candidate answer.json against exactly these five fields.",
+    "_note": "The shape a correct answer.json takes, filled in with these labels. eval/score.py scores a candidate answer.json against exactly these five fields.",
     "cycle_count": 1,
     "average_cycle_duration_seconds": 25.188,
     "average_phase_duration_seconds": {
