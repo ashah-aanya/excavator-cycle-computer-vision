@@ -2,6 +2,12 @@
 
 This computer-vision pipeline uses rule-based state detection to find every phase of an excavator work cycle and reports the average duration of each phase and of a complete cycle.
 
+## Demo
+
+https://github.com/user-attachments/assets/9f300d6a-06f2-4921-b2fe-795927fda990
+
+*Video 1: The pipeline's annotated output. The video on the left with the associated kinematic feature graphs on the right.*
+
 ## Design
 
 ![](assets/pipeline-simple.svg)
@@ -92,6 +98,14 @@ The results folder (default `outputs/<video name>`) holds:
 - `annotated.mp4`: the video with the boxes, current phase and its timer, the complete-cycle count, and the feature graphs with each detected phase start
 - `phases.json` and `features.png`: every phase start with its search interval, and every feature plotted against time
 - the cache (`masks.npz`, `features.npz`, ...) and `run.json`, a record of the run
+
+## Development history
+
+The write-ups from building this (stage-by-stage findings, the original design doc, and the measurements behind the thresholds) were removed from the tree to keep it focused. They are still in git history, and comments in the code that cite `docs/...` refer to them. To read one:
+
+```bash
+git show 7366128:docs/stages/06-bucket-mask.md
+```
 
 ---
 

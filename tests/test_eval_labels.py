@@ -97,7 +97,7 @@ def test_seconds_follow_from_frames_and_fps(labels: dict, phase: str):
 def test_phases_tile_the_cycle(labels: dict):
     """No gaps and no overlaps: the four phases must sum to the cycle exactly.
 
-    This is the property the design leans on (docs/pipeline-design.md 2.3) and the
+    This is the property the design leans on, and the
     reason the cycle is reported as 25.188 rather than the rounded 25.189.
     """
     durations = labels["durations"]
