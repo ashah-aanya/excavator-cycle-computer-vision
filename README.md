@@ -6,6 +6,8 @@ This computer-vision pipeline uses rule-based state detection to find every phas
 
 https://github.com/user-attachments/assets/9f300d6a-06f2-4921-b2fe-795927fda990
 
+*Video 1: The pipeline's annotated output on an 83 s clip. Left: the cabin, bucket and truck boxes with the current phase and its timer. Right: the kinematic features over time, with a shaded window and a line for each detected phase start. Figure 1 below shows how this output is produced.*
+
 ## Design
 
 ![](assets/pipeline-simple.svg)
