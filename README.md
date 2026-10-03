@@ -95,8 +95,4 @@ The results folder (default `outputs/<video name>`) holds:
 
 ---
 
-Note: I used ClaudeCode to help with the coding, but I would adhere to lab policies about AI use if there were stricter guidelines.
-
----
-
 Author: Aanya Shah (aanya3@illinois.edu)
